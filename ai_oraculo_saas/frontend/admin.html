@@ -117,17 +117,17 @@
     </div>
 </div>
 
-<!-- Modal Editar Documento -->
+<!-- Modal Trocar Área do Documento -->
 <div class="modal-overlay" id="docEditModal">
     <div class="modal">
-        <h2>Editar Documento</h2>
+        <h2>Trocar Área do Documento</h2>
         <input type="hidden" id="editDocId">
         <div class="form-group">
-            <label>Nome do Documento</label>
-            <input type="text" class="form-input" id="docEditName">
+            <label>Documento</label>
+            <input type="text" class="form-input" id="docEditName" disabled>
         </div>
         <div class="form-group">
-            <label>Área</label>
+            <label>Nova Área</label>
             <select class="form-input" id="docEditArea"></select>
         </div>
         <div class="modal-actions">
@@ -139,6 +139,7 @@
 
 <script>
 const ADMIN_API = window.location.protocol + '//' + window.location.host;
+let allAreas = [];
 
 // ---- Tabs ----
 function switchTab(name) {
@@ -172,6 +173,7 @@ async function loadAreas() {
         const res = await fetch(ADMIN_API + '/admin/areas');
         const data = await res.json();
         const areas = data.areas || [];
+        allAreas = areas;
         if (!areas.length) { document.getElementById('areas-list').innerHTML = '<p style="color:#64748b;">Nenhuma área cadastrada.</p>'; return; }
         document.getElementById('areas-list').innerHTML = areas.map(a => `
             <div class="card-item">
@@ -234,6 +236,7 @@ async function loadDocs() {
                 <p>ID: ${d.id} • Área: ${d.area_name || '-'} • Status: ${d.processing_status || '-'}</p>
                 <p>URL: ${d.url || '—'} • Chunks: ${d.chunk_count || 0}</p>
                 <div style="margin-top:0.75rem;">
+                    <button class="btn btn-sm" onclick='showDocEditModal(${JSON.stringify(d).replace(/'/g, "\\'")})'>Trocar Área</button>
                     <button class="btn btn-sm" onclick="reprocessDoc(${d.id})">Reprocessar RAG</button>
                     <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id}, '${d.name}')">Excluir</button>
                 </div>
@@ -245,6 +248,35 @@ async function loadDocs() {
 async function reprocessDoc(id) {
     if (!confirm('Reprocessar RAG deste documento?')) return;
     try { await fetch(ADMIN_API + `/admin/documents/${id}/reprocess`, { method: 'POST' }); alert('Reprocessamento iniciado.'); loadDocs(); } catch(e) { alert('Erro no reprocessamento.'); }
+}
+
+function showDocEditModal(doc) {
+    document.getElementById('editDocId').value = doc.id;
+    document.getElementById('docEditName').value = doc.name;
+    const select = document.getElementById('docEditArea');
+    select.innerHTML = allAreas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+    const currentArea = allAreas.find(a => a.name === doc.area_name);
+    if (currentArea) select.value = currentArea.id;
+    document.getElementById('docEditModal').classList.add('active');
+}
+
+function closeDocEditModal() { document.getElementById('docEditModal').classList.remove('active'); }
+
+async function saveDocEdit() {
+    const id = document.getElementById('editDocId').value;
+    const areaId = document.getElementById('docEditArea').value;
+    if (!areaId) return alert('Selecione uma área.');
+    try {
+        const res = await fetch(ADMIN_API + `/admin/documents/${id}/move`, {
+            method: 'PATCH',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ area_id: Number(areaId) })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao trocar a área do documento.');
+        closeDocEditModal();
+        loadDocs(); loadStats();
+    } catch(e) { alert('Erro ao trocar a área do documento.'); }
 }
 
 async function deleteDoc(id, title) {
