@@ -6,63 +6,104 @@
 <title>Monitor Agent</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
-body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif}
-.topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:#16213e;border-bottom:2px solid #0f3460}
-.topbar h1{font-size:1.4rem;color:#fff;display:flex;align-items:center;gap:8px}
-.health-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;margin-right:4px}
+body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif;line-height:1.4}
+
+/* ---------- Topbar ---------- */
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#16213e;border-bottom:2px solid #0f3460;flex-wrap:wrap;gap:10px}
+.topbar h1{font-size:1.3rem;color:#fff;display:flex;align-items:center;gap:8px}
+.health-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;flex-shrink:0}
 .health-dot.ok{background:#00b894}.health-dot.err{background:#e94560}
-.refresh-info{font-size:.8rem;color:#888}
+.refresh-info{font-size:.78rem;color:#888}
+.health-group{display:flex;align-items:center;gap:16px;font-size:.78rem;color:#aaa;flex-wrap:wrap}
+.health-item{display:flex;align-items:center;gap:5px}
+
+/* ---------- Layout ---------- */
 .container{max-width:1400px;margin:0 auto;padding:20px 24px}
-.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
-.stat-card{background:#16213e;border-radius:8px;padding:20px;text-align:center;border-left:4px solid #0f3460}
-.stat-card .num{font-size:2rem;font-weight:700;color:#fff}
-.stat-card .label{font-size:.85rem;color:#aaa;margin-top:4px}
-.card{background:#16213e;border-radius:8px;padding:20px;margin-bottom:20px;border:1px solid #0f3460}
-.card h2{margin-bottom:16px;font-size:1.1rem;color:#fff;display:flex;align-items:center;gap:8px}
-table{width:100%;border-collapse:collapse;font-size:.85rem}
-th{text-align:left;padding:10px 12px;background:#0f3460;color:#fff;font-weight:600;border-bottom:2px solid #e94560}
+@media (max-width:640px){.container{padding:14px}}
+
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px;margin-bottom:22px}
+.stat-card{background:#16213e;border-radius:10px;padding:18px;text-align:center;border-left:4px solid #0f3460}
+.stat-card .num{font-size:1.8rem;font-weight:700;color:#fff}
+.stat-card .label{font-size:.78rem;color:#aaa;margin-top:4px}
+
+.card{background:#16213e;border-radius:10px;padding:20px;margin-bottom:20px;border:1px solid #0f3460}
+@media (max-width:640px){.card{padding:14px}}
+.card-header{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;margin-bottom:16px}
+.card-header h2{font-size:1.05rem;color:#fff;display:flex;align-items:center;gap:8px}
+.card-header-actions{display:flex;gap:8px;flex-wrap:wrap}
+
+/* ---------- Tables (used for scan history only) ---------- */
+.table-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+table{width:100%;border-collapse:collapse;font-size:.83rem;min-width:640px}
+th{text-align:left;padding:10px 12px;background:#0f3460;color:#fff;font-weight:600;border-bottom:2px solid #e94560;white-space:nowrap}
 td{padding:10px 12px;border-bottom:1px solid #2a2a4a}
 tr:hover td{background:#1f2b47}
-.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:.75rem;font-weight:600;text-transform:uppercase}
+
+.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:.72rem;font-weight:600;text-transform:uppercase;white-space:nowrap}
 .badge-unchanged{background:#2d5a3d;color:#00b894}.badge-changed{background:#5a4a2d;color:#fdcb6e}
 .badge-new{background:#2d4a5a;color:#74b9ff}.badge-error{background:#5a2d2d;color:#e94560}
-.btn{padding:6px 14px;border:none;border-radius:4px;cursor:pointer;font-size:.8rem;font-weight:600;margin-right:6px;transition:.2s}
+
+/* ---------- Buttons ---------- */
+.btn{padding:8px 14px;border:none;border-radius:6px;cursor:pointer;font-size:.8rem;font-weight:600;transition:.15s;white-space:nowrap}
 .btn-scan{background:#0f3460;color:#fff}.btn-scan:hover{background:#1a5276}
-.btn-del{background:#e94560;color:#fff}.btn-del:hover{background:#c0392b}
-.btn-extract{background:#2d5a3d;color:#fff}.btn-extract:hover{background:#1abc9c}
-.form-row{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;align-items:end}
-.form-group{display:flex;flex-direction:column;gap:4px}
-.form-group label{font-size:.75rem;color:#aaa;text-transform:uppercase;font-weight:600}
-input,select{background:#1a1a2e;border:1px solid #0f3460;color:#fff;padding:8px 12px;border-radius:4px;font-size:.9rem}
+.btn-del{background:#3a1f27;color:#ff9b9b}.btn-del:hover{background:#e94560;color:#fff}
+.btn-links{background:#2d1f3a;color:#c874ff}.btn-links:hover{background:#4a2d5a;color:#fff}
+.btn:disabled{opacity:.5;cursor:wait}
+.btn-auto{background:#0f3460;color:#fff;padding:6px 14px;border:none;border-radius:6px;cursor:pointer;font-size:.78rem;font-weight:600}
+.btn-auto:disabled{opacity:.5;cursor:wait}
+.btn-add{background:#00b894;color:#0a1f18;padding:10px 22px;border:none;border-radius:6px;cursor:pointer;font-weight:700;font-size:.9rem}
+
+/* ---------- Add URL form ---------- */
+.form-row{display:flex;gap:14px;margin-bottom:12px;flex-wrap:wrap;align-items:end}
+.form-group{display:flex;flex-direction:column;gap:5px;flex:1 1 160px;min-width:140px}
+.form-group.grow{flex:2 1 240px}
+.form-group label{font-size:.72rem;color:#aaa;text-transform:uppercase;font-weight:600;letter-spacing:.03em}
+input,select{background:#1a1a2e;border:1px solid #2a3a5c;color:#fff;padding:9px 12px;border-radius:6px;font-size:.9rem;width:100%}
 input:focus,select:focus{outline:none;border-color:#e94560}
-.btn-add{background:#00b894;color:#fff;padding:8px 20px;border:none;border-radius:4px;cursor:pointer;font-weight:700}
-.toggle{position:relative;width:44px;height:24px;background:#333;border-radius:12px;cursor:pointer}
-.toggle.on{background:#00b894}.toggle::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.2s}
-.toggle.on::after{left:23px}
+.error-msg{color:#e94560;font-size:.8rem;margin-top:8px}
+
+/* ---------- Monitored URLs: card grid ---------- */
+.url-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(300px,1fr));gap:14px}
+.url-card{background:#1a2540;border:1px solid #253552;border-radius:10px;padding:16px;display:flex;flex-direction:column;gap:10px;transition:border-color .15s}
+.url-card:hover{border-color:#3a4d78}
+.url-card-top{display:flex;align-items:flex-start;justify-content:space-between;gap:8px}
+.url-card-name{display:flex;align-items:center;gap:10px;min-width:0}
+.url-card-name h3{font-size:.98rem;color:#fff;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.url-card-id{font-size:.7rem;color:#5a6b8c;flex-shrink:0}
+.url-card-link{color:#74b9ff;text-decoration:none;font-size:.8rem;word-break:break-all}
+.url-card-link:hover{text-decoration:underline}
+.url-card-meta{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:4px;background:#0f1f3d;color:#9fb3d9;padding:3px 9px;border-radius:10px;font-size:.72rem;font-weight:500}
+.mode-badge{display:inline-flex;align-items:center;padding:3px 9px;border-radius:10px;font-size:.72rem;font-weight:600}
+.mode-http{background:#16324a;color:#74b9ff}.mode-js{background:#331a44;color:#c874ff}
+.url-card-stats{display:flex;gap:18px;font-size:.78rem;color:#9fb3d9;padding:8px 0;border-top:1px solid #253552;border-bottom:1px solid #253552}
+.url-card-stats b{color:#fff;font-size:.95rem}
+.url-card-actions{display:flex;flex-wrap:wrap;gap:8px;margin-top:auto}
+.url-card-actions .btn{flex:1 1 auto;text-align:center}
+
+.toggle{position:relative;width:38px;height:22px;background:#333;border-radius:12px;cursor:pointer;flex-shrink:0}
+.toggle.on{background:#00b894}.toggle::after{content:'';position:absolute;top:3px;left:3px;width:16px;height:16px;background:#fff;border-radius:50%;transition:.2s}
+.toggle.on::after{left:19px}
+
 .expand-btn{cursor:pointer;color:#74b9ff;font-weight:600;text-decoration:underline}
 .links-list{margin-top:8px;padding-left:16px;display:none}
 .links-list.open{display:block}
-.loading{text-align:center;padding:40px;color:#888}
-.error-msg{color:#e94560;font-size:.8rem;margin-top:8px}
-.btn-auto{background:#0f3460;color:#fff;padding:4px 12px;border:none;border-radius:4px;cursor:pointer;font-size:.75rem}
-.url-link{color:#74b9ff;text-decoration:none}.url-link:hover{text-decoration:underline}
-.btn:disabled,.btn-auto:disabled{opacity:.5;cursor:wait}
-.health-group{display:flex;align-items:center;gap:14px;font-size:.8rem;color:#aaa}
-.health-item{display:flex;align-items:center;gap:4px}
-.mode-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:600}
-.mode-http{background:#2d4a5a;color:#74b9ff}.mode-js{background:#4a2d5a;color:#c874ff}
+.link-row{padding:6px 0;border-bottom:1px solid #2a2a4a;font-size:.82rem;word-break:break-word}
+
+.loading,.empty-state{text-align:center;padding:40px;color:#888;grid-column:1/-1}
+
 .banner{background:#5a2d2d;color:#ff9b9b;padding:12px 16px;border-radius:6px;margin-bottom:16px;font-size:.85rem;display:none}
 .banner.show{display:block}
-.toast-container{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:1000}
-.toast{background:#16213e;border-left:4px solid #00b894;color:#fff;padding:12px 16px;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4);font-size:.85rem;max-width:360px;animation:slidein .2s ease-out}
+
+.toast-container{position:fixed;bottom:16px;right:16px;left:16px;display:flex;flex-direction:column;align-items:flex-end;gap:8px;z-index:1000;pointer-events:none}
+.toast{background:#16213e;border-left:4px solid #00b894;color:#fff;padding:12px 16px;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4);font-size:.85rem;max-width:360px;animation:slidein .2s ease-out;pointer-events:auto}
 .toast.err{border-left-color:#e94560}
 @keyframes slidein{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
-.btn-links{background:#4a2d5a;color:#fff}.btn-links:hover{background:#6c3f8a}
 </style>
 </head>
 <body>
 <div class="topbar">
-<h1>Monitor Agent</h1>
+<h1>🛰 Monitor Agent</h1>
 <div class="health-group">
   <span class="health-item"><span id="healthDot" class="health-dot"></span>Banco</span>
   <span class="health-item"><span id="ragDot" class="health-dot"></span>RAG (Tutor)</span>
@@ -84,41 +125,43 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 
 <!-- Add URL -->
 <div class="card">
-<h2>➕ Adicionar URL para Monitorar</h2>
+<div class="card-header"><h2>➕ Adicionar URL para Monitorar</h2></div>
 <div class="form-row">
   <div class="form-group"><label>Nome</label><input id="fName" placeholder="Ex: NF-e MOC 7.0"></div>
-  <div class="form-group"><label>URL</label><input id="fUrl" placeholder="https://..."></div>
+  <div class="form-group grow"><label>URL</label><input id="fUrl" placeholder="https://..."></div>
   <div class="form-group"><label>Área</label><select id="fArea"><option value="">Nenhuma</option></select></div>
   <div class="form-group"><label>Fetch Mode</label><select id="fMode"><option value="http">HTTP</option><option value="js_browser">JS Browser</option></select></div>
-  <div class="form-group" style="align-self:end"><button class="btn-add" onclick="addUrl()">Adicionar</button></div>
+  <div class="form-group" style="flex:0 0 auto"><button class="btn-add" onclick="addUrl()">Adicionar</button></div>
 </div>
 <div id="addError" class="error-msg"></div>
 </div>
 
 <!-- URLs -->
 <div class="card">
-<h2>🔗 URLs Monitoradas
-  <button class="btn-auto" id="btnScanAll" onclick="scanAll()">▶ Scan Tudo</button>
-  <button class="btn-auto" onclick="refresh()">↻ Refresh</button>
-</h2>
-<table>
-<thead><tr><th>ID</th><th>Nome</th><th>URL</th><th>Área</th><th>Fetch</th><th>Enabled</th><th>Last Fetch</th><th>Scans</th><th>Changes</th><th>Ações</th></tr></thead>
-<tbody id="urlTable"></tbody>
-</table>
+<div class="card-header">
+  <h2>🔗 URLs Monitoradas</h2>
+  <div class="card-header-actions">
+    <button class="btn-auto" id="btnScanAll" onclick="scanAll()">▶ Scan Tudo</button>
+    <button class="btn-auto" onclick="refresh()">↻ Refresh</button>
+  </div>
+</div>
+<div class="url-grid" id="urlGrid"><p class="loading">Carregando...</p></div>
 </div>
 
 <!-- Recent Scans -->
 <div class="card">
-<h2>📊 Scans Recentes</h2>
+<div class="card-header"><h2>📊 Scans Recentes</h2></div>
+<div class="table-scroll">
 <table>
-<thead><tr><th>Data/Hora</th><th>URL</th><th>Status</th><th>Type</th><th>Docs Criados</th><th>Docs Atualizados</th><th>Erro</th></tr></thead>
+<thead><tr><th>Data/Hora</th><th>URL</th><th>Status</th><th>Tipo</th><th>Docs+</th><th>Docs↻</th><th>Erro</th></tr></thead>
 <tbody id="scanTable"></tbody>
 </table>
+</div>
 </div>
 
 <!-- Extracted Links -->
 <div class="card">
-<h2>📎 Links Extraídos</h2>
+<div class="card-header"><h2>📎 Links Extraídos</h2></div>
 <div id="linksContainer"><p style="color:#888">Nenhum link extraído ainda.</p></div>
 </div>
 
@@ -185,24 +228,38 @@ async function refresh() {
     const sel = document.getElementById('fArea');
     sel.innerHTML = '<option value="">Nenhuma</option>' + areasCache.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
 
-    // URLs table
-    const tb = document.getElementById('urlTable');
+    // URLs card grid
+    const grid = document.getElementById('urlGrid');
     if (d.urls.length === 0) {
-      tb.innerHTML = '<tr><td colspan="10" class="loading">Nenhuma URL registrada. Adicione acima.</td></tr>';
+      grid.innerHTML = '<p class="empty-state">Nenhuma URL registrada. Adicione acima.</p>';
     } else {
-      tb.innerHTML = d.urls.map(u => `<tr>
-        <td>${u.id}</td><td>${esc(u.name)}</td>
-        <td><a href="${esc(u.url)}" target="_blank" class="url-link">${esc(shortUrl(u.url))}</a></td>
-        <td>${esc(areaNameById[u.area_id]) || '—'}</td><td>${modeBadge(u.fetch_mode)}</td>
-        <td><div class="toggle ${u.enabled?'on':''}" onclick="toggleEnabled(${u.id},${!u.enabled})"></div></td>
-        <td>${tsFmt(u.last_fetched_at)}</td>
-        <td>${u.total_scans||0}</td><td>${u.change_count||0}</td>
-        <td>
-          <button class="btn btn-scan" onclick="scanUrl(${u.id}, this)">Scan</button>
-          <button class="btn btn-links" onclick="extractLinks(${u.id}, this)">Links</button>
-          <button class="btn btn-del" onclick="delUrl(${u.id})">Remover</button>
-        </td>
-      </tr>`).join('');
+      grid.innerHTML = d.urls.map(u => `
+        <div class="url-card">
+          <div class="url-card-top">
+            <div class="url-card-name">
+              <div class="toggle ${u.enabled?'on':''}" title="${u.enabled?'Ativado':'Desativado'}" onclick="toggleEnabled(${u.id},${!u.enabled})"></div>
+              <h3 title="${esc(u.name)}">${esc(u.name)}</h3>
+            </div>
+            <span class="url-card-id">#${u.id}</span>
+          </div>
+          <a href="${esc(u.url)}" target="_blank" class="url-card-link">${esc(shortUrl(u.url))}</a>
+          <div class="url-card-meta">
+            <span class="chip">📁 ${esc(areaNameById[u.area_id]) || 'Sem área'}</span>
+            ${modeBadge(u.fetch_mode)}
+            <span class="chip">🕐 ${tsFmt(u.last_fetched_at)}</span>
+          </div>
+          <div class="url-card-stats">
+            <div><b>${u.total_scans||0}</b> scans</div>
+            <div><b>${u.change_count||0}</b> mudanças</div>
+            <div><b>${u.extracted_links||0}</b> links</div>
+          </div>
+          <div class="url-card-actions">
+            <button class="btn btn-scan" onclick="scanUrl(${u.id}, this)">🔍 Scan</button>
+            <button class="btn btn-links" onclick="extractLinks(${u.id}, this)">🔗 Links</button>
+            <button class="btn btn-del" onclick="delUrl(${u.id})">🗑 Remover</button>
+          </div>
+        </div>
+      `).join('');
     }
 
     // Scans table
@@ -238,7 +295,7 @@ function renderLinks(links) {
     <div style="margin-bottom:12px">
       <span class="expand-btn" onclick="toggleLinks('lk${i}')">${esc(name)} (${ls.length})</span>
       <div id="lk${i}" class="links-list">
-        ${ls.map(l => `<div style="padding:4px 0;border-bottom:1px solid #2a2a4a;font-size:.85rem"><b>${esc(l.name)}</b> — <code>${esc(l.url)}</code> [${l.link_type}] ${tsFmt(l.last_extracted_at)}</div>`).join('')}
+        ${ls.map(l => `<div class="link-row"><b>${esc(l.name)}</b> — <code>${esc(l.url)}</code> [${l.link_type}] ${tsFmt(l.last_extracted_at)}</div>`).join('')}
       </div>
     </div>`).join('');
 }
