@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Tutor SaaS — Portal</title>
+    <title>Oráculo — Portal</title>
     <link rel="stylesheet" href="style.css">
     <style>
         .status-bar { background: #1e293b; border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; border: 1px solid #334155; }
@@ -17,12 +17,14 @@
         .card-icon { font-size: 2.5rem; margin-bottom: 1rem; display: block; }
         .card h3 { color: #f8fafc; font-size: 1.3rem; margin-bottom: 0.75rem; }
         .card p { color: #94a3b8; line-height: 1.6; font-size: 0.95rem; }
+
+        .card.card-external h3::after { content: ' ↗'; color: #64748b; font-size: 0.9rem; }
     </style>
 </head>
 <body>
 
     <div class="header">
-        <h1 class="gradient">AI Tutor SaaS</h1>
+        <h1 class="gradient">Oráculo</h1>
         <p>Painel de gestão de tutoria inteligente por área temática</p>
     </div>
 
@@ -84,12 +86,29 @@
             </div>
         </div>
 
+        <!-- Manutenção -->
+        <h2 class="section-title">Manutenção</h2>
+        <div class="cards-grid">
+            <a href="#" id="monitorLink" class="card card-external" target="_blank" rel="noopener">
+                <span class="card-icon">&#128752;</span>
+                <h3>Monitor Agent</h3>
+                <p>Acompanhe o monitoramento de URLs externas, histórico de scans e status do RAG em tempo real.</p>
+            </a>
+
+            <a href="#" id="backupLink" class="card card-external" target="_blank" rel="noopener">
+                <span class="card-icon">&#128230;</span>
+                <h3>Backup Manager</h3>
+                <p>Gere e gerencie backups do banco de dados e do código dos projetos.</p>
+            </a>
+        </div>
+
     </div>
 
-    <div class="footer">AI Tutor SaaS &copy; <span id="year"></span></div>
+    <div class="footer">Oráculo &copy; <span id="year"></span></div>
 
 <script>
 const API = window.location.protocol + '//' + window.location.host;
+const HOST = window.location.hostname;
 
 async function loadStatus() {
     const dbEl = document.getElementById('db-status');
@@ -118,7 +137,13 @@ async function loadStatus() {
     }
 }
 
+function setupMaintenanceLinks() {
+    document.getElementById('monitorLink').href = `${window.location.protocol}//${HOST}:5003/`;
+    document.getElementById('backupLink').href = `${window.location.protocol}//${HOST}:5004/`;
+}
+
 document.getElementById('year').textContent = new Date().getFullYear();
+setupMaintenanceLinks();
 document.addEventListener('DOMContentLoaded', loadStatus);
 </script>
 </body>

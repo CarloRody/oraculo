@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Tutor - Chat</title>
+    <title>Oráculo - Chat</title>
     <link rel="stylesheet" href="style.css">
     <style>
         body { height: 100vh; display: flex; flex-direction: column; }
@@ -44,7 +44,7 @@
 
 <div class="chat-header">
     <a href="index.html" class="back-link">&larr; Portal</a>
-    <h1>&#128172; Chat com IA Tutor</h1>
+    <h1>&#128172; Chat com Oráculo</h1>
     <p>Pergunte sobre qualquer área e receba respostas fundamentadas nos documentos indexados.</p>
 </div>
 
@@ -150,7 +150,7 @@ function addMessage(role, content) {
         msgEl.innerHTML = `<div>${esc(content)}</div><div class="msg-meta">Você • ${new Date().toLocaleTimeString('pt-BR')}</div>`;
     } else {
         msgEl.classList.add('assistant-message');
-        msgEl.innerHTML = `<div>${esc(content).replace(/\n/g, '<br>')}</div><div class="msg-meta">AI Tutor • RAG Search</div>`;
+        msgEl.innerHTML = `<div>${esc(content).replace(/\n/g, '<br>')}</div><div class="msg-meta">Oráculo • RAG Search</div>`;
     }
     chatContainer.appendChild(msgEl);
     chatContainer.scrollTop = chatContainer.scrollHeight;
@@ -162,7 +162,7 @@ messageInput.addEventListener('keypress', function(e) {
 
 document.addEventListener('DOMContentLoaded', async function() {
     await loadAreas();
-    addMessage('assistant', 'Olá! Sou o AI Tutor. Selecione uma área no topo e faça sua pergunta.');
+    addMessage('assistant', 'Olá! Sou o Oráculo. Selecione uma área no topo e faça sua pergunta.');
 });
 </script>
 

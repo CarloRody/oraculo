@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI Tutor — Painel Admin</title>
+    <title>Oráculo — Painel Admin</title>
     <style>
         * { margin: 0; padding: 0; box-sizing: border-box; }
         body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a1628; color: #e0e0e0; min-height: 100vh; }
@@ -72,7 +72,7 @@
 
 <div class="header">
     <h1>&#128736; Painel Admin</h1>
-    <p>Gestão de áreas, documentos e configurações do AI Tutor SaaS</p>
+    <p>Gestão de áreas, documentos e configurações do Oráculo</p>
 </div>
 
 <div class="container">
@@ -314,9 +314,10 @@ async function loadHealth() {
 
 // ---- Init ----
 loadStats(); loadAreas(); loadDocs(); loadHealth();
+document.getElementById('footer-year').textContent = new Date().getFullYear();
 </script>
 
-<div class="footer">AI Tutor SaaS — Painel Administrativo &copy; ${new Date().getFullYear()}</div>
+<div class="footer">Oráculo — Painel Administrativo &copy; <span id="footer-year"></span></div>
 
 </body>
 </html>
