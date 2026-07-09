@@ -1,0 +1,217 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<title>Backup Manager</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem 1rem}
+h1{margin-bottom:.5rem;font-size:1.6rem;color:#38bdf8}
+.subtitle{color:#94a3b8;margin-bottom:2rem;font-size:.9rem}
+.container{width:100%;max-width:760px}
+
+/* Buttons */
+.btn-row{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:2rem}
+button,.btn{padding:.55rem 1.1rem;border:none;border-radius:8px;font-size:.85rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:.4rem;transition:all .15s}
+button:hover,.btn:hover{filter:brightness(1.1);transform:translateY(-1px)}
+.btn-db{background:#7c3aed;color:#fff}
+.btn-tutor{background:#0ea5e9;color:#fff}
+.btn-monitor{background:#10b981;color:#fff}
+.btn-all{background:#f59e0b;color:#1a1a2e;font-weight:700}
+.btn-del{background:#ef4444;color:#fff;padding:.3rem .6rem;font-size:.78rem;border-radius:6px}
+.btn-cancel{background:#475569;color:#fff}
+
+/* Status */
+.status-bar{padding:.6rem 1rem;border-radius:8px;margin-bottom:1.2rem;display:none;font-size:.85rem;align-items:center;gap:.5rem}
+.status-ok{display:flex;background:#064e3b40;border:1px solid #10b981;color:#6ee7b7}
+.status-err{display:flex;background:#7f1d1d40;border:1px solid #ef4444;color:#fca5a5}
+
+/* Table */
+table{width:100%;border-collapse:collapse;margin-top:.5rem}
+thead th{text-align:left;padding:.6rem .8rem;background:#1e293b;color:#94a3b8;font-size:.78rem;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #334155}
+tbody td{padding:.55rem .8rem;border-bottom:1px solid #1e293b;font-size:.85rem}
+tbody tr:hover{background:#1e293b60}
+.badge{display:inline-block;padding:.15rem .5rem;border-radius:999px;font-size:.72rem;font-weight:600}
+.badge-db{background:#7c3aed30;color:#c4b5fd}
+.badge-tutor{background:#0ea5e930;color:#7dd3fc}
+.badge-monitor{background:#10b98130;color:#a7f3d0}
+
+/* Progress */
+.progress-wrap{display:none;margin-bottom:1.2rem;background:#1e293b;border-radius:8px;padding:.8rem 1rem;font-size:.85rem}
+.progress-bar{height:6px;background:#334155;border-radius:3px;overflow:hidden;margin-top:.5rem}
+.progress-fill{height:100%;background:#38bdf8;border-radius:3px;width:0%;transition:width .4s ease;animation:pulse 1.2s infinite alternate}
+@keyframes pulse{from{opacity:.7}to{opacity:1}}
+
+/* Footer */
+.footer{margin-top:2rem;color:#475569;font-size:.75rem;text-align:center}
+</style>
+</head>
+<body>
+
+<h1>📦 Backup Manager</h1>
+<p class="subtitle">Gerenciamento de backups — AI Tutor SaaS & Monitor Agent</p>
+
+<div class="container">
+
+  <!-- Action buttons -->
+  <div class="btn-row">
+    <button onclick="backup('db')" class="btn-db" title="Backup do banco PostgreSQL">🗄️ Banco DB</button>
+    <button onclick="backup('tar','ai-tutor-saas')" class="btn-tutor" title="Backup código AI Tutor SaaS">📚 AI Tutor</button>
+    <button onclick="backup('tar','monitor-agent')" class="btn-monitor" title="Backup código Monitor Agent">🔍 Monitor Agent</button>
+    <button onclick="backupAll()" class="btn-all" title="Backup completo de tudo">⚡ Backup Completo</button>
+  </div>
+
+  <!-- Progress -->
+  <div id="progressWrap" class="progress-wrap">
+    <span id="progressLabel">Criando backup...</span>
+    <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
+  </div>
+
+  <!-- Status message -->
+  <div id="statusBar" class="status-bar"></div>
+
+  <!-- Backup list -->
+  <table>
+    <thead>
+      <tr><th>Arquivo</th><th>Tipo</th><th>Tamanho</th><th>Data</th><th>Ação</th></tr>
+    </thead>
+    <tbody id="backupList">
+      {% for b in backups %}
+      <tr data-name="{{ b.name }}">
+        <td>{{ b.name }}</td>
+        <td>
+          {% if 'db' in b.name %}<span class="badge badge-db">DB</span>{% endif %}
+          {% if 'tutor-saas' in b.name %}<span class="badge badge-tutor">Tutor</span>{% endif %}
+          {% if 'monitor-agent' in b.name %}<span class="badge badge-monitor">Monitor</span>{% endif %}
+        </td>
+        <td>{{ "%.1f"|format(b.size) }} MB</td>
+        <td>{{ b.modified }}</td>
+        <td><button onclick="deleteBackup('{{ b.name }}')" class="btn-del">🗑️ Excluir</button></td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+
+  <p class="footer">Dados em <code>/root/backup</code> | Porta 5004</p>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+
+function showProgress(label) {
+  $('progressWrap').style.display = 'block';
+  $('progressLabel').textContent = label;
+  $('progressFill').style.width = '100%';
+}
+function hideProgress() {
+  $('progressWrap').style.display = 'none';
+  $('progressFill').style.width = '0%';
+}
+
+function showStatus(ok, msg) {
+  const el = $('statusBar');
+  el.className = ok ? 'status-bar status-ok' : 'status-bar status-err';
+  el.innerHTML = (ok ? '✅ ' : '❌ ') + msg;
+  setTimeout(() => el.style.display = 'none', 8000);
+}
+
+// ── Criar backup individual ──
+async function backup(kind, project) {
+  const label = kind === 'db' ? 'Backup do banco...' : `Backup ${project || ''}`;
+  showProgress(label);
+  hideStatus();
+
+  const url = kind === 'db' ? '/api/backup/db' : `/api/backup/tar/${project}`;
+  try {
+    const res = await fetch(url, { method: 'POST' });
+    const data = await res.json();
+    showStatus(res.ok, data.message);
+    if (res.ok) refreshList();
+  } catch(e) {
+    showStatus(false, e.message || 'Erro de conexão');
+  } finally {
+    hideProgress();
+  }
+}
+
+// ── Backup completo ──
+async function backupAll() {
+  showProgress('Backup completo (DB + Tutor + Monitor)...');
+  hideStatus();
+  try {
+    const res = await fetch('/api/backup/all', { method: 'POST' });
+    const data = await res.json();
+    let msg = '';
+    for (const r of data.results) {
+      msg += `${r.name}: ${r.message}<br>`;
+    }
+    showStatus(res.ok, msg);
+    if (res.ok) refreshList();
+  } catch(e) {
+    showStatus(false, e.message || 'Erro de conexão');
+  } finally {
+    hideProgress();
+  }
+}
+
+function hideStatus() { $('statusBar').style.display = 'none'; }
+
+// ── Deletar backup ──
+async function deleteBackup(filename) {
+  if (!confirm(`Excluir "${filename}"?\nEsta ação é irreversível.`)) return;
+
+  try {
+    const res = await fetch('/api/backup/delete', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ filename })
+    });
+    const data = await res.json();
+    showStatus(res.ok, data.message);
+    if (res.ok) refreshList();
+  } catch(e) {
+    showStatus(false, e.message || 'Erro ao deletar');
+  }
+}
+
+// ── Atualizar lista via API ──
+async function refreshList() {
+  try {
+    const res = await fetch('/api/backups', { signal: AbortSignal.timeout(5000) });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const data = await res.json();
+    renderTable(data.backups);
+  } catch(e) {
+    // Não limpa a tabela em erro — mantém o que já estava visível
+    console.warn('Refresh falhou:', e.message);
+  }
+}
+
+function renderTable(backups) {
+  const tbody = $('backupList');
+  tbody.innerHTML = '';
+  for (const b of backups) {
+    let badge = '';
+    if (b.name.includes('db')) badge = '<span class="badge badge-db">DB</span>';
+    else if (b.name.includes('tutor-saas')) badge = '<span class="badge badge-tutor">Tutor</span>';
+    else if (b.name.includes('monitor-agent')) badge = '<span class="badge badge-monitor">Monitor</span>';
+
+    const tr = document.createElement('tr');
+    tr.dataset.name = b.name;
+    tr.innerHTML = `
+      <td>${b.name}</td>
+      <td>${badge}</td>
+      <td>${(b.size).toFixed(1)} MB</td>
+      <td>${b.modified}</td>
+      <td><button onclick="deleteBackup('${b.name}')" class="btn-del">🗑️ Excluir</button></td>
+    `;
+    tbody.appendChild(tr);
+  }
+}
+
+// Auto-refresh a cada 30s
+setInterval(refreshList, 30000);
+</script>
+
+</body>
+</html>
