@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Monitor Agent</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-system,sans-serif}
+.topbar{display:flex;align-items:center;justify-content:space-between;padding:16px 24px;background:#16213e;border-bottom:2px solid #0f3460}
+.topbar h1{font-size:1.4rem;color:#fff;display:flex;align-items:center;gap:8px}
+.health-dot{display:inline-block;width:12px;height:12px;border-radius:50%;background:#666;margin-right:4px}
+.health-dot.ok{background:#00b894}.health-dot.err{background:#e94560}
+.refresh-info{font-size:.8rem;color:#888}
+.container{max-width:1400px;margin:0 auto;padding:20px 24px}
+.stats-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:16px;margin-bottom:24px}
+.stat-card{background:#16213e;border-radius:8px;padding:20px;text-align:center;border-left:4px solid #0f3460}
+.stat-card .num{font-size:2rem;font-weight:700;color:#fff}
+.stat-card .label{font-size:.85rem;color:#aaa;margin-top:4px}
+.card{background:#16213e;border-radius:8px;padding:20px;margin-bottom:20px;border:1px solid #0f3460}
+.card h2{margin-bottom:16px;font-size:1.1rem;color:#fff;display:flex;align-items:center;gap:8px}
+table{width:100%;border-collapse:collapse;font-size:.85rem}
+th{text-align:left;padding:10px 12px;background:#0f3460;color:#fff;font-weight:600;border-bottom:2px solid #e94560}
+td{padding:10px 12px;border-bottom:1px solid #2a2a4a}
+tr:hover td{background:#1f2b47}
+.badge{display:inline-block;padding:3px 10px;border-radius:12px;font-size:.75rem;font-weight:600;text-transform:uppercase}
+.badge-unchanged{background:#2d5a3d;color:#00b894}.badge-changed{background:#5a4a2d;color:#fdcb6e}
+.badge-new{background:#2d4a5a;color:#74b9ff}.badge-error{background:#5a2d2d;color:#e94560}
+.btn{padding:6px 14px;border:none;border-radius:4px;cursor:pointer;font-size:.8rem;font-weight:600;margin-right:6px;transition:.2s}
+.btn-scan{background:#0f3460;color:#fff}.btn-scan:hover{background:#1a5276}
+.btn-del{background:#e94560;color:#fff}.btn-del:hover{background:#c0392b}
+.btn-extract{background:#2d5a3d;color:#fff}.btn-extract:hover{background:#1abc9c}
+.form-row{display:flex;gap:12px;margin-bottom:12px;flex-wrap:wrap;align-items:end}
+.form-group{display:flex;flex-direction:column;gap:4px}
+.form-group label{font-size:.75rem;color:#aaa;text-transform:uppercase;font-weight:600}
+input,select{background:#1a1a2e;border:1px solid #0f3460;color:#fff;padding:8px 12px;border-radius:4px;font-size:.9rem}
+input:focus,select:focus{outline:none;border-color:#e94560}
+.btn-add{background:#00b894;color:#fff;padding:8px 20px;border:none;border-radius:4px;cursor:pointer;font-weight:700}
+.toggle{position:relative;width:44px;height:24px;background:#333;border-radius:12px;cursor:pointer}
+.toggle.on{background:#00b894}.toggle::after{content:'';position:absolute;top:3px;left:3px;width:18px;height:18px;background:#fff;border-radius:50%;transition:.2s}
+.toggle.on::after{left:23px}
+.expand-btn{cursor:pointer;color:#74b9ff;font-weight:600;text-decoration:underline}
+.links-list{margin-top:8px;padding-left:16px;display:none}
+.links-list.open{display:block}
+.loading{text-align:center;padding:40px;color:#888}
+.error-msg{color:#e94560;font-size:.8rem;margin-top:8px}
+.btn-auto{background:#0f3460;color:#fff;padding:4px 12px;border:none;border-radius:4px;cursor:pointer;font-size:.75rem}
+.url-link{color:#74b9ff;text-decoration:none}.url-link:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<div class="topbar">
+<h1><span id="healthDot" class="health-dot"></span>Monitor Agent</h1>
+<span class="refresh-info" id="refreshInfo">Atualizado: --</span>
+</div>
+
+<div class="container">
+
+<!-- Stats -->
+<div class="stats-row" id="statsRow">
+  <div class="stat-card"><div class="num" id="sUrls">-</div><div class="label">URLs Registradas</div></div>
+  <div class="stat-card"><div class="num" id="sScans">-</div><div class="label">Scans Realizados</div></div>
+  <div class="stat-card"><div class="num" id="sDocs">-</div><div class="label">Docs Tutor RAG</div></div>
+  <div class="stat-card"><div class="num" id="sChunks">-</div><div class="label">Chunks Indexados</div></div>
+</div>
+
+<!-- Add URL -->
+<div class="card">
+<h2>➕ Adicionar URL para Monitorar</h2>
+<div class="form-row">
+  <div class="form-group"><label>Nome</label><input id="fName" placeholder="Ex: NF-e MOC 7.0"></div>
+  <div class="form-group"><label>URL</label><input id="fUrl" placeholder="https://..."></div>
+  <div class="form-group"><label>Área</label><select id="fArea"><option value="">Nenhuma</option></select></div>
+  <div class="form-group"><label>Fetch Mode</label><select id="fMode"><option value="http">HTTP</option><option value="js_browser">JS Browser</option></select></div>
+  <div class="form-group" style="align-self:end"><button class="btn-add" onclick="addUrl()">Adicionar</button></div>
+</div>
+<div id="addError" class="error-msg"></div>
+</div>
+
+<!-- URLs -->
+<div class="card">
+<h2>🔗 URLs Monitoradas <button class="btn-auto" onclick="refresh()">↻ Refresh</button></h2>
+<table>
+<thead><tr><th>ID</th><th>Nome</th><th>URL</th><th>Área</th><th>Fetch</th><th>Enabled</th><th>Last Fetch</th><th>Scans</th><th>Changes</th><th>Ações</th></tr></thead>
+<tbody id="urlTable"></tbody>
+</table>
+</div>
+
+<!-- Recent Scans -->
+<div class="card">
+<h2>📊 Scans Recentes</h2>
+<table>
+<thead><tr><th>Data/Hora</th><th>URL</th><th>Status</th><th>Type</th><th>Docs Criados</th><th>Docs Atualizados</th><th>Erro</th></tr></thead>
+<tbody id="scanTable"></tbody>
+</table>
+</div>
+
+<!-- Extracted Links -->
+<div class="card">
+<h2>📎 Links Extraídos</h2>
+<div id="linksContainer"><p style="color:#888">Nenhum link extraído ainda.</p></div>
+</div>
+
+</div>
+
+<script>
+const BASE = window.location.origin;
+let refreshInterval;
+let areasCache = [];
+
+async function api(path, opts={}) {
+  const r = await fetch(BASE + path, opts);
+  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  return r.json();
+}
+
+function tsFmt(s) {
+  if (!s) return '—';
+  try { return new Date(s).toLocaleString('pt-BR'); } catch(e) { return s; }
+}
+function statusBadge(st) {
+  const cls = st === 'unchanged' ? 'badge-unchanged' : st === 'changed' ? 'badge-changed' : st === 'new' ? 'badge-new' : 'badge-error';
+  return `<span class="badge ${cls}">${st}</span>`;
+}
+
+async function refresh() {
+  try {
+    const [d, stats] = await Promise.all([api('/dashboard'), api('/stats')]);
+    
+    // Stats
+    document.getElementById('sUrls').textContent = d.urls.length || stats.urls_registered;
+    document.getElementById('sScans').textContent = stats.scans_performed;
+    document.getElementById('sDocs').textContent = d.tutor_stats.documents;
+    document.getElementById('sChunks').textContent = d.tutor_stats.chunks;
+
+    // Areas dropdown
+    areasCache = (d.areas || []);
+    const sel = document.getElementById('fArea');
+    sel.innerHTML = '<option value="">Nenhuma</option>' + areasCache.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+
+    // URLs table
+    const tb = document.getElementById('urlTable');
+    if (d.urls.length === 0) {
+      tb.innerHTML = '<tr><td colspan="10" class="loading">Nenhuma URL registrada. Adicione acima.</td></tr>';
+    } else {
+      tb.innerHTML = d.urls.map(u => `<tr>
+        <td>${u.id}</td><td>${esc(u.name)}</td>
+        <td><a href="${esc(u.url)}" target="_blank" class="url-link">${esc(shortUrl(u.url))}</a></td>
+        <td>${u.area_id || '—'}</td><td>${u.fetch_mode}</td>
+        <td><div class="toggle ${u.enabled?'on':''}" onclick="toggleEnabled(${u.id},${!u.enabled})"></div></td>
+        <td>${tsFmt(u.last_fetched_at)}</td>
+        <td>${u.total_scans||0}</td><td>${u.change_count||0}</td>
+        <td><button class="btn btn-scan" onclick="scanUrl(${u.id})">Scan</button><button class="btn btn-del" onclick="delUrl(${u.id})">Del</button></td>
+      </tr>`).join('');
+    }
+
+    // Scans table
+    const stb = document.getElementById('scanTable');
+    if (d.recent_scans.length === 0) {
+      stb.innerHTML = '<tr><td colspan="7" class="loading">Nenhum scan realizado ainda.</td></tr>';
+    } else {
+      stb.innerHTML = d.recent_scans.map(s => `<tr>
+        <td>${tsFmt(s.scanned_at)}</td><td>${esc(s.url_name||'')}</td>
+        <td>${statusBadge(s.status)}</td><td>${s.change_type||''}</td>
+        <td>${s.docs_created||0}</td><td>${s.docs_updated||0}</td>
+        <td>${s.error_message?esc(s.error_message):'—'}</td>
+      </tr>`).join('');
+    }
+
+    // Links
+    renderLinks(d.extracted_links);
+
+    document.getElementById('refreshInfo').textContent = 'Atualizado: ' + new Date().toLocaleTimeString('pt-BR');
+  } catch(e) {
+    console.error('Refresh error:', e);
+  }
+}
+
+function renderLinks(links) {
+  const c = document.getElementById('linksContainer');
+  if (!links.length) { c.innerHTML = '<p style="color:#888">Nenhum link extraído ainda.</p>'; return; }
+  // Group by parent
+  const g = {};
+  links.forEach(l => { (g[l.parent_name] = g[l.parent_name] || []).push(l); });
+  c.innerHTML = Object.entries(g).map(([name, ls], i) => `
+    <div style="margin-bottom:12px">
+      <span class="expand-btn" onclick="toggleLinks('lk${i}')">${esc(name)} (${ls.length})</span>
+      <div id="lk${i}" class="links-list">
+        ${ls.map(l => `<div style="padding:4px 0;border-bottom:1px solid #2a2a4a;font-size:.85rem"><b>${esc(l.name)}</b> — <code>${esc(l.url)}</code> [${l.link_type}] ${tsFmt(l.last_extracted_at)}</div>`).join('')}
+      </div>
+    </div>`).join('');
+}
+
+function toggleLinks(id) { const el=document.getElementById(id); el.classList.toggle('open'); }
+function esc(s) { return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''; }
+function shortUrl(u) { try { const x=new URL(u); return x.hostname+(x.pathname||''); } catch(e) { return u.substring(0,60)+'...'; } }
+
+async function addUrl() {
+  const err = document.getElementById('addError');
+  const name = document.getElementById('fName').value.trim();
+  const url = document.getElementById('fUrl').value.trim();
+  const areaId = document.getElementById('fArea').value || null;
+  const mode = document.getElementById('fMode').value;
+  if (!name || !url) { err.textContent='Nome e URL são obrigatórios.'; return; }
+  try {
+    await api('/urls', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({name,url,area_id:+areaId||null,fetch_mode:mode,enabled:true}) });
+    err.textContent=''; document.getElementById('fName').value=''; document.getElementById('fUrl').value='';
+    refresh();
+  } catch(e) { err.textContent='Erro ao adicionar: '+e.message; }
+}
+
+async function scanUrl(id) { try { await api('/scan/'+id, {method:'POST'}); refresh(); } catch(e) { alert('Scan error: '+e.message); } }
+async function delUrl(id) { if(!confirm('Excluir esta URL?')) return; try { await api('/urls/'+id,{method:'DELETE'}); refresh(); } catch(e){alert(e.message);} }
+async function toggleEnabled(id,val) { try { await api('/urls/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:val})}); refresh(); } catch(e){alert(e.message);} }
+async function extractLinks(urlId) { try { const r=await api('/links/extract',{'url_id':urlId},{method:'POST'}); alert('Encontrados: '+r.links_found+' links.'); refresh(); } catch(e){alert(e.message);} }
+
+// Health check
+async function checkHealth() {
+  try {
+    const d = await api('/health');
+    const dot = document.getElementById('healthDot');
+    if (d.db_connected) { dot.className='health-dot ok'; } else { dot.className='health-dot err'; }
+  } catch(e) { document.getElementById('healthDot').className='health-dot err'; }
+}
+
+// Init
+refresh();
+checkHealth();
+// Auto-refresh every 30s
+refreshInterval = setInterval(refresh, 30000);
+setInterval(checkHealth, 60000);
+</script>
+</body>
+</html>

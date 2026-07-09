@@ -1,0 +1,281 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Tutor — Painel Admin</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a1628; color: #e0e0e0; min-height: 100vh; }
+        .header { text-align: center; padding: 3rem 1rem; border-bottom: 1px solid #1a2744; }
+        .header h1 { font-size: 2.5rem; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }
+        .header p { color: #94a3b8; font-size: 1.1rem; max-width: 600px; margin: 0 auto; }
+        a.back-link { color: #60a5fa; text-decoration: none; position: absolute; left: 2rem; top: 2.5rem; font-size: 1rem; }
+        a.back-link:hover { text-decoration: underline; }
+        .container { max-width: 1200px; margin: 0 auto; padding: 2rem 1rem; position: relative; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 0.5rem; margin-bottom: 2rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
+        .tab-btn { background: none; border: none; color: #94a3b8; font-size: 1rem; padding: 0.75rem 1.5rem; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; }
+        .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+
+        /* Cards */
+        .card-list { display: flex; flex-direction: column; gap: 1rem; }
+        .card-item { background: #1e293b; border-radius: 8px; padding: 1.5rem; border: 1px solid #334155; }
+        .card-item h3 { color: #f8fafc; margin-bottom: 0.5rem; }
+        .card-item p { color: #94a3b8; font-size: 0.9rem; }
+
+        /* Buttons */
+        .btn { background: #60a5fa; color: #0a1628; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; margin-right: 0.5rem; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn-sm { padding: 0.4rem 0.8rem; font-size: 0.8rem; }
+
+        /* Forms */
+        .form-group { margin-bottom: 1rem; }
+        .form-group label { display: block; color: #94a3b8; margin-bottom: 0.5rem; font-size: 0.9rem; }
+        .form-input { background: #0f172a; border: 1px solid #334155; color: #e0e0e0; padding: 0.6rem 1rem; border-radius: 6px; width: 100%; font-size: 0.95rem; }
+        .form-input:focus { outline: none; border-color: #60a5fa; }
+
+        /* Stats */
+        .stats-row { display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }
+        .stat-card { background: #1e293b; border-radius: 8px; padding: 1.5rem; flex: 1; min-width: 150px; text-align: center; border: 1px solid #334155; }
+        .stat-value { font-size: 2rem; color: #60a5fa; font-weight: 700; }
+        .stat-label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; margin-top: 0.5rem; }
+
+        /* Modal */
+        .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: center; }
+        .modal-overlay.active { display: flex; }
+        .modal { background: #1e293b; border-radius: 12px; padding: 2rem; max-width: 500px; width: 90%; border: 1px solid #334155; }
+        .modal h2 { margin-bottom: 1.5rem; color: #f8fafc; }
+        .modal-actions { display: flex; gap: 1rem; justify-content: flex-end; margin-top: 1.5rem; }
+
+        /* Table */
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid #334155; }
+        th { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
+
+        .footer { text-align: center; padding: 2rem; border-top: 1px solid #1a2744; margin-top: 3rem; color: #64748b; }
+    </style>
+</head>
+<body>
+
+<div class="header">
+    <h1>&#128736; Painel Admin</h1>
+    <p>Gestão de áreas, documentos e configurações do AI Tutor SaaS</p>
+</div>
+
+<div class="container">
+    <a href="index.html" class="back-link">&#8592; Voltar ao Portal</a>
+
+    <!-- Stats -->
+    <div class="stats-row" id="stats"></div>
+
+    <!-- Tabs -->
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('areas')">Áreas</button>
+        <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
+        <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
+    </div>
+
+    <!-- ÁREAS -->
+    <div id="areas-tab" class="tab-content active">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+            <h2 class="section-title" style="border:none; padding:0; margin:0;">Áreas Temáticas</h2>
+            <button class="btn" onclick="showAreaModal()">+ Nova Área</button>
+        </div>
+        <div id="areas-list" class="card-list"></div>
+    </div>
+
+    <!-- DOCUMENTOS -->
+    <div id="documents-tab" class="tab-content">
+        <h2 style="color:#60a5fa; margin-bottom:1.5rem;">Documentos</h2>
+        <div id="docs-list" class="card-list"></div>
+    </div>
+
+    <!-- SAÚDE -->
+    <div id="health-tab" class="tab-content">
+        <h2 style="color:#60a5fa; margin-bottom:1.5rem;">Saúde do Sistema</h2>
+        <div id="health-info"></div>
+    </div>
+</div>
+
+<!-- Modal Nova/Editar Área -->
+<div class="modal-overlay" id="areaModal">
+    <div class="modal">
+        <h2 id="areaModalTitle">Nova Área</h2>
+        <input type="hidden" id="editAreaId">
+        <div class="form-group">
+            <label>Nome da Área</label>
+            <input type="text" class="form-input" id="areaName" placeholder="Ex: Engenharia, Matemática...">
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeAreaModal()">Cancelar</button>
+            <button class="btn" onclick="saveArea()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Editar Documento -->
+<div class="modal-overlay" id="docEditModal">
+    <div class="modal">
+        <h2>Editar Documento</h2>
+        <input type="hidden" id="editDocId">
+        <div class="form-group">
+            <label>Nome do Documento</label>
+            <input type="text" class="form-input" id="docEditName">
+        </div>
+        <div class="form-group">
+            <label>Área</label>
+            <select class="form-input" id="docEditArea"></select>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeDocEditModal()">Cancelar</button>
+            <button class="btn" onclick="saveDocEdit()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const ADMIN_API = window.location.protocol + '//' + window.location.host;
+
+// ---- Tabs ----
+function switchTab(name) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(name + '-tab').classList.add('active');
+    event.target.classList.add('active');
+}
+
+// ---- Stats ----
+async function loadStats() {
+    try {
+        const [areasRes, docsRes] = await Promise.all([
+            fetch(ADMIN_API + '/admin/areas'),
+            fetch(ADMIN_API + '/admin/documents')
+        ]);
+        const areasData = await areasRes.json();
+        const docsData = await docsRes.json();
+        document.getElementById('stats').innerHTML = `
+            <div class="stat-card"><div class="stat-value">${areasData.total || 0}</div><div class="stat-label">Áreas</div></div>
+            <div class="stat-card"><div class="stat-value">${docsData.total || 0}</div><div class="stat-label">Documentos</div></div>
+        `;
+    } catch(e) {
+        document.getElementById('stats').innerHTML = `<div class="stat-card"><div class="stat-label" style="color:#ef4444;">Erro ao conectar com admin server (porta 5002)</div></div>`;
+    }
+}
+
+// ---- Áreas ----
+async function loadAreas() {
+    try {
+        const res = await fetch(ADMIN_API + '/admin/areas');
+        const data = await res.json();
+        const areas = data.areas || [];
+        if (!areas.length) { document.getElementById('areas-list').innerHTML = '<p style="color:#64748b;">Nenhuma área cadastrada.</p>'; return; }
+        document.getElementById('areas-list').innerHTML = areas.map(a => `
+            <div class="card-item">
+                <h3>${a.name}</h3>
+                <p>ID: ${a.id} • Docs: ${a.doc_count || 0} • Slug: ${a.slug || '-'}</p>
+                <div style="margin-top:0.75rem;">
+                    <button class="btn btn-sm" onclick='showAreaModal(${JSON.stringify(a).replace(/'/g, "\\'")})'>Editar</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteArea(${a.id}, '${a.name}')">Excluir</button>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) { document.getElementById('areas-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar áreas.</p>'; }
+}
+
+function showAreaModal(area) {
+    document.getElementById('areaModal').classList.add('active');
+    if (area) {
+        document.getElementById('areaModalTitle').textContent = 'Editar Área';
+        document.getElementById('editAreaId').value = area.id;
+        document.getElementById('areaName').value = area.name;
+    } else {
+        document.getElementById('areaModalTitle').textContent = 'Nova Área';
+        document.getElementById('editAreaId').value = '';
+        document.getElementById('areaName').value = '';
+    }
+}
+
+function closeAreaModal() { document.getElementById('areaModal').classList.remove('active'); }
+
+async function saveArea() {
+    const id = document.getElementById('editAreaId').value;
+    const name = document.getElementById('areaName').value.trim();
+    if (!name) return alert('Nome é obrigatório.');
+    try {
+        if (id) {
+            await fetch(ADMIN_API + `/admin/areas/${id}`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
+        } else {
+            await fetch(ADMIN_API + '/admin/areas', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
+        }
+        closeAreaModal();
+        loadAreas(); loadStats();
+    } catch(e) { alert('Erro ao salvar área.'); }
+}
+
+async function deleteArea(id, name) {
+    if (!confirm(`Excluir a área "${name}"?`)) return;
+    try { await fetch(ADMIN_API + `/admin/areas/${id}`, { method: 'DELETE' }); loadAreas(); loadStats(); } catch(e) { alert('Erro ao excluir.'); }
+}
+
+// ---- Documentos ----
+async function loadDocs() {
+    try {
+        const res = await fetch(ADMIN_API + '/admin/documents');
+        const data = await res.json();
+        const docs = data.documents || [];
+        if (!docs.length) { document.getElementById('docs-list').innerHTML = '<p style="color:#64748b;">Nenhum documento cadastrado.</p>'; return; }
+        document.getElementById('docs-list').innerHTML = docs.map(d => `
+            <div class="card-item">
+                <h3>${d.name}</h3>
+                <p>ID: ${d.id} • Área: ${d.area_name || '-'} • Status: ${d.processing_status || '-'}</p>
+                <p>URL: ${d.url || '—'} • Chunks: ${d.chunk_count || 0}</p>
+                <div style="margin-top:0.75rem;">
+                    <button class="btn btn-sm" onclick="reprocessDoc(${d.id})">Reprocessar RAG</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id}, '${d.name}')">Excluir</button>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) { document.getElementById('docs-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar documentos.</p>'; }
+}
+
+async function reprocessDoc(id) {
+    if (!confirm('Reprocessar RAG deste documento?')) return;
+    try { await fetch(ADMIN_API + `/admin/documents/${id}/reprocess`, { method: 'POST' }); alert('Reprocessamento iniciado.'); loadDocs(); } catch(e) { alert('Erro no reprocessamento.'); }
+}
+
+async function deleteDoc(id, title) {
+    if (!confirm(`Excluir "${title}"?`)) return;
+    try { await fetch(ADMIN_API + `/admin/documents/${id}`, { method: 'DELETE' }); loadDocs(); loadStats(); } catch(e) { alert('Erro ao excluir.'); }
+}
+
+// ---- Health ----
+async function loadHealth() {
+    try {
+        const res = await fetch(ADMIN_API + '/api/health');
+        const data = await res.json();
+        document.getElementById('health-info').innerHTML = `
+            <div class="card-item">
+                <h3>${data.ok ? '✅ Sistema Operacional' : '❌ Erro'}</h3>
+                <table>
+                    <tr><td>Serviço</td><td>${data.service || '-'}</td></tr>
+                    <tr><td>Porta</td><td>${data.port || '-'}</td></tr>
+                    <tr><td>Banco de Dados</td><td style="color:${data.db_connected ? '#22c55e' : '#ef4444'}">${data.db_connected ? 'Conectado' : 'Desconectado'}</td></tr>
+                    <tr><td>Áreas cadastradas</td><td>${data.area_count || 0}</td></tr>
+                </table>
+            </div>
+        `;
+    } catch(e) { document.getElementById('health-info').innerHTML = '<p style="color:#ef4444;">Não foi possível conectar ao admin server.</p>'; }
+}
+
+// ---- Init ----
+loadStats(); loadAreas(); loadDocs(); loadHealth();
+</script>
+
+<div class="footer">AI Tutor SaaS — Painel Administrativo &copy; ${new Date().getFullYear()}</div>
+
+</body>
+</html>

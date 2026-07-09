@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI Tutor - RAG Search</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a1628; color: #e0e0e0; min-height: 100vh; }
+
+        .header { text-align: center; padding: 2rem 1rem; border-bottom: 1px solid #1a2744; }
+        .header h1 { font-size: 2rem; color: #60a5fa; margin-bottom: 0.5rem; }
+
+        /* Tabs */
+        .tabs { display: flex; gap: 1rem; padding: 0 1rem; border-bottom: 1px solid #334155; margin-top: 2rem; }
+        .tab { padding: 1rem 2rem; cursor: pointer; color: #64748b; border-bottom: 2px solid transparent; transition: all 0.2s; }
+        .tab.active { color: #60a5fa; border-bottom-color: #60a5fa; font-weight: 600; }
+
+        /* Content */
+        .content-area { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; }
+
+        /* Search box */
+        .search-box { background: #1e293b; border-radius: 12px; padding: 2rem; border: 1px solid #334155; margin-bottom: 2rem; }
+        .search-input-group { display: flex; gap: 1rem; margin-top: 1.5rem; }
+        .search-input-group input[type="text"] { flex: 1; padding: 0.75rem 1rem; background: #1e293b; border: 1px solid #334155; color: #f8fafc; border-radius: 8px; font-size: 1rem; }
+        .search-input-group select { padding: 0.75rem 1rem; background: #1e293b; border: 1px solid #334155; color: #f8fafc; border-radius: 8px; font-size: 1rem; min-width: 180px; }
+        .search-input-group input:focus, select:focus { outline: none; border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.1); }
+
+        /* Buttons */
+        .btn-primary { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: all 0.2s; }
+        .btn-primary:hover { transform: scale(1.02); box-shadow: 0 4px 15px rgba(96, 165, 250, 0.3); }
+
+        /* Results */
+        .results-area { margin-top: 1rem; }
+        .result-item { background: #1e293b; border-radius: 8px; padding: 1.25rem; margin-bottom: 1rem; border-left: 4px solid #60a5fa; }
+        .result-doc { color: #60a5fa; font-size: 0.85rem; margin-bottom: 0.5rem; text-transform: uppercase; letter-spacing: 0.5px; }
+        .result-text { color: #e2e8f0; line-height: 1.7; font-size: 0.95rem; }
+        .result-meta { color: #64748b; font-size: 0.8rem; margin-top: 0.5rem; }
+
+        /* Loading */
+        .loading { text-align: center; padding: 2rem; color: #64748b; display: none; }
+
+        /* Back link */
+        .back-link { display: inline-block; color: #64748b; text-decoration: none; padding: 1rem; border-bottom: 1px solid #334155; font-size: 0.9rem; }
+    </style>
+</head>
+<body>
+
+<a href="index.html" class="back-link">&larr; Voltar ao Portal</a>
+
+<div class="header">
+    <h1>&#128269; RAG Search</h3>
+    <p style="color: #94a3b8;">Busca semântica nos documentos indexados por área temática</p>
+</div>
+
+<!-- Tabs -->
+<div class="tabs">
+    <div class="tab active" onclick="showTab('search')">&#128269; Busca</div>
+    <div class="tab" onclick="showTab('advanced')">&#9881; Avançado</div>
+</div>
+
+<!-- Content Area -->
+<div class="content-area">
+
+    <!-- Tab: Search -->
+    <form id="searchForm">
+        <h3 style="color: #60a5fa; margin-bottom: 1.5rem;">Pesquisar nos documentos indexados</h3>
+        
+        <div class="search-box">
+            <label for="areaSelect">Área temática:</label>
+            <select id="areaSelect" required>
+                <option value="">Selecione uma área...</option>
+                <!-- Preenchido dinamicamente pelo backend -->
+            </select>
+
+            <div class="search-input-group">
+                <input type="text" id="queryInput" placeholder="O que você deseja pesquisar?" required />
+            </div>
+
+            <button type="submit" class="btn-primary">&#128640; Pesquisar RAG</button>
+        </div>
+    </form>
+
+    <!-- Tab: Advanced -->
+    <form id="advancedForm">
+        <h3 style="color: #60a5fa; margin-bottom: 1.5rem;">Pesquisa avançada</h3>
+        
+        <div class="search-box">
+            <label for="areaSelectAdvanced">Área temática:</label>
+            <select id="areaSelectAdvanced" required>
+                <option value="">Selecione uma área...</option>
+            </select>
+
+            <div class="form-group" style="margin-top: 1.5rem;">
+                <label for="advancedQuery">Pergunta:</label>
+                <input type="text" id="advancedQuery" placeholder="Sua pergunta aqui..." required />
+            </div>
+
+            <div class="form-group">
+                <label for="topK">Número de resultados (k):</label>
+                <input type="number" id="topK" value="4" min="1" max="20" />
+            </div>
+
+            <button type="submit" class="btn-primary">&#128640; Pesquisar Avançada</button>
+        </div>
+    </form>
+
+</div>
+
+<!-- Results -->
+<div class="content-area">
+    <h3 style="color: #a78bfa;">Resultados da pesquisa</h3>
+    <div id="resultsArea"></div>
+</div>
+
+<!-- Loading indicator -->
+<div class="loading" id="loading">Carregando resultados...</div>
+
+<script>
+// ============================================
+// AI Tutor SaaS - RAG Search (Frontend)
+// ============================================
+
+const API = window.location.protocol + '//' + window.location.host;
+
+// Carregar áreas do backend
+async function loadAreas() {
+    try {
+        const res = await fetch(`${API}/api/areas`);
+        const data = await res.json();
+        if (!data.areas) return;
+        const optionsHtml = '<option value="">Selecione uma área...</option>' +
+            data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+        document.getElementById('areaSelect').innerHTML = optionsHtml;
+        document.getElementById('areaSelectAdvanced').innerHTML = optionsHtml;
+    } catch (err) {
+        console.error('Erro ao carregar áreas:', err);
+        alert('Não foi possível conectar à API.');
+    }
+}
+
+// Função para renderizar documentos incorporados
+function renderDocuments() {
+    const listEl = document.getElementById('doc-list');
+    if (documents.length === 0) {
+        listEl.innerHTML = '<p style="color: #64748b; text-align: center;">Nenhum documento incorporado ainda.</p>';
+        return;
+    }
+
+    let html = '';
+    documents.forEach(doc => {
+        const icon = doc.type === 'link' ? '&#127760;' : '&#128193;';
+        html += `
+            <div class="doc-item">
+                <div>
+                    <span class="doc-info">${icon} ${doc.name}</span>
+                    <div class="doc-meta">${doc.type === 'link' ? 'Link externo' : 'Arquivo local'} • ID: ${doc.id}</div>
+                </div>
+            </div>`;
+    });
+
+    listEl.innerHTML = html;
+}
+
+// Alternar tabs (link vs arquivo)
+function showTab(tabType) {
+    const searchForm = document.getElementById('searchForm');
+    const advancedForm = document.getElementById('advancedForm');
+
+    // Esconde todos e mostra o selecionado
+    if (tabType === 'search') {
+        searchForm.style.display = 'block';
+        advancedForm.style.display = 'none';
+    } else {
+        searchForm.style.display = 'none';
+        advancedForm.style.display = 'block';
+    }
+
+    // Atualiza tabs visualmente
+    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
+    event.target.classList.add('active');
+}
+
+// Submit do formulário de busca RAG
+document.getElementById('searchForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const query = document.getElementById('queryInput').value;
+    const areaId = document.getElementById('areaSelect').value;
+
+    if (!areaId || !query) {
+        alert('Selecione uma área e faça uma pesquisa.');
+        return;
+    }
+
+    performSearch(query, areaId);
+});
+
+// Submit do formulário de busca avançada RAG
+document.getElementById('advancedForm').addEventListener('submit', function(e) {
+    e.preventDefault();
+    const query = document.getElementById('advancedQuery').value;
+    const areaId = document.getElementById('areaSelectAdvanced').value;
+    const topK = document.getElementById('topK').value;
+
+    if (!areaId || !query) {
+        alert('Selecione uma área e faça uma pesquisa.');
+        return;
+    }
+
+    performSearch(query, areaId);
+});
+
+// Busca RAG real via API
+async function performSearch(query, areaId) {
+    document.getElementById('loading').style.display = 'block';
+    document.getElementById('resultsArea').innerHTML = '';
+
+    try {
+        const res = await fetch(`${API}/api/search`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ query, area_id: parseInt(areaId) })
+        });
+        const data = await res.json();
+        document.getElementById('loading').style.display = 'none';
+
+        if (data.error) {
+            document.getElementById('resultsArea').innerHTML = `<p style="color:#ef4444;">Erro: ${data.error}</p>`;
+            return;
+        }
+
+        const results = data.results || [];
+        let html = '';
+        if (results.length === 0) {
+            html = '<p style="text-align:center; color:#64748b;">Nenhum resultado encontrado.</p>';
+        } else {
+            // Nome da área
+            const areaRes = await fetch(`${API}/api/areas`);
+            const areasData = await areaRes.json();
+            const areaName = (areasData.areas || []).find(a => a.id == areaId)?.name || 'Área';
+
+            html += `<div style="color: #a78bfa; margin-bottom: 1rem;">${results.length} resultado(s) para "${query}" na área de ${areaName}:</div>`;
+            results.forEach(r => {
+                html += `
+                    <div class="result-item">
+                        <div class="result-doc">${r.doc_name || 'Documento'} • Doc #${r.doc_id} • Score: ${r.score}</div>
+                        <div class="result-text">${(r.chunk_text || '').substring(0, 400)}</div>
+                    </div>`;
+            });
+        }
+        document.getElementById('resultsArea').innerHTML = html;
+    } catch (err) {
+        console.error(err);
+        document.getElementById('loading').style.display = 'none';
+        document.getElementById('resultsArea').innerHTML = '<p style="color:#ef4444;">Erro ao conectar com a API.</p>';
+    }
+}
+
+// Enter key triggers search
+document.getElementById('queryInput').addEventListener('keypress', function(e) {
+    if (e.key === 'Enter') performSearch(document.getElementById('queryInput').value, document.getElementById('areaSelect').value);
+});
+
+// Inicialização
+document.addEventListener('DOMContentLoaded', function() {
+    loadAreas();
+});
+</script>
+
+</body>
+</html>

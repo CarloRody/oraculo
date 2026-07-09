@@ -1,0 +1,19 @@
+# Monitor Agent API — Configuration
+
+server:
+  host: "0.0.0.0"
+  port: 5003
+  reload: false  # auto-reload during dev
+
+database:
+  dbname: "ai_tutor_db"
+  user: "postgres"
+  host: "/var/run/postgresql"
+
+rag_engine:
+  # Path to the Tutor's rag_engine.py (imported as library, not modified)
+  path: "/root/.openclaw/workspace/projects/ai-tutor-saas/rag_engine.py"
+
+monitoring:
+  default_cron: "0 6 * * 0"  # Sunday 06:00 local time
+  fetch_timeout: 30           # seconds per URL fetch
