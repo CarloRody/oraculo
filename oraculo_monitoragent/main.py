@@ -198,6 +198,10 @@ def update_url(url_id: int, url_data: URLUpdate):
 
 @app.delete("/urls/{url_id}")
 def delete_url(url_id: int):
+    """Stop monitoring a URL. Only removes monitor_urls (cascades to monitor_scans
+    and monitor_extracted_links). Never touches the Tutor's documents/document_chunks —
+    the indexed document and its RAG chunks stay intact and can only be deleted
+    from the Tutor's admin panel."""
     conn = get_db()
     try:
         cur = conn.cursor()

@@ -13,7 +13,7 @@ from typing import Optional
 # ---------------------------------------------------------------------------
 # Lazy, defensible RAG engine import
 # ---------------------------------------------------------------------------
-_TUTOR_RAG_PATH = "/root/.openclaw/workspace/projects/ai-tutor-saas"
+_TUTOR_RAG_PATH = "/root/.openclaw/workspace/projects/oraculo/ai_oraculo_saas"
 rag_engine = None
 _rag_available = False
 _rag_error = None

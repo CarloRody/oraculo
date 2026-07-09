@@ -22,7 +22,7 @@ Monitor Agent (FastAPI :5003) ──┬── PostgreSQL ai_tutor_db
 |--------|-----------|
 | API | FastAPI + uvicorn (porta 5003) |
 | Banco | PostgreSQL `ai_tutor_db` (mesmo DB do Tutor, tabelas isoladas) |
-| RAG | Importa `/projects/ai-tutor-saas/rag_engine.py` via `rag_wrapper.py` |
+| RAG | Importa `/projects/oraculo/ai_oraculo_saas/rag_engine.py` via `rag_wrapper.py` |
 | Scraper | Playwright (JS-rendered portals) + httpx (páginas estáticas) |
 | Frontend | HTML/CSS/JS vanilla — dark theme, auto-refresh 30s |
 | Deploy | systemd service `monitor-agent.service` |
@@ -160,7 +160,7 @@ CREATE TABLE monitor_extracted_links (
 ```yaml
 server: { host: "0.0.0.0", port: 5003 }
 database: { dbname: "ai_tutor_db", user: "postgres", host: "/var/run/postgresql" }
-rag_engine: { path: "/root/.openclaw/workspace/projects/ai-tutor-saas/rag_engine.py" }
+rag_engine: { path: "/root/.openclaw/workspace/projects/oraculo/ai_oraculo_saas/rag_engine.py" }
 monitoring: { default_cron: "0 6 * * 0", fetch_timeout: 30 }
 ```
 

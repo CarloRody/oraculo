@@ -12,7 +12,7 @@ database:
 
 rag_engine:
   # Path to the Tutor's rag_engine.py (imported as library, not modified)
-  path: "/root/.openclaw/workspace/projects/ai-tutor-saas/rag_engine.py"
+  path: "/root/.openclaw/workspace/projects/oraculo/ai_oraculo_saas/rag_engine.py"
 
 monitoring:
   default_cron: "0 6 * * 0"  # Sunday 06:00 local time

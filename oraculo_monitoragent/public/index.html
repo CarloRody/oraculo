@@ -210,7 +210,7 @@ async function addUrl() {
 }
 
 async function scanUrl(id) { try { await api('/scan/'+id, {method:'POST'}); refresh(); } catch(e) { alert('Scan error: '+e.message); } }
-async function delUrl(id) { if(!confirm('Excluir esta URL?')) return; try { await api('/urls/'+id,{method:'DELETE'}); refresh(); } catch(e){alert(e.message);} }
+async function delUrl(id) { if(!confirm('Parar de monitorar esta URL?\n\nIsto remove apenas o monitoramento e o histórico de scans. O documento já indexado no Tutor (se houver) NÃO é apagado — para removê-lo, use o painel admin do Tutor.')) return; try { await api('/urls/'+id,{method:'DELETE'}); refresh(); } catch(e){alert(e.message);} }
 async function toggleEnabled(id,val) { try { await api('/urls/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:val})}); refresh(); } catch(e){alert(e.message);} }
 async function extractLinks(urlId) { try { const r=await api('/links/extract',{'url_id':urlId},{method:'POST'}); alert('Encontrados: '+r.links_found+' links.'); refresh(); } catch(e){alert(e.message);} }
 
