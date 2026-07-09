@@ -1,53 +1,44 @@
-"""RAG Wrapper — lazy-imports rag_engine from the Tutor project.
+"""RAG Wrapper — delegates RAG processing to the Tutor's HTTP API.
 
-Gracefully handles missing dependencies (sentence_transformers etc.) by
-saving documents to the DB with status='pending' and skipping embeddings.
-Re-process later via Tutor API /api/process/<doc_id> if needed.
+The Tutor (ai_oraculo_saas) already runs on :5001 with its embedding model
+warm in memory. Rather than importing rag_engine.py as a library — which
+would require duplicating sentence-transformers/torch (~1.5GB) into this
+service's own venv and loading a second copy of the model into RAM on a
+3.8GB SBC — this wrapper calls the Tutor's existing
+POST /api/process/<doc_id> endpoint over HTTP. Document rows are still
+written directly to the shared Postgres DB (cheap, no heavy deps needed).
 """
 
-import json
-import sys
-from pathlib import Path
-from typing import Optional
+import os
 
-# ---------------------------------------------------------------------------
-# Lazy, defensible RAG engine import
-# ---------------------------------------------------------------------------
-_TUTOR_RAG_PATH = "/root/.openclaw/workspace/projects/oraculo/ai_oraculo_saas"
-rag_engine = None
-_rag_available = False
-_rag_error = None
+import requests
 
-def _try_import():
-    global rag_engine, _rag_available, _rag_error
-    if rag_engine is not None:
-        return  # already tried
-    try:
-        if _TUTOR_RAG_PATH not in sys.path:
-            sys.path.insert(0, _TUTOR_RAG_PATH)
-        import rag_engine as _re  # noqa: F811
-        model = _re.get_model()
-        if model is None:
-            raise RuntimeError("Model not loaded")
-        rag_engine = _re
-        _rag_available = True
-    except Exception as e:
-        _rag_error = str(e)
-        print(f"[RAG Wrapper] Engine unavailable: {_rag_error}")
-
-def is_rag_available():
-    _try_import()
-    return _rag_available
-
-# ---------------------------------------------------------------------------
-# DB helpers (standalone, no RAG dependency)
-# ---------------------------------------------------------------------------
+TUTOR_API_URL = os.environ.get("TUTOR_API_URL", "http://localhost:5001")
 
 DB_CFG = {"dbname": "ai_tutor_db", "user": "postgres", "host": "/var/run/postgresql"}
+
 
 def _conn():
     import psycopg2
     return psycopg2.connect(**DB_CFG)
+
+
+def is_rag_available():
+    """Check whether the Tutor's RAG engine (embedding model) is loaded and ready."""
+    try:
+        res = requests.get(f"{TUTOR_API_URL}/api/stats", timeout=5)
+        res.raise_for_status()
+        return res.json().get("rag_model") == "loaded"
+    except Exception as e:
+        print(f"[RAG Wrapper] Tutor API unavailable: {e}")
+        return False
+
+
+check_rag_engine_available = is_rag_available
+
+# ---------------------------------------------------------------------------
+# DB helpers (standalone, no RAG dependency)
+# ---------------------------------------------------------------------------
 
 
 def create_document_in_tutor(name, area_id, content_text=None, url=None):
@@ -108,35 +99,30 @@ def get_document(doc_id):
         conn.close()
 
 
-def delete_old_chunks(doc_id):
-    """Delete existing chunks for a document."""
-    conn = _conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM document_chunks WHERE doc_id=%s", (doc_id,))
-        conn.commit()
-        return True
-    except Exception as e:
-        print(f"Error deleting chunks for doc {doc_id}: {e}")
-        return False
-    finally:
-        conn.close()
-
-
 # ---------------------------------------------------------------------------
-# Full pipeline with graceful fallback
+# RAG processing via the Tutor's HTTP API
 # ---------------------------------------------------------------------------
 
 def process_document(doc_id):
-    """Process a document through RAG. Returns result or fallback on failure."""
-    _try_import()
-    if not _rag_available:
-        return {"ok": False, "chunks_created": 0, "saved_count": 0,
-                "error": f"RAG engine unavailable ({_rag_error}). Doc saved with status=pending. Re-process via Tutor /api/process/{doc_id}"}
+    """Process a document through RAG by calling the Tutor's API. Never raises.
+
+    The Tutor's /api/process/<doc_id> already clears old chunks before
+    re-embedding, so no separate delete step is needed here.
+    """
     try:
-        if rag_engine is None:
-            raise RuntimeError("engine not loaded")
-        return rag_engine.process_document(doc_id)
+        res = requests.post(f"{TUTOR_API_URL}/api/process/{doc_id}", timeout=300)
+        if res.status_code != 200:
+            try:
+                error = res.json().get("error", f"HTTP {res.status_code}")
+            except Exception:
+                error = f"HTTP {res.status_code}"
+            return {"ok": False, "chunks_created": 0, "saved_count": 0, "error": error}
+        data = res.json()
+        return {
+            "ok": True,
+            "chunks_created": data.get("chunks_created", 0),
+            "saved_count": data.get("saved_count", 0),
+        }
     except Exception as e:
         print(f"RAG process error for doc {doc_id}: {e}")
         return {"ok": False, "chunks_created": 0, "saved_count": 0, "error": str(e)}
@@ -155,11 +141,5 @@ def reprocess_existing(doc_id, new_content_text):
     """Update content + attempt RAG re-indexing. Never raises."""
     if not update_document_content(doc_id, new_content_text):
         return {"ok": False, "error": "Failed to update document"}
-    delete_old_chunks(doc_id)
     result = process_document(doc_id)
     return {"doc_id": doc_id, **result}
-
-
-def check_rag_engine_available():
-    _try_import()
-    return _rag_available

@@ -10,7 +10,7 @@ Monitor Agent (FastAPI :5003) ──┬── PostgreSQL ai_tutor_db
                                  │    ├── monitor_scans
                                  │    └── monitor_extracted_links
                                  │
-                                 ├── RAG Engine (importa rag_engine.py do Tutor)
+                                 ├── Tutor API (HTTP :5001, POST /api/process/<doc_id>)
                                  │     └── chunking + embeddings → document_chunks
                                  │
                                  └── Dashboard Frontend (/public/index.html)
@@ -22,7 +22,7 @@ Monitor Agent (FastAPI :5003) ──┬── PostgreSQL ai_tutor_db
 |--------|-----------|
 | API | FastAPI + uvicorn (porta 5003) |
 | Banco | PostgreSQL `ai_tutor_db` (mesmo DB do Tutor, tabelas isoladas) |
-| RAG | Importa `/projects/oraculo/ai_oraculo_saas/rag_engine.py` via `rag_wrapper.py` |
+| RAG | Delega para a API do Tutor (`POST :5001/api/process/<doc_id>`) via `rag_wrapper.py` — evita duplicar sentence-transformers/torch e carregar um 2º modelo em RAM |
 | Scraper | Playwright (JS-rendered portals) + httpx (páginas estáticas) |
 | Frontend | HTML/CSS/JS vanilla — dark theme, auto-refresh 30s |
 | Deploy | systemd service `monitor-agent.service` |
@@ -128,7 +128,7 @@ CREATE TABLE monitor_extracted_links (
 
 ### ✅ Fase 2 — Scans + RAG Integration (Jul 01)
 - [x] Pipeline de scan → persiste no DB
-- [x] RAG integration via `rag_wrapper.py` (importa rag_engine do Tutor)
+- [x] RAG integration via `rag_wrapper.py` (chama a API HTTP do Tutor, `POST /api/process/<doc_id>`)
 - [x] On change: cria/atualiza doc no Tutor + chunking + embeddings
 
 ### ✅ Fase 3 — Dashboard Frontend (Jul 02)
@@ -160,9 +160,10 @@ CREATE TABLE monitor_extracted_links (
 ```yaml
 server: { host: "0.0.0.0", port: 5003 }
 database: { dbname: "ai_tutor_db", user: "postgres", host: "/var/run/postgresql" }
-rag_engine: { path: "/root/.openclaw/workspace/projects/oraculo/ai_oraculo_saas/rag_engine.py" }
 monitoring: { default_cron: "0 6 * * 0", fetch_timeout: 30 }
 ```
+
+Variável de ambiente `TUTOR_API_URL` (opcional, default `http://localhost:5001`): base URL da API do Tutor usada por `rag_wrapper.py` para processar documentos via HTTP.
 
 ## Acesso Remoto (VPN)
 

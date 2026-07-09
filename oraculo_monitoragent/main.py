@@ -1,6 +1,5 @@
 """Monitor Agent API — FastAPI application (port :5003)."""
 
-import sys
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -543,20 +542,13 @@ def rag_process(tutor_doc_id: int):
 
 @app.get("/health/extended")
 def health_extended():
-    """Extended health with RAG engine check."""
-    rag_ok = False
-    try:
-        sys.path.insert(0, Path(config["rag_engine"]["path"]).parent.as_posix())
-        import rag_engine as _re
-        if _re.get_model() is not None:
-            rag_ok = True
-    except Exception:
-        pass
+    """Extended health, including whether the Tutor's RAG engine is reachable and loaded."""
+    import rag_wrapper as rw
 
     return {
         "service": "monitor-agent-api",
         "db_connected": True,  # if we reach here, lifespan passed
-        "rag_engine_available": rag_ok,
+        "rag_engine_available": rw.is_rag_available(),
     }
 
 
