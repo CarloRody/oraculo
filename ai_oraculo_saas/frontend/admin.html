@@ -15,8 +15,8 @@
         .container { max-width: 1200px; margin: 0 auto; padding: 2rem 1rem; position: relative; }
 
         /* Tabs */
-        .tabs { display: flex; gap: 0.5rem; margin-bottom: 2rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; }
-        .tab-btn { background: none; border: none; color: #94a3b8; font-size: 1rem; padding: 0.75rem 1.5rem; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; }
+        .tabs { display: flex; gap: 0.5rem; margin-bottom: 2rem; border-bottom: 1px solid #334155; padding-bottom: 0.5rem; flex-wrap: wrap; }
+        .tab-btn { background: none; border: none; color: #94a3b8; font-size: 1rem; padding: 0.75rem 1.5rem; cursor: pointer; border-bottom: 2px solid transparent; transition: all 0.2s; white-space: nowrap; }
         .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
         .tab-content { display: none; }
         .tab-content.active { display: block; }
@@ -57,6 +57,15 @@
         th { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
 
         .footer { text-align: center; padding: 2rem; border-top: 1px solid #1a2744; margin-top: 3rem; color: #64748b; }
+
+        @media (max-width: 640px) {
+            .header { padding: 1.75rem 1rem 1.75rem 3.5rem; }
+            .header h1 { font-size: 1.6rem; }
+            a.back-link { left: 0.75rem; top: 1.75rem; font-size: 0.9rem; }
+            .container { padding: 1.25rem 0.85rem; }
+            .card-item { padding: 1rem; }
+            .btn { margin-right: 0.35rem; margin-bottom: 0.35rem; }
+        }
     </style>
 </head>
 <body>

@@ -197,12 +197,16 @@ def rag_search():
     data = request.get_json()
     query = data.get('query', '')
     area_id = data.get('area_id')
+    try:
+        top_k = max(1, min(int(data.get('top_k') or 8), 20))
+    except (TypeError, ValueError):
+        top_k = 8
 
     if not query:
         return jsonify({"error": "Campo 'query' é obrigatório"}), 400
 
     try:
-        results = search_similar(query, area_id=area_id, top_k=8)
+        results = search_similar(query, area_id=area_id, top_k=top_k)
 
         # Enrich com nome do documento
         enriched = []

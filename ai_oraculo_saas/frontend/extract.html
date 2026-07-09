@@ -4,39 +4,12 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Tutor - Extrair Dados</title>
+    <link rel="stylesheet" href="style.css">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a1628; color: #e0e0e0; min-height: 100vh; }
-
-        .header { text-align: center; padding: 2rem 1rem; border-bottom: 1px solid #1a2744; }
-        .header h1 { font-size: 2rem; color: #60a5fa; margin-bottom: 0.5rem; }
-
-        /* Tabs */
-        .tabs { display: flex; gap: 1rem; padding: 0 1rem; border-bottom: 1px solid #334155; margin-top: 2rem; }
-        .tab { padding: 1rem 2rem; cursor: pointer; color: #64748b; border-bottom: 2px solid transparent; transition: all 0.2s; }
-        .tab.active { color: #60a5fa; border-bottom-color: #60a5fa; font-weight: 600; }
-
-        /* Content */
-        .content-area { max-width: 800px; margin: 0 auto; padding: 2rem 1rem; }
-
-        /* Form */
-        .form-group { margin-bottom: 1.5rem; }
-        label { display: block; color: #94a3b8; margin-bottom: 0.5rem; font-size: 0.95rem; }
-        input[type="text"], select, textarea { width: 100%; padding: 0.75rem 1rem; background: #1e293b; border: 1px solid #334155; color: #f8fafc; border-radius: 8px; font-size: 1rem; }
-        input[type="text"]:focus, select:focus { outline: none; border-color: #60a5fa; box-shadow: 0 0 0 3px rgba(96, 165, 250, 0.1); }
-
-        /* Buttons */
-        .btn-primary { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; padding: 0.75rem 1.5rem; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; transition: all 0.2s; }
-        .btn-primary:hover { transform: scale(1.02); box-shadow: 0 4px 15px rgba(96, 165, 250, 0.3); }
-
-        /* Document list */
-        .doc-list { margin-top: 2rem; border-top: 1px solid #334155; padding-top: 1rem; }
-        .doc-item { background: #1e293b; border-radius: 8px; padding: 1rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; border: 1px solid #334155; }
+        .doc-list { margin-top: 1.5rem; }
+        .doc-item { background: #1e293b; border-radius: 8px; padding: 1rem; margin-bottom: 0.85rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; border: 1px solid #334155; }
         .doc-info { color: #e2e8f0; font-size: 0.95rem; }
-        .doc-meta { color: #64748b; font-size: 0.8rem; margin-top: 0.25rem; }
-
-        /* Back link */
-        .back-link { display: inline-block; color: #64748b; text-decoration: none; padding: 1rem; border-bottom: 1px solid #334155; font-size: 0.9rem; }
+        .doc-meta { color: #64748b; font-size: 0.8rem; margin-top: 0.35rem; display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
     </style>
 </head>
 <body>
@@ -45,13 +18,13 @@
 
     <div class="header">
         <h1>&#128193; Extrair Dados</h1>
-        <p style="color: #94a3b8;">Importe documentos para sua base de conhecimento</p>
+        <p>Importe documentos para sua base de conhecimento</p>
     </div>
 
     <!-- Tabs -->
     <div class="tabs">
-        <div class="tab active" onclick="showTab('link')">&#127760; Link Externo</div>
-        <div class="tab" onclick="showTab('file')">&#128193; Arquivo Local</div>
+        <div class="tab active" data-tab="link" onclick="showTab('link', this)">&#127760; Link Externo</div>
+        <div class="tab" data-tab="file" onclick="showTab('file', this)">&#128193; Arquivo Local</div>
     </div>
 
     <!-- Content Area -->
@@ -64,7 +37,6 @@
                 <label for="areaId">Área temática:</label>
                 <select id="areaId" required>
                     <option value="">Selecione uma área...</option>
-                    <!-- Preenchido dinamicamente pelo backend -->
                 </select>
             </div>
 
@@ -77,7 +49,7 @@
         </form>
 
         <!-- Tab: Arquivo Local -->
-        <form id="fileForm">
+        <form id="fileForm" style="display:none">
             <h3 style="color: #60a5fa; margin-bottom: 1.5rem;">Incorporar documento do computador</h3>
             <div class="form-group">
                 <label for="areaIdFile">Área temática:</label>
@@ -87,8 +59,8 @@
             </div>
 
             <div class="form-group">
-                <label for="fileInput">Arquivo (PDF, DOCX, TXT):</label>
-                <input type="file" id="fileInput" accept=".pdf,.docx,.txt">
+                <label for="fileInput">Arquivo (PDF ou TXT):</label>
+                <input type="file" id="fileInput" accept=".pdf,.txt">
             </div>
 
             <button type="submit" class="btn-primary">&#128640; Incorporar Documento</button>
@@ -98,34 +70,39 @@
 
     <!-- Document List -->
     <div class="content-area">
-        <h3 style="color: #a78bfa;">Documentos incorporados</h3>
-        <div id="doc-list"></div>
+        <h3 style="color: #a78bfa; margin-bottom: 0.5rem;">Documentos incorporados</h3>
+        <div class="doc-list" id="doc-list"><p class="loading-text">Carregando...</p></div>
     </div>
 
+    <div class="footer">AI Tutor SaaS</div>
+
 <script>
-// ============================================
-// AI Tutor SaaS - Extrair Dados (Frontend)
-// ============================================
-
 const API = window.location.protocol + '//' + window.location.host;
+let documents = [];
 
-// Carregar áreas do backend
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+function statusBadge(status) {
+    const s = status || 'pending';
+    const labels = { pending: 'pendente', processing: 'processando', indexed: 'indexado', failed: 'falhou' };
+    return `<span class="status-badge status-${s}">${labels[s] || s}</span>`;
+}
+
 async function loadAreas() {
     try {
         const res = await fetch(`${API}/api/areas`);
         const data = await res.json();
         if (!data.areas) return;
         const optionsHtml = '<option value="">Selecione uma área...</option>' +
-            data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+            data.areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
         document.getElementById('areaId').innerHTML = optionsHtml;
         document.getElementById('areaIdFile').innerHTML = optionsHtml;
     } catch (err) {
         console.error('Erro ao carregar áreas:', err);
-        alert('Não foi possível conectar à API. Verifique se o servidor está rodando.');
+        document.getElementById('doc-list').innerHTML = '<p class="banner-error">Não foi possível conectar à API. Verifique se o servidor está rodando.</p>';
     }
 }
 
-// Carregar documentos do backend
 async function loadDocuments() {
     try {
         const res = await fetch(`${API}/api/documents`);
@@ -134,57 +111,49 @@ async function loadDocuments() {
         renderDocuments();
     } catch (err) {
         console.error('Erro ao carregar documentos:', err);
+        document.getElementById('doc-list').innerHTML = '<p class="banner-error">Erro ao carregar documentos.</p>';
     }
 }
 
-// Função para renderizar documentos incorporados
 function renderDocuments() {
     const listEl = document.getElementById('doc-list');
     if (documents.length === 0) {
-        listEl.innerHTML = '<p style="color: #64748b; text-align: center;">Nenhum documento incorporado ainda.</p>';
+        listEl.innerHTML = '<p class="empty-text">Nenhum documento incorporado ainda.</p>';
         return;
     }
 
-    let html = '';
-    documents.forEach(doc => {
+    listEl.innerHTML = documents.map(doc => {
         const icon = doc.type === 'link' ? '&#127760;' : '&#128193;';
-        html += `
+        return `
             <div class="doc-item">
                 <div>
-                    <span class="doc-info">${icon} ${doc.name}</span>
-                    <div class="doc-meta">${doc.type === 'link' ? 'Link externo' : 'Arquivo local'} • ID: ${doc.id}</div>
+                    <span class="doc-info">${icon} ${esc(doc.name)}</span>
+                    <div class="doc-meta">
+                        <span>${doc.type === 'link' ? 'Link externo' : 'Arquivo local'} • ID: ${doc.id}</span>
+                        ${statusBadge(doc.processing_status)}
+                        <span>${doc.chunk_count || 0} chunks</span>
+                    </div>
                 </div>
             </div>`;
-    });
-
-    listEl.innerHTML = html;
+    }).join('');
 }
 
-// Alternar tabs (link vs arquivo)
-function showTab(tabType) {
-    const linkForm = document.getElementById('linkForm');
-    const fileForm = document.getElementById('fileForm');
-
-    // Esconde todos e mostra o selecionado
-    if (tabType === 'link') {
-        linkForm.style.display = 'block';
-        fileForm.style.display = 'none';
-    } else {
-        linkForm.style.display = 'none';
-        fileForm.style.display = 'block';
-    }
-
-    // Atualiza tabs visualmente
-    document.querySelectorAll('.tab').forEach(el => el.classList.remove('active'));
-    event.target.classList.add('active');
+function showTab(tabType, el) {
+    document.getElementById('linkForm').style.display = tabType === 'link' ? 'block' : 'none';
+    document.getElementById('fileForm').style.display = tabType === 'file' ? 'block' : 'none';
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
 }
 
-// Submit do formulário de link externo
 document.getElementById('linkForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     const url = document.getElementById('linkUrl').value;
     const areaId = document.getElementById('areaId').value;
+    const btn = e.target.querySelector('.btn-primary');
+    const originalText = btn.textContent;
 
+    btn.disabled = true;
+    btn.textContent = '⏳ Processando...';
     try {
         const res = await fetch(`${API}/api/documents`, {
             method: 'POST',
@@ -202,64 +171,48 @@ document.getElementById('linkForm').addEventListener('submit', async function(e)
     } catch (err) {
         console.error(err);
         alert('Erro ao conectar com a API.');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 });
 
-// Submit do formulário de arquivo local
 document.getElementById('fileForm').addEventListener('submit', async function(e) {
     e.preventDefault();
     const fileInput = document.getElementById('fileInput');
-    if (fileInput.files.length > 0) {
-        const file = fileInput.files[0];
-        const areaId = document.getElementById('areaIdFile').value;
+    if (fileInput.files.length === 0) { alert('Selecione um arquivo primeiro.'); return; }
 
-        // Lê o arquivo como bytes antes de enviar
-        const reader = new FileReader();
-        reader.onload = async function() {
-            try {
-                const formData = new FormData();
-                formData.append('file', file);
-                formData.append('area_id', areaId);
-                formData.append('name', file.name);
+    const file = fileInput.files[0];
+    const areaId = document.getElementById('areaIdFile').value;
+    const btn = e.target.querySelector('.btn-primary');
+    const originalText = btn.textContent;
 
-                // Mostra feedback visual
-                const btn = e.target.querySelector('.btn-primary');
-                const originalText = btn.textContent;
-                btn.textContent = '⏳ Processando...';
-                btn.disabled = true;
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('area_id', areaId);
+    formData.append('name', file.name);
 
-                const res = await fetch(`${API}/api/upload`, {
-                    method: 'POST',
-                    body: formData
-                });
-                const data = await res.json();
-
-                if (data.error) {
-                    alert('Erro: ' + data.error);
-                } else {
-                    loadDocuments();
-                    fileInput.value = '';
-                    alert(`✅ Arquivo "${file.name}" processado com sucesso!\nChunks criados: ${data.rag_result?.saved_count || '?'}`);
-                }
-
-                btn.textContent = originalText;
-                btn.disabled = false;
-            } catch (err) {
-                console.error(err);
-                alert('Erro ao conectar com a API.');
-                const btn = e.target.querySelector('.btn-primary');
-                btn.textContent = '🚀 Incorporar Documento';
-                btn.disabled = false;
-            }
-        };
-
-        reader.readAsArrayBuffer(file);
-    } else {
-        alert('Selecione um arquivo primeiro.');
+    btn.disabled = true;
+    btn.textContent = '⏳ Processando...';
+    try {
+        const res = await fetch(`${API}/api/upload`, { method: 'POST', body: formData });
+        const data = await res.json();
+        if (data.error) {
+            alert('Erro: ' + data.error);
+        } else {
+            loadDocuments();
+            fileInput.value = '';
+            alert(`✅ Arquivo "${file.name}" processado com sucesso!\nChunks criados: ${data.rag_result?.saved_count ?? '?'}`);
+        }
+    } catch (err) {
+        console.error(err);
+        alert('Erro ao conectar com a API.');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
     }
 });
 
-// Inicialização
 document.addEventListener('DOMContentLoaded', function() {
     loadAreas();
     loadDocuments();

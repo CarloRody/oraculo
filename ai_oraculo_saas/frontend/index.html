@@ -4,54 +4,35 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AI Tutor SaaS — Portal</title>
+    <link rel="stylesheet" href="style.css">
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #0a1628; color: #e0e0e0; min-height: 100vh; }
-
-        /* Header */
-        .header { text-align: center; padding: 3rem 1rem; border-bottom: 1px solid #1a2744; }
-        .header h1 { font-size: 2.5rem; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.5rem; }
-        .header p { color: #94a3b8; font-size: 1.1rem; max-width: 600px; margin: 0 auto; }
-
-        /* Main container */
-        .container { max-width: 1200px; margin: 0 auto; padding: 2rem 1rem; }
-
-        /* Section title */
-        .section-title { font-size: 1.5rem; color: #60a5fa; margin-bottom: 1.5rem; border-left: 4px solid #60a5fa; padding-left: 1rem; }
-
-        /* Cards grid */
-        .cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 1.5rem; margin-bottom: 3rem; }
-        .card { background: #1e293b; border-radius: 12px; padding: 2rem; text-decoration: none; color: inherit; transition: transform 0.2s, box-shadow 0.2s; border: 1px solid #334155; display: block; }
-        .card:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(96, 165, 250, 0.2); border-color: #60a5fa; }
-
-        .card-icon { font-size: 2.5rem; margin-bottom: 1rem; display: block; }
-        .card h3 { color: #f8fafc; font-size: 1.3rem; margin-bottom: 0.75rem; }
-        .card p { color: #94a3b8; line-height: 1.6; font-size: 0.95rem; }
-
-        /* Status bar */
-        .status-bar { background: #1e293b; border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; border: 1px solid #334155; }
+        .status-bar { background: #1e293b; border-radius: 8px; padding: 1rem 1.5rem; margin-bottom: 2rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem; border: 1px solid #334155; }
         .status-item { text-align: center; }
         .status-label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.25rem; }
         .value { color: #a78bfa; font-weight: 600; font-size: 1.1rem; }
 
-        /* Footer */
-        .footer { text-align: center; padding: 2rem; border-top: 1px solid #1a2744; margin-top: 3rem; color: #64748b; }
+        .cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 3rem; }
+        .card { background: #1e293b; border-radius: 12px; padding: 2rem; text-decoration: none; color: inherit; transition: transform 0.2s, box-shadow 0.2s; border: 1px solid #334155; display: block; }
+        .card:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(96, 165, 250, 0.2); border-color: #60a5fa; }
+        .card-icon { font-size: 2.5rem; margin-bottom: 1rem; display: block; }
+        .card h3 { color: #f8fafc; font-size: 1.3rem; margin-bottom: 0.75rem; }
+        .card p { color: #94a3b8; line-height: 1.6; font-size: 0.95rem; }
     </style>
 </head>
 <body>
 
     <div class="header">
-        <h1>AI Tutor SaaS</h1>
+        <h1 class="gradient">AI Tutor SaaS</h1>
         <p>Painel de gestão de tutoria inteligente por área temática</p>
     </div>
 
-    <div class="container">
+    <div class="container wide">
 
         <!-- Status -->
         <div class="status-bar">
             <div class="status-item">
                 <div class="status-label">Banco</div>
-                <div class="value" style="color: #22c55e;">● PostgreSQL Conectado</div>
+                <div class="value" id="db-status">● Carregando...</div>
             </div>
             <div class="status-item">
                 <div class="status-label">Documentos</div>
@@ -105,11 +86,13 @@
 
     </div>
 
+    <div class="footer">AI Tutor SaaS &copy; <span id="year"></span></div>
+
 <script>
 const API = window.location.protocol + '//' + window.location.host;
 
-// Carrega status do banco, áreas e documentos
 async function loadStatus() {
+    const dbEl = document.getElementById('db-status');
     try {
         const [statsRes, areasRes] = await Promise.all([
             fetch(`${API}/api/stats`),
@@ -118,8 +101,6 @@ async function loadStatus() {
         const stats = await statsRes.json();
         const areas = await areasRes.json();
 
-        // Status bar
-        const dbEl = document.querySelector('.status-bar .value');
         if (stats.db_connected) {
             dbEl.textContent = '● PostgreSQL Conectado';
             dbEl.style.color = '#22c55e';
@@ -132,13 +113,13 @@ async function loadStatus() {
         document.getElementById('area-count').textContent = `${areas.areas ? areas.areas.length : 0} áreas`;
     } catch (err) {
         console.error('Erro ao carregar status:', err);
-        const dbEl = document.querySelector('.status-bar .value');
         dbEl.textContent = '● API Indisponível';
         dbEl.style.color = '#ef4444';
     }
 }
 
-// Auto-load on page ready
+document.getElementById('year').textContent = new Date().getFullYear();
 document.addEventListener('DOMContentLoaded', loadStatus);
 </script>
+</body>
 </html>
