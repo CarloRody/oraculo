@@ -46,15 +46,33 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 .error-msg{color:#e94560;font-size:.8rem;margin-top:8px}
 .btn-auto{background:#0f3460;color:#fff;padding:4px 12px;border:none;border-radius:4px;cursor:pointer;font-size:.75rem}
 .url-link{color:#74b9ff;text-decoration:none}.url-link:hover{text-decoration:underline}
+.btn:disabled,.btn-auto:disabled{opacity:.5;cursor:wait}
+.health-group{display:flex;align-items:center;gap:14px;font-size:.8rem;color:#aaa}
+.health-item{display:flex;align-items:center;gap:4px}
+.mode-badge{display:inline-block;padding:2px 8px;border-radius:10px;font-size:.7rem;font-weight:600}
+.mode-http{background:#2d4a5a;color:#74b9ff}.mode-js{background:#4a2d5a;color:#c874ff}
+.banner{background:#5a2d2d;color:#ff9b9b;padding:12px 16px;border-radius:6px;margin-bottom:16px;font-size:.85rem;display:none}
+.banner.show{display:block}
+.toast-container{position:fixed;bottom:20px;right:20px;display:flex;flex-direction:column;gap:8px;z-index:1000}
+.toast{background:#16213e;border-left:4px solid #00b894;color:#fff;padding:12px 16px;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4);font-size:.85rem;max-width:360px;animation:slidein .2s ease-out}
+.toast.err{border-left-color:#e94560}
+@keyframes slidein{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+.btn-links{background:#4a2d5a;color:#fff}.btn-links:hover{background:#6c3f8a}
 </style>
 </head>
 <body>
 <div class="topbar">
-<h1><span id="healthDot" class="health-dot"></span>Monitor Agent</h1>
-<span class="refresh-info" id="refreshInfo">Atualizado: --</span>
+<h1>Monitor Agent</h1>
+<div class="health-group">
+  <span class="health-item"><span id="healthDot" class="health-dot"></span>Banco</span>
+  <span class="health-item"><span id="ragDot" class="health-dot"></span>RAG (Tutor)</span>
+  <span class="refresh-info" id="refreshInfo">Atualizado: --</span>
+</div>
 </div>
 
 <div class="container">
+
+<div id="errorBanner" class="banner"></div>
 
 <!-- Stats -->
 <div class="stats-row" id="statsRow">
@@ -79,7 +97,10 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 
 <!-- URLs -->
 <div class="card">
-<h2>🔗 URLs Monitoradas <button class="btn-auto" onclick="refresh()">↻ Refresh</button></h2>
+<h2>🔗 URLs Monitoradas
+  <button class="btn-auto" id="btnScanAll" onclick="scanAll()">▶ Scan Tudo</button>
+  <button class="btn-auto" onclick="refresh()">↻ Refresh</button>
+</h2>
 <table>
 <thead><tr><th>ID</th><th>Nome</th><th>URL</th><th>Área</th><th>Fetch</th><th>Enabled</th><th>Last Fetch</th><th>Scans</th><th>Changes</th><th>Ações</th></tr></thead>
 <tbody id="urlTable"></tbody>
@@ -103,6 +124,8 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 
 </div>
 
+<div class="toast-container" id="toastContainer"></div>
+
 <script>
 const BASE = window.location.origin;
 let refreshInterval;
@@ -122,19 +145,43 @@ function statusBadge(st) {
   const cls = st === 'unchanged' ? 'badge-unchanged' : st === 'changed' ? 'badge-changed' : st === 'new' ? 'badge-new' : 'badge-error';
   return `<span class="badge ${cls}">${st}</span>`;
 }
+function modeBadge(mode) {
+  return mode === 'js_browser'
+    ? '<span class="mode-badge mode-js">🎭 JS Browser</span>'
+    : '<span class="mode-badge mode-http">🌐 HTTP</span>';
+}
+
+function showToast(msg, isError=false) {
+  const c = document.getElementById('toastContainer');
+  const t = document.createElement('div');
+  t.className = 'toast' + (isError ? ' err' : '');
+  t.textContent = msg;
+  c.appendChild(t);
+  setTimeout(() => t.remove(), 6000);
+}
+
+function showError(msg) {
+  const b = document.getElementById('errorBanner');
+  if (!msg) { b.classList.remove('show'); return; }
+  b.textContent = '⚠ ' + msg;
+  b.classList.add('show');
+}
 
 async function refresh() {
   try {
     const [d, stats] = await Promise.all([api('/dashboard'), api('/stats')]);
-    
+
+    showError(null);
+
     // Stats
     document.getElementById('sUrls').textContent = d.urls.length || stats.urls_registered;
     document.getElementById('sScans').textContent = stats.scans_performed;
     document.getElementById('sDocs').textContent = d.tutor_stats.documents;
     document.getElementById('sChunks').textContent = d.tutor_stats.chunks;
 
-    // Areas dropdown
+    // Areas dropdown + lookup map
     areasCache = (d.areas || []);
+    const areaNameById = Object.fromEntries(areasCache.map(a => [a.id, a.name]));
     const sel = document.getElementById('fArea');
     sel.innerHTML = '<option value="">Nenhuma</option>' + areasCache.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
 
@@ -146,11 +193,15 @@ async function refresh() {
       tb.innerHTML = d.urls.map(u => `<tr>
         <td>${u.id}</td><td>${esc(u.name)}</td>
         <td><a href="${esc(u.url)}" target="_blank" class="url-link">${esc(shortUrl(u.url))}</a></td>
-        <td>${u.area_id || '—'}</td><td>${u.fetch_mode}</td>
+        <td>${esc(areaNameById[u.area_id]) || '—'}</td><td>${modeBadge(u.fetch_mode)}</td>
         <td><div class="toggle ${u.enabled?'on':''}" onclick="toggleEnabled(${u.id},${!u.enabled})"></div></td>
         <td>${tsFmt(u.last_fetched_at)}</td>
         <td>${u.total_scans||0}</td><td>${u.change_count||0}</td>
-        <td><button class="btn btn-scan" onclick="scanUrl(${u.id})">Scan</button><button class="btn btn-del" onclick="delUrl(${u.id})">Del</button></td>
+        <td>
+          <button class="btn btn-scan" onclick="scanUrl(${u.id}, this)">Scan</button>
+          <button class="btn btn-links" onclick="extractLinks(${u.id}, this)">Links</button>
+          <button class="btn btn-del" onclick="delUrl(${u.id})">Remover</button>
+        </td>
       </tr>`).join('');
     }
 
@@ -173,6 +224,7 @@ async function refresh() {
     document.getElementById('refreshInfo').textContent = 'Atualizado: ' + new Date().toLocaleTimeString('pt-BR');
   } catch(e) {
     console.error('Refresh error:', e);
+    showError('Não foi possível conectar à API do Monitor Agent (porta 5003). ' + e.message);
   }
 }
 
@@ -209,18 +261,57 @@ async function addUrl() {
   } catch(e) { err.textContent='Erro ao adicionar: '+e.message; }
 }
 
-async function scanUrl(id) { try { await api('/scan/'+id, {method:'POST'}); refresh(); } catch(e) { alert('Scan error: '+e.message); } }
-async function delUrl(id) { if(!confirm('Parar de monitorar esta URL?\n\nIsto remove apenas o monitoramento e o histórico de scans. O documento já indexado no Tutor (se houver) NÃO é apagado — para removê-lo, use o painel admin do Tutor.')) return; try { await api('/urls/'+id,{method:'DELETE'}); refresh(); } catch(e){alert(e.message);} }
-async function toggleEnabled(id,val) { try { await api('/urls/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:val})}); refresh(); } catch(e){alert(e.message);} }
-async function extractLinks(urlId) { try { const r=await api('/links/extract',{'url_id':urlId},{method:'POST'}); alert('Encontrados: '+r.links_found+' links.'); refresh(); } catch(e){alert(e.message);} }
+async function withButtonLoading(btn, busyText, fn) {
+  const original = btn ? btn.textContent : null;
+  if (btn) { btn.disabled = true; btn.textContent = busyText; }
+  try {
+    return await fn();
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = original; }
+  }
+}
+
+async function scanUrl(id, btn) {
+  try {
+    const r = await withButtonLoading(btn, '...', () => api('/scan/'+id, {method:'POST'}));
+    if (r.status === 'error') showToast(`Scan falhou: ${r.error_message || 'erro desconhecido'}`, true);
+    else if (r.status === 'unchanged') showToast('Sem mudanças no conteúdo.');
+    else showToast(`Conteúdo ${r.status === 'new' ? 'novo' : 'alterado'} detectado — RAG ${r.rag_ok ? 'atualizado (' + (r.saved_count||0) + ' chunks)' : 'não pôde ser processado'}.`, !r.rag_ok && r.status !== 'unchanged');
+    refresh();
+  } catch(e) { showToast('Erro no scan: '+e.message, true); }
+}
+
+async function scanAll() {
+  const btn = document.getElementById('btnScanAll');
+  try {
+    const r = await withButtonLoading(btn, 'Escaneando...', () => api('/scan/all', {method:'POST'}));
+    showToast(`Scan completo: ${r.total_scanned} URLs, ${r.changed} com mudanças, ${r.errors} erros.`, r.errors > 0);
+    refresh();
+  } catch(e) { showToast('Erro no scan geral: '+e.message, true); }
+}
+
+async function delUrl(id) { if(!confirm('Parar de monitorar esta URL?\n\nIsto remove apenas o monitoramento e o histórico de scans. O documento já indexado no Tutor (se houver) NÃO é apagado — para removê-lo, use o painel admin do Tutor.')) return; try { await api('/urls/'+id,{method:'DELETE'}); refresh(); } catch(e){showToast('Erro ao remover: '+e.message, true);} }
+async function toggleEnabled(id,val) { try { await api('/urls/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({enabled:val})}); refresh(); } catch(e){showToast('Erro ao atualizar: '+e.message, true);} }
+
+async function extractLinks(urlId, btn) {
+  try {
+    const r = await withButtonLoading(btn, '...', () => api('/links/extract?url_id='+urlId, {method:'POST'}));
+    showToast(`Encontrados ${r.links_found} links (${r.links_saved} salvos).`);
+    refresh();
+  } catch(e) { showToast('Erro ao extrair links: '+e.message, true); }
+}
 
 // Health check
 async function checkHealth() {
   try {
     const d = await api('/health');
-    const dot = document.getElementById('healthDot');
-    if (d.db_connected) { dot.className='health-dot ok'; } else { dot.className='health-dot err'; }
-  } catch(e) { document.getElementById('healthDot').className='health-dot err'; }
+    document.getElementById('healthDot').className = 'health-dot ' + (d.db_connected ? 'ok' : 'err');
+  } catch(e) { document.getElementById('healthDot').className = 'health-dot err'; }
+
+  try {
+    const d = await api('/health/extended');
+    document.getElementById('ragDot').className = 'health-dot ' + (d.rag_engine_available ? 'ok' : 'err');
+  } catch(e) { document.getElementById('ragDot').className = 'health-dot err'; }
 }
 
 // Init
