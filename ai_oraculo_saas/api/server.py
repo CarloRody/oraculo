@@ -9,6 +9,7 @@ from flask_cors import CORS
 import sys, os as _os_module
 sys.path.insert(0, _os_module.path.join(_os_module.path.dirname(__file__), '..'))
 from rag_engine import process_document, search_similar, get_model, extract_pdf_text
+from migrations import migrate_if_needed
 
 app = Flask(__name__)
 CORS(app)  # Permite que o frontend acesse de qualquer origem local
@@ -673,5 +674,6 @@ def serve_frontend(filename):
 
 
 if __name__ == '__main__':
+    migrate_if_needed()
     print("API Server rodando em http://localhost:5001 (RAG integrado)")
     app.run(host='0.0.0.0', port=5001, debug=False)

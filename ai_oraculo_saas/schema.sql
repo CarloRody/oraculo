@@ -1,4 +1,7 @@
 -- AI Tutor SaaS - Estrutura do Banco de Dados (PostgreSQL)
+-- Mantido em sincronia com migrations.py, que aplica isso automaticamente no startup
+-- (idempotente — nunca faz DROP). Para mudanças futuras de schema, adicione uma nova
+-- entrada em MIGRATIONS (migrations.py) e reflita aqui.
 
 -- 1. Tabela: users
 CREATE TABLE IF NOT EXISTS users (
@@ -28,7 +31,11 @@ CREATE TABLE IF NOT EXISTS documents (
     is_external_link BOOLEAN DEFAULT FALSE, -- TRUE = web; FALSE = local
     status VARCHAR(10) DEFAULT 'active' CHECK (status IN ('active', 'stale', 'invalid')),
     last_checked_at TIMESTAMPTZ, -- Data/hora da última verificação de integridade
-    upload_date TIMESTAMPTZ DEFAULT NOW() -- Quando foi inserido
+    upload_date TIMESTAMPTZ DEFAULT NOW(), -- Quando foi inserido
+    extracted_text TEXT, -- Texto extraído (uploads de arquivo), separado de content_text
+    processing_status VARCHAR(20) DEFAULT 'pending' CHECK (processing_status IN ('pending', 'processing', 'indexed', 'failed')),
+    chunk_count INTEGER DEFAULT 0, -- Quantos chunks o RAG gerou para este documento
+    last_processed_at TIMESTAMPTZ -- Última vez que o pipeline RAG processou este documento
 );
 
 -- 4. Tabela: document_chunks (Mapeamento dos chunks do RAG)
@@ -37,7 +44,10 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     doc_id INTEGER REFERENCES documents(id), -- Documento pai ao qual o chunk pertence
     area_id INTEGER, -- Facilita a busca se precisar filtrar por área
     content_chunk TEXT NOT NULL, -- O texto cortado (chunk)
-    chunk_index SMALLINT NOT NULL -- Ordem (0, 1, 2...) para reconstruir contexto depois
+    chunk_index SMALLINT NOT NULL, -- Ordem (0, 1, 2...) para reconstruir contexto depois
+    embedding_vector TEXT, -- Embedding (384 dims, all-MiniLM-L6-v2) serializado como JSON
+    chunk_hash TEXT, -- Hash do conteúdo do chunk, para detectar duplicatas/mudanças
+    processed_at TIMESTAMPTZ DEFAULT NOW() -- Quando o embedding foi gerado
 );
 
 -- 5. Tabela: sessions (Histórico de conversas)
@@ -82,6 +92,8 @@ CREATE TABLE IF NOT EXISTS usage_logs (
 -- Índices para performance e busca rápida
 -- ==========================================
 CREATE INDEX idx_documents_area ON documents(area_id);
+CREATE INDEX idx_docs_url ON documents(url);
 CREATE INDEX idx_document_chunks_docid ON document_chunks(doc_id);
+CREATE INDEX idx_chunks_content_fts ON document_chunks USING gin (to_tsvector('portuguese', content_chunk));
 CREATE INDEX idx_messages_session ON messages(session_id);
 CREATE INDEX idx_usage_logs_user ON usage_logs(user_id);
