@@ -1,0 +1,38 @@
+# Configuração compartilhada do Oráculo (Tutor + Monitor Agent + Backup Manager).
+#
+# Copie este arquivo para "config.yaml" (mesma pasta) e ajuste os valores reais.
+# "config.yaml" NÃO é versionado (está no .gitignore) — é onde segredos de
+# verdade (api_key, password) devem morar, nunca neste arquivo de exemplo.
+#
+# Depois de editar config.yaml, reinicie os serviços pra aplicar:
+#   systemctl restart ai-tutor-api monitor-agent backup-manager
+
+database:
+  host: /var/run/postgresql
+  port: 5432          # sem uso enquanto host for um socket Unix; fica pronto para TCP+senha no futuro
+  dbname: ai_tutor_db
+  user: postgres
+  password: null      # null = autenticação por socket Unix (peer auth), sem senha — comportamento de hoje
+
+llm:
+  provider: "LM Studio"           # rótulo informativo, não afeta o comportamento
+  base_url: "http://192.168.25.8:1234/v1/chat/completions"
+  model: "auto"
+  api_key: null                   # null = não envia header Authorization — comportamento de hoje
+  temperature: 0.7
+  max_tokens: 6000
+  timeout_seconds: 600
+
+tutor:
+  quota_enforcement: warn         # warn | block | off
+
+monitor_agent:
+  server:
+    host: "0.0.0.0"
+    port: 5003
+    reload: false
+  fetch_timeout: 30
+  default_cron: "0 6 * * 0"
+
+backup_manager:
+  backup_dir: /root/backup

@@ -1,25 +1,13 @@
 """Monitor Agent API — FastAPI application (port :5003)."""
 
-from pathlib import Path
 from contextlib import asynccontextmanager
 
-import yaml
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
+from config import CONFIG, DB_CONFIG, MONITOR_CONFIG
 
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
-
-
-def load_config():
-    with open(CONFIG_PATH) as f:
-        return yaml.safe_load(f)
-
-
-config = load_config()
+config = CONFIG  # mantém o nome usado no resto deste arquivo
 
 # ---------------------------------------------------------------------------
 # DB helper (sync, lightweight — no ORM)
@@ -30,8 +18,7 @@ from psycopg2.extras import RealDictCursor
 
 
 def get_db():
-    db_cfg = config["database"]
-    conn = psycopg2.connect(**db_cfg)
+    conn = psycopg2.connect(**DB_CONFIG)
     conn.cursor().execute("SET statement_timeout = '60s'")
     return conn
 
@@ -139,7 +126,7 @@ def health():
     return {
         "service": "monitor-agent-api",
         "version": "0.1.0",
-        "port": config["server"]["port"],
+        "port": MONITOR_CONFIG["server"]["port"],
         "db_connected": db_ok,
     }
 

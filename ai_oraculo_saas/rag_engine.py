@@ -11,6 +11,8 @@ from bs4 import BeautifulSoup
 from pypdf import PdfReader
 from sentence_transformers import SentenceTransformer
 
+from config import DB_CONFIG
+
 # ---------------------------------------------------------------------------
 # Modelos
 # ---------------------------------------------------------------------------
@@ -26,13 +28,8 @@ def get_model():
 
 
 # ---------------------------------------------------------------------------
-# Conexão DB
+# Conexão DB (config.yaml, na raiz do monorepo)
 # ---------------------------------------------------------------------------
-DB_CONFIG = {
-    "dbname": "ai_tutor_db",
-    "user": "postgres",
-    "host": "/var/run/postgresql",
-}
 
 
 def get_conn():

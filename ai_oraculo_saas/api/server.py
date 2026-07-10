@@ -12,19 +12,16 @@ import sys, os as _os_module
 sys.path.insert(0, _os_module.path.join(_os_module.path.dirname(__file__), '..'))
 from rag_engine import process_document, search_similar, get_model, extract_pdf_text
 from migrations import migrate_if_needed
+from config import CONFIG, DB_CONFIG
 
 app = Flask(__name__)
 CORS(app)  # Permite que o frontend acesse de qualquer origem local
 
 
 def get_db_connection():
-    """Conecta ao banco de dados PostgreSQL via socket Unix."""
+    """Conecta ao banco de dados PostgreSQL (via config.yaml — socket Unix por padrão)."""
     try:
-        conn = psycopg2.connect(
-            dbname="ai_tutor_db",
-            user="postgres",
-            host="/var/run/postgresql"  # Socket Unix — evita scram-sha-256
-        )
+        conn = psycopg2.connect(**DB_CONFIG)
         return conn
     except Exception as e:
         print(f"Erro ao conectar com o banco: {e}")
@@ -283,8 +280,8 @@ def rag_search():
             return jsonify({"error": f"ERRO RAG: {e} | Fallback: {e2}"}), 500
 
 
-LLM_API_URL = os.environ.get("LLM_API_URL", "http://192.168.25.8:1234/v1/chat/completions")
-QUOTA_ENFORCEMENT = os.environ.get("QUOTA_ENFORCEMENT", "warn")  # 'warn' | 'block' | 'off'
+LLM_CONFIG = CONFIG["llm"]
+QUOTA_ENFORCEMENT = CONFIG["tutor"]["quota_enforcement"]  # 'warn' | 'block' | 'off'
 
 _tiktoken_encoder = None
 
@@ -597,19 +594,21 @@ def chat():
 
 Pergunta: {message}"""
 
-        # Chama LLM local (timeout=600s, max_tokens=6k)
+        # Chama LLM (provedor/modelo/token/parâmetros vêm de config.yaml)
+        llm_headers = {"Authorization": f"Bearer {LLM_CONFIG['api_key']}"} if LLM_CONFIG.get("api_key") else {}
         llm_response = _http_requests.post(
-            LLM_API_URL,
+            LLM_CONFIG["base_url"],
             json={
-                "model": "auto",
+                "model": LLM_CONFIG.get("model", "auto"),
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "temperature": 0.7,
-                "max_tokens": 6000
+                "temperature": LLM_CONFIG.get("temperature", 0.7),
+                "max_tokens": LLM_CONFIG.get("max_tokens", 6000)
             },
-            timeout=600
+            headers=llm_headers,
+            timeout=LLM_CONFIG.get("timeout_seconds", 600)
         )
         llm_response.raise_for_status()
         llm_data = llm_response.json()
@@ -1350,6 +1349,37 @@ def admin_quota_status_route():
     if status is None:
         return jsonify({"error": "Nenhuma assinatura configurada para esse cliente+área"}), 404
     return jsonify(status)
+
+
+@app.route('/admin/config', methods=['GET'])
+def admin_get_config():
+    """Configuração atual (somente leitura) — nunca devolve segredos de verdade,
+    só se estão configurados ou não. Editar exige mexer em config.yaml na raiz
+    do monorepo e reiniciar os serviços."""
+    llm = CONFIG["llm"]
+    db = CONFIG["database"]
+    return jsonify({
+        "llm": {
+            "provider": llm.get("provider"),
+            "base_url": llm.get("base_url"),
+            "model": llm.get("model"),
+            "api_key_configured": bool(llm.get("api_key")),
+            "temperature": llm.get("temperature"),
+            "max_tokens": llm.get("max_tokens"),
+            "timeout_seconds": llm.get("timeout_seconds"),
+        },
+        "database": {
+            "host": db.get("host"),
+            "dbname": db.get("dbname"),
+            "user": db.get("user"),
+            "password_configured": bool(db.get("password")),
+        },
+        "tutor": {
+            "quota_enforcement": QUOTA_ENFORCEMENT,
+        },
+        "monitor_agent": CONFIG.get("monitor_agent", {}),
+        "backup_manager": CONFIG.get("backup_manager", {}),
+    })
 
 
 @app.route('/api/upload', methods=['POST'])

@@ -8,11 +8,7 @@ already-running production one. Never drops or alters existing data.
 
 import psycopg2
 
-DB_CONFIG = {
-    "dbname": "ai_tutor_db",
-    "user": "postgres",
-    "host": "/var/run/postgresql",
-}
+from config import DB_CONFIG
 
 
 def get_db():

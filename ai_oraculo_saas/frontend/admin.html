@@ -109,6 +109,7 @@
         <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
         <button class="tab-btn" onclick="switchTab('clients')">Clientes</button>
         <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
+        <button class="tab-btn" onclick="switchTab('config')">Configurações</button>
     </div>
 
     <!-- ÁREAS -->
@@ -168,6 +169,16 @@
     <div id="health-tab" class="tab-content">
         <h2 style="color:#60a5fa; margin-bottom:1.5rem;">Saúde do Sistema</h2>
         <div id="health-info"></div>
+    </div>
+
+    <!-- CONFIGURAÇÕES -->
+    <div id="config-tab" class="tab-content">
+        <h2 style="color:#60a5fa; margin-bottom:0.5rem;">Configurações</h2>
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1.5rem;">
+            Somente leitura. Para alterar, edite <code>config.yaml</code> na raiz do projeto no servidor e reinicie os serviços
+            (<code>systemctl restart ai-tutor-api monitor-agent backup-manager</code>).
+        </p>
+        <div id="config-info"></div>
     </div>
 </div>
 
@@ -810,8 +821,68 @@ async function loadHealth() {
     } catch(e) { document.getElementById('health-info').innerHTML = '<p style="color:#ef4444;">Não foi possível conectar ao admin server.</p>'; }
 }
 
+// ---- Configurações ----
+function configuredBadge(isSet) {
+    return isSet
+        ? '<span style="color:#4ade80;">configurado</span>'
+        : '<span style="color:#64748b;">não configurado</span>';
+}
+
+async function loadConfig() {
+    try {
+        const res = await fetch(ADMIN_API + '/admin/config');
+        const data = await res.json();
+        const llm = data.llm || {};
+        const db = data.database || {};
+        const monitor = data.monitor_agent || {};
+        const backup = data.backup_manager || {};
+        document.getElementById('config-info').innerHTML = `
+            <div class="card-item">
+                <h3>Provedor LLM</h3>
+                <table>
+                    <tr><td>Provedor</td><td>${esc(llm.provider) || '-'}</td></tr>
+                    <tr><td>URL base</td><td style="word-break:break-all;">${esc(llm.base_url) || '-'}</td></tr>
+                    <tr><td>Modelo</td><td>${esc(llm.model) || '-'}</td></tr>
+                    <tr><td>Token de acesso</td><td>${configuredBadge(llm.api_key_configured)}</td></tr>
+                    <tr><td>Temperatura</td><td>${llm.temperature ?? '-'}</td></tr>
+                    <tr><td>Max tokens</td><td>${llm.max_tokens ?? '-'}</td></tr>
+                    <tr><td>Timeout</td><td>${llm.timeout_seconds ?? '-'}s</td></tr>
+                </table>
+            </div>
+            <div class="card-item">
+                <h3>Banco de Dados</h3>
+                <table>
+                    <tr><td>Host</td><td style="word-break:break-all;">${esc(db.host) || '-'}</td></tr>
+                    <tr><td>Banco</td><td>${esc(db.dbname) || '-'}</td></tr>
+                    <tr><td>Usuário</td><td>${esc(db.user) || '-'}</td></tr>
+                    <tr><td>Senha</td><td>${configuredBadge(db.password_configured)}</td></tr>
+                </table>
+            </div>
+            <div class="card-item">
+                <h3>Oráculo (Tutor)</h3>
+                <table>
+                    <tr><td>Enforcement de cota</td><td>${esc(data.tutor?.quota_enforcement) || '-'}</td></tr>
+                </table>
+            </div>
+            <div class="card-item">
+                <h3>Monitor Agent</h3>
+                <table>
+                    <tr><td>Timeout de busca</td><td>${monitor.fetch_timeout ?? '-'}s</td></tr>
+                    <tr><td>Cron padrão</td><td>${esc(monitor.default_cron) || '-'}</td></tr>
+                </table>
+            </div>
+            <div class="card-item">
+                <h3>Backup Manager</h3>
+                <table>
+                    <tr><td>Diretório de backup</td><td style="word-break:break-all;">${esc(backup.backup_dir) || '-'}</td></tr>
+                </table>
+            </div>
+        `;
+    } catch(e) { document.getElementById('config-info').innerHTML = '<p style="color:#ef4444;">Não foi possível carregar as configurações.</p>'; }
+}
+
 // ---- Init ----
-loadStats(); loadAreas(); loadDocs(); loadHealth();
+loadStats(); loadAreas(); loadDocs(); loadHealth(); loadConfig();
 loadPlans().then(loadClients);
 document.getElementById('footer-year').textContent = new Date().getFullYear();
 </script>

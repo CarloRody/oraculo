@@ -2,14 +2,11 @@
 
 import psycopg2
 
+from config import DB_CONFIG
+
 
 def get_db():
-    import yaml
-    from pathlib import Path
-    config_path = Path(__file__).parent.parent / "config.yaml"
-    with open(config_path) as f:
-        cfg = yaml.safe_load(f)
-    return psycopg2.connect(**cfg["database"])
+    return psycopg2.connect(**DB_CONFIG)
 
 
 def list_urls(enabled_only: bool = True):

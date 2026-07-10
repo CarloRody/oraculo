@@ -11,19 +11,15 @@ from flask_cors import CORS
 import sys, os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 from rag_engine import process_document
+from config import DB_CONFIG
 
 app = Flask(__name__)
 CORS(app)
 
 
 # ---------------------------------------------------------------------------
-# Conexão DB (reusar mesma configuração de server.py)
+# Conexão DB (config.yaml, na raiz do monorepo)
 # ---------------------------------------------------------------------------
-DB_CONFIG = {
-    "dbname": "ai_tutor_db",
-    "user": "postgres",
-    "host": "/var/run/postgresql",
-}
 
 
 def get_db():

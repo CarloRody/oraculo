@@ -8,9 +8,11 @@ from pathlib import Path
 from threading import Thread
 from flask import Flask, render_template, jsonify, request
 
+from config import DB_CONFIG, BACKUP_CONFIG
+
 app = Flask(__name__)
 
-BACKUP_DIR = "/root/backup"
+BACKUP_DIR = BACKUP_CONFIG["backup_dir"]
 
 # Projetos configuráveis: nome exibido, caminho base, arquivos/pastas pra incluir no tar
 PROJECTS = {
@@ -33,7 +35,7 @@ PROJECTS = {
     }
 }
 
-DATABASE_NAME = "ai_tutor_db"
+DATABASE_NAME = DB_CONFIG["dbname"]
 
 
 def run(cmd, timeout=300):
@@ -97,7 +99,8 @@ def create_db_backup():
     if os.path.exists(filepath):
         os.remove(filepath)
 
-    cmd = f"pg_dump -U postgres -h /var/run/postgresql --format=custom -d {DATABASE_NAME} | gzip > {filepath}"
+    pg_env = f"PGPASSWORD={DB_CONFIG['password']} " if DB_CONFIG.get("password") else ""
+    cmd = f"{pg_env}pg_dump -U {DB_CONFIG['user']} -h {DB_CONFIG['host']} --format=custom -d {DATABASE_NAME} | gzip > {filepath}"
     success, out, err = run(cmd, timeout=600)
     if not success:
         return False, err or "Erro desconhecido no pg_dump"
