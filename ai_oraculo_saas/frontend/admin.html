@@ -105,6 +105,7 @@
     <!-- Tabs -->
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('areas')">Áreas</button>
+        <button class="tab-btn" onclick="switchTab('plans')">Planos</button>
         <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
         <button class="tab-btn" onclick="switchTab('clients')">Clientes</button>
         <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
@@ -117,6 +118,16 @@
             <button class="btn" onclick="showAreaModal()">+ Nova Área</button>
         </div>
         <div id="areas-list" class="card-list"></div>
+    </div>
+
+    <!-- PLANOS -->
+    <div id="plans-tab" class="tab-content">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+            <h2 class="section-title" style="border:none; padding:0; margin:0;">Planos de Assinatura</h2>
+            <button class="btn" onclick="showPlanModal()">+ Novo Plano</button>
+        </div>
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">Cota e preço por área ficam vinculados ao vivo: editar um plano já atualiza todos os clientes nele, sem precisar reatribuir nada.</p>
+        <div id="plans-list" class="card-list"></div>
     </div>
 
     <!-- DOCUMENTOS -->
@@ -263,17 +274,26 @@
     </div>
 </div>
 
-<!-- Modal Assinaturas do Cliente -->
-<div class="modal-overlay" id="subsModal">
+<!-- Modal Novo/Editar Plano -->
+<div class="modal-overlay" id="planModal">
     <div class="modal" style="max-width:640px;">
-        <h2>Assinaturas — <span id="subsClientEmail"></span></h2>
-        <input type="hidden" id="subsUserId">
+        <h2 id="planModalTitle">Novo Plano</h2>
+        <input type="hidden" id="editPlanId">
+        <div class="form-group">
+            <label>Nome do Plano</label>
+            <input type="text" class="form-input" id="planName" placeholder="Ex: Pro, Mín, Teste...">
+        </div>
+        <div class="form-group">
+            <label>Descrição <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
+            <input type="text" class="form-input" id="planDescription" placeholder="Ex: Plano padrão para clientes novos">
+        </div>
         <table>
-            <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th><th></th></tr></thead>
-            <tbody id="subs-table-body"></tbody>
+            <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th></tr></thead>
+            <tbody id="plan-areas-table-body"></tbody>
         </table>
         <div class="modal-actions">
-            <button class="btn btn-danger" onclick="closeSubsModal()">Fechar</button>
+            <button class="btn btn-danger" onclick="closePlanModal()">Cancelar</button>
+            <button class="btn" onclick="savePlan()">Salvar</button>
         </div>
     </div>
 </div>
@@ -580,18 +600,35 @@ async function loadClients() {
         const users = data.users || [];
         allClients = users;
         if (!users.length) { document.getElementById('clients-list').innerHTML = '<p style="color:#64748b;">Nenhum cliente cadastrado.</p>'; return; }
+        const planOptions = (selectedId) => '<option value="">Sem plano</option>' +
+            allPlans.map(p => `<option value="${p.id}" ${p.id === selectedId ? 'selected' : ''}>${esc(p.name)}</option>`).join('');
         document.getElementById('clients-list').innerHTML = users.map(u => `
             <div class="card-item">
                 <h3>${u.email}</h3>
                 <p>ID: ${u.id}</p>
                 <div class="api-key-box">${u.api_key || '—'}</div>
-                <div style="margin-top:0.75rem;">
-                    <button class="btn btn-sm" onclick="showSubsModal(${u.id}, '${u.email}')">Assinaturas</button>
+                <div class="form-group" style="margin-top:0.75rem; max-width:260px;">
+                    <label>Plano</label>
+                    <select class="form-input" onchange="changeClientPlan(${u.id}, this.value)">${planOptions(u.plan_id)}</select>
+                </div>
+                <div style="margin-top:0.5rem;">
                     <button class="btn btn-sm" onclick="showClientEditModal(${u.id})">Editar</button>
                 </div>
             </div>
         `).join('');
     } catch(e) { document.getElementById('clients-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar clientes.</p>'; }
+}
+
+async function changeClientPlan(userId, planId) {
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}`, {
+            method: 'PATCH', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ plan_id: planId ? Number(planId) : null })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao trocar plano.');
+        loadClients();
+    } catch(e) { alert('Erro ao trocar plano.'); }
 }
 
 function showClientEditModal(userId) {
@@ -662,46 +699,96 @@ async function saveClient() {
     } catch(e) { alert('Erro ao criar cliente.'); }
 }
 
-async function showSubsModal(userId, email) {
-    document.getElementById('subsUserId').value = userId;
-    document.getElementById('subsClientEmail').textContent = email;
-    document.getElementById('subsModal').classList.add('active');
-    const tbody = document.getElementById('subs-table-body');
-    tbody.innerHTML = '<tr><td colspan="4">Carregando...</td></tr>';
+// ---- Planos ----
+let allPlans = [];
+
+async function loadPlans() {
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}/subscriptions`);
+        const res = await fetch(ADMIN_API + '/admin/plans');
         const data = await res.json();
-        const byArea = {};
-        (data.subscriptions || []).forEach(s => byArea[s.area_id] = s);
-        tbody.innerHTML = allAreas.map(a => {
-            const s = byArea[a.id] || {};
-            return `<tr>
-                <td>${a.name}</td>
-                <td><input type="number" class="form-input" id="subsQuota_${a.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
-                <td><input type="number" step="0.01" class="form-input" id="subsPrice_${a.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
-                <td><button class="btn btn-sm" onclick="saveSubscription(${userId}, ${a.id})">Salvar</button></td>
-            </tr>`;
+        allPlans = data.plans || [];
+        if (!allPlans.length) { document.getElementById('plans-list').innerHTML = '<p style="color:#64748b;">Nenhum plano cadastrado.</p>'; return; }
+        document.getElementById('plans-list').innerHTML = allPlans.map(p => {
+            const priced = (p.areas || []).filter(a => a.monthly_token_quota != null || a.price_per_1k_tokens != null);
+            const areasSummary = priced.length
+                ? priced.map(a => `${esc(a.area_name)} (${a.monthly_token_quota ?? '∞'} tok${a.price_per_1k_tokens != null ? `, R$${a.price_per_1k_tokens}/1k` : ''})`).join(' • ')
+                : 'Nenhuma área precificada ainda';
+            return `
+            <div class="card-item">
+                <h3>${esc(p.name)}</h3>
+                <p>${p.description ? esc(p.description) + ' • ' : ''}${p.user_count} cliente(s)</p>
+                <p style="color:#64748b; font-size:0.85rem;">${areasSummary}</p>
+                <div style="margin-top:0.75rem;">
+                    <button class="btn btn-sm" onclick="showPlanModal(${p.id})">Editar</button>
+                    <button class="btn btn-sm btn-danger" onclick="deletePlan(${p.id}, '${esc(p.name)}')">Excluir</button>
+                </div>
+            </div>`;
         }).join('');
-    } catch(e) { tbody.innerHTML = '<tr><td colspan="4" style="color:#ef4444;">Erro ao carregar assinaturas.</td></tr>'; }
+    } catch(e) { document.getElementById('plans-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar planos.</p>'; }
 }
 
-function closeSubsModal() { document.getElementById('subsModal').classList.remove('active'); }
+function renderPlanAreasTable(existingAreas) {
+    const byArea = {};
+    (existingAreas || []).forEach(a => byArea[a.area_id] = a);
+    document.getElementById('plan-areas-table-body').innerHTML = allAreas.map(a => {
+        const s = byArea[a.id] || {};
+        return `<tr>
+            <td>${esc(a.name)}</td>
+            <td><input type="number" class="form-input" id="planQuota_${a.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
+            <td><input type="number" step="0.01" class="form-input" id="planPrice_${a.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
+        </tr>`;
+    }).join('');
+}
 
-async function saveSubscription(userId, areaId) {
-    const quotaVal = document.getElementById(`subsQuota_${areaId}`).value;
-    const priceVal = document.getElementById(`subsPrice_${areaId}`).value;
+function showPlanModal(planId) {
+    const plan = planId ? allPlans.find(p => p.id === planId) : null;
+    document.getElementById('planModalTitle').textContent = plan ? 'Editar Plano' : 'Novo Plano';
+    document.getElementById('editPlanId').value = plan ? plan.id : '';
+    document.getElementById('planName').value = plan ? plan.name : '';
+    document.getElementById('planDescription').value = plan ? (plan.description || '') : '';
+    renderPlanAreasTable(plan ? plan.areas : []);
+    document.getElementById('planModal').classList.add('active');
+}
+
+function closePlanModal() { document.getElementById('planModal').classList.remove('active'); }
+
+async function savePlan() {
+    const id = document.getElementById('editPlanId').value;
+    const name = document.getElementById('planName').value.trim();
+    if (!name) return alert('Nome é obrigatório.');
+    const description = document.getElementById('planDescription').value.trim() || null;
+
+    const areas = allAreas.map(a => {
+        const quotaVal = document.getElementById(`planQuota_${a.id}`).value;
+        const priceVal = document.getElementById(`planPrice_${a.id}`).value;
+        return {
+            area_id: a.id,
+            monthly_token_quota: quotaVal ? Number(quotaVal) : null,
+            price_per_1k_tokens: priceVal ? Number(priceVal) : null
+        };
+    }).filter(a => a.monthly_token_quota !== null || a.price_per_1k_tokens !== null);
+
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}/subscriptions`, {
-            method: 'POST', headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({
-                area_id: areaId,
-                monthly_token_quota: quotaVal ? Number(quotaVal) : null,
-                price_per_1k_tokens: priceVal ? Number(priceVal) : null
-            })
+        const res = await fetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
+            method: id ? 'PATCH' : 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ name, description, areas })
         });
-        if (!res.ok) { const d = await res.json(); return alert(d.error || 'Erro ao salvar assinatura.'); }
-        alert('Assinatura salva.');
-    } catch(e) { alert('Erro ao salvar assinatura.'); }
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao salvar plano.');
+        closePlanModal();
+        loadPlans();
+        loadClients();
+    } catch(e) { alert('Erro ao salvar plano.'); }
+}
+
+async function deletePlan(id, name) {
+    if (!confirm(`Excluir o plano "${name}"? Clientes nesse plano ficam sem plano (sem checagem de cota) até serem reatribuídos.`)) return;
+    try {
+        await fetch(ADMIN_API + `/admin/plans/${id}`, { method: 'DELETE' });
+        loadPlans();
+        loadClients();
+    } catch(e) { alert('Erro ao excluir plano.'); }
 }
 
 // ---- Health ----
@@ -724,7 +811,8 @@ async function loadHealth() {
 }
 
 // ---- Init ----
-loadStats(); loadAreas(); loadDocs(); loadClients(); loadHealth();
+loadStats(); loadAreas(); loadDocs(); loadHealth();
+loadPlans().then(loadClients);
 document.getElementById('footer-year').textContent = new Date().getFullYear();
 </script>
 

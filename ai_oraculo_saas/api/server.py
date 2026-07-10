@@ -352,8 +352,11 @@ def resolve_area_ids(data):
 
 
 def get_quota_status(user_id, area_id):
-    """Cota mensal, uso do mês corrente e preço configurado para um cliente+área.
-    None se não houver assinatura configurada para essa combinação (sem cota = sem checagem)."""
+    """Cota mensal, uso do mês corrente e preço configurado para um cliente+área,
+    resolvidos através do plano de assinatura atual do cliente (vínculo ao vivo —
+    editar o plano já reflete aqui, sem precisar reatribuir nada).
+    None se o cliente não tem plano, ou o plano não define nada pra essa área
+    (sem cota = sem checagem)."""
     if not user_id or not area_id:
         return None
     conn = get_db_connection()
@@ -362,8 +365,10 @@ def get_quota_status(user_id, area_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT monthly_token_quota, price_per_1k_tokens FROM area_subscriptions WHERE user_id = %s AND area_id = %s",
-            (user_id, area_id)
+            """SELECT pap.monthly_token_quota, pap.price_per_1k_tokens
+               FROM users u JOIN plan_area_pricing pap ON pap.plan_id = u.plan_id AND pap.area_id = %s
+               WHERE u.id = %s""",
+            (area_id, user_id)
         )
         row = cur.fetchone()
         if not row:
@@ -947,14 +952,19 @@ def admin_list_users():
         return jsonify({"error": "Banco indisponível", "total": 0, "users": []}), 500
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, email, api_key, created_at FROM users ORDER BY email")
+        cur.execute(
+            """SELECT u.id, u.email, u.api_key, u.created_at, u.plan_id, p.name
+               FROM users u LEFT JOIN plans p ON p.id = u.plan_id
+               ORDER BY u.email"""
+        )
         rows = cur.fetchall()
         users = []
         for r in rows:
             users.append({
                 "id": r[0], "email": r[1],
                 "api_key": r[2],
-                "created_at": r[3].isoformat() if r[3] else None
+                "created_at": r[3].isoformat() if r[3] else None,
+                "plan_id": r[4], "plan_name": r[5]
             })
         conn.close()
         return jsonify({"total": len(users), "users": users})
@@ -995,13 +1005,15 @@ def admin_create_user():
 
 @app.route('/admin/users/<int:user_id>', methods=['PATCH'])
 def admin_update_user(user_id):
-    """Atualiza o email de um cliente e/ou regenera sua chave de acesso
+    """Atualiza o email, o plano e/ou regenera a chave de acesso de um cliente
     (regenerar invalida a chave antiga na hora — qualquer integração usando
     a chave anterior para de funcionar)."""
     data = request.get_json()
     email = (data.get('email') or '').strip() or None
     regenerate_key = bool(data.get('regenerate_key'))
-    if not email and not regenerate_key:
+    plan_id_given = 'plan_id' in data
+    plan_id = data.get('plan_id') if plan_id_given else None
+    if not email and not regenerate_key and not plan_id_given:
         return jsonify({"error": "Nada para atualizar"}), 400
 
     conn = get_db_connection()
@@ -1009,24 +1021,31 @@ def admin_update_user(user_id):
         return jsonify({"error": "Banco indisponível"}), 500
     try:
         cur = conn.cursor()
-        new_api_key = secrets.token_hex(32) if regenerate_key else None
 
-        if email and new_api_key:
-            cur.execute("UPDATE users SET email = %s, api_key = %s WHERE id = %s", (email, new_api_key, user_id))
-        elif email:
-            cur.execute("UPDATE users SET email = %s WHERE id = %s", (email, user_id))
-        else:
-            cur.execute("UPDATE users SET api_key = %s WHERE id = %s", (new_api_key, user_id))
+        fields = {}
+        if email:
+            fields['email'] = email
+        if regenerate_key:
+            fields['api_key'] = secrets.token_hex(32)
+        if plan_id_given:
+            fields['plan_id'] = plan_id
+
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
+        cur.execute(f"UPDATE users SET {set_clause} WHERE id = %s", list(fields.values()) + [user_id])
 
         if cur.rowcount == 0:
             conn.close()
             return jsonify({"error": "Cliente não encontrado"}), 404
 
         conn.commit()
-        cur.execute("SELECT id, email, api_key FROM users WHERE id = %s", (user_id,))
+        cur.execute(
+            """SELECT u.id, u.email, u.api_key, u.plan_id, p.name
+               FROM users u LEFT JOIN plans p ON p.id = u.plan_id WHERE u.id = %s""",
+            (user_id,)
+        )
         row = cur.fetchone()
         conn.close()
-        return jsonify({"id": row[0], "email": row[1], "api_key": row[2]})
+        return jsonify({"id": row[0], "email": row[1], "api_key": row[2], "plan_id": row[3], "plan_name": row[4]})
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         conn.close()
@@ -1036,44 +1055,63 @@ def admin_update_user(user_id):
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/admin/users/<int:user_id>/subscriptions', methods=['GET'])
-def admin_list_user_subscriptions(user_id):
-    """Lista as assinaturas (área + cota + preço) de um cliente."""
+@app.route('/admin/plans', methods=['GET'])
+def admin_list_plans():
+    """Lista planos com a tabela de preço por área e quantos clientes usam cada um."""
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível"}), 500
     try:
         cur = conn.cursor()
-        cur.execute(
-            """SELECT s.id, s.area_id, a.name, s.status, s.expires_at,
-                      s.monthly_token_quota, s.price_per_1k_tokens
-               FROM area_subscriptions s JOIN areas a ON a.id = s.area_id
-               WHERE s.user_id = %s ORDER BY a.name""",
-            (user_id,)
-        )
-        rows = cur.fetchall()
-        subs = [{
-            "id": r[0], "area_id": r[1], "area_name": r[2], "status": r[3],
-            "expires_at": r[4].isoformat() if r[4] else None,
-            "monthly_token_quota": r[5], "price_per_1k_tokens": float(r[6]) if r[6] is not None else None
-        } for r in rows]
+        cur.execute("SELECT id, name, description FROM plans ORDER BY name")
+        plans = [{"id": r[0], "name": r[1], "description": r[2]} for r in cur.fetchall()]
+
+        for plan in plans:
+            cur.execute(
+                """SELECT pap.area_id, a.name, pap.monthly_token_quota, pap.price_per_1k_tokens
+                   FROM plan_area_pricing pap JOIN areas a ON a.id = pap.area_id
+                   WHERE pap.plan_id = %s ORDER BY a.name""",
+                (plan["id"],)
+            )
+            plan["areas"] = [{
+                "area_id": r[0], "area_name": r[1],
+                "monthly_token_quota": r[2],
+                "price_per_1k_tokens": float(r[3]) if r[3] is not None else None
+            } for r in cur.fetchall()]
+            cur.execute("SELECT count(*) FROM users WHERE plan_id = %s", (plan["id"],))
+            plan["user_count"] = cur.fetchone()[0]
+
         conn.close()
-        return jsonify({"subscriptions": subs})
+        return jsonify({"total": len(plans), "plans": plans})
     except Exception as e:
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/admin/users/<int:user_id>/subscriptions', methods=['POST'])
-def admin_upsert_user_subscription(user_id):
-    """Cria ou atualiza a assinatura de um cliente para uma área (cota + preço por 1k tokens)."""
+def _replace_plan_area_pricing(cur, plan_id, areas):
+    """Apaga e regrava as linhas de plan_area_pricing de um plano — o formulário
+    sempre manda a tabela completa, então substituir tudo é mais simples e
+    seguro do que tentar diffar upsert/delete linha a linha."""
+    cur.execute("DELETE FROM plan_area_pricing WHERE plan_id = %s", (plan_id,))
+    for a in (areas or []):
+        area_id = a.get('area_id')
+        if not area_id:
+            continue
+        cur.execute(
+            """INSERT INTO plan_area_pricing (plan_id, area_id, monthly_token_quota, price_per_1k_tokens)
+               VALUES (%s, %s, %s, %s)""",
+            (plan_id, area_id, a.get('monthly_token_quota'), a.get('price_per_1k_tokens'))
+        )
+
+
+@app.route('/admin/plans', methods=['POST'])
+def admin_create_plan():
+    """Cria um plano com nome/descrição e a tabela de preço por área."""
     data = request.get_json()
-    area_id = data.get('area_id')
-    if not area_id:
-        return jsonify({"error": "area_id é obrigatório"}), 400
-    monthly_token_quota = data.get('monthly_token_quota')
-    price_per_1k_tokens = data.get('price_per_1k_tokens')
-    expires_at = data.get('expires_at')
+    name = (data.get('name') or '').strip()
+    if not name:
+        return jsonify({"error": "Nome é obrigatório"}), 400
+    description = data.get('description')
 
     conn = get_db_connection()
     if not conn:
@@ -1081,28 +1119,82 @@ def admin_upsert_user_subscription(user_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id FROM area_subscriptions WHERE user_id = %s AND area_id = %s",
-            (user_id, area_id)
+            "INSERT INTO plans (name, description) VALUES (%s, %s) RETURNING id",
+            (name, description)
         )
-        existing = cur.fetchone()
-        if existing:
-            cur.execute(
-                """UPDATE area_subscriptions
-                   SET monthly_token_quota = %s, price_per_1k_tokens = %s, expires_at = %s, status = 'active'
-                   WHERE id = %s""",
-                (monthly_token_quota, price_per_1k_tokens, expires_at, existing[0])
-            )
-            sub_id = existing[0]
-        else:
-            cur.execute(
-                """INSERT INTO area_subscriptions (user_id, area_id, monthly_token_quota, price_per_1k_tokens, expires_at, status)
-                   VALUES (%s, %s, %s, %s, %s, 'active') RETURNING id""",
-                (user_id, area_id, monthly_token_quota, price_per_1k_tokens, expires_at)
-            )
-            sub_id = cur.fetchone()[0]
+        plan_id = cur.fetchone()[0]
+        _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
         conn.commit()
         conn.close()
-        return jsonify({"id": sub_id, "user_id": user_id, "area_id": area_id}), 201
+        return jsonify({"id": plan_id, "name": name}), 201
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Já existe um plano chamado '{name}'"}), 409
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/plans/<int:plan_id>', methods=['PATCH'])
+def admin_update_plan(plan_id):
+    """Atualiza nome/descrição de um plano e substitui sua tabela de preço por área.
+    Vínculo ao vivo: clientes nesse plano já refletem os novos valores na próxima
+    checagem de cota, sem precisar reatribuir nada."""
+    data = request.get_json()
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        fields = {}
+        if 'name' in data:
+            name = (data.get('name') or '').strip()
+            if not name:
+                conn.close()
+                return jsonify({"error": "Nome não pode ser vazio"}), 400
+            fields['name'] = name
+        if 'description' in data:
+            fields['description'] = data.get('description')
+
+        if fields:
+            set_clause = ", ".join(f"{k} = %s" for k in fields)
+            cur.execute(f"UPDATE plans SET {set_clause} WHERE id = %s", list(fields.values()) + [plan_id])
+            if cur.rowcount == 0:
+                conn.close()
+                return jsonify({"error": "Plano não encontrado"}), 404
+
+        if 'areas' in data:
+            _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
+
+        conn.commit()
+        conn.close()
+        return jsonify({"message": f"Plano {plan_id} atualizado"})
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": "Já existe um plano com esse nome"}), 409
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/plans/<int:plan_id>', methods=['DELETE'])
+def admin_delete_plan(plan_id):
+    """Exclui um plano. Clientes nesse plano voltam para 'sem plano'
+    (ON DELETE SET NULL) — sem checagem de cota até serem reatribuídos."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM plans WHERE id = %s", (plan_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({"error": "Plano não encontrado"}), 404
+        conn.close()
+        return jsonify({"message": f"Plano {plan_id} excluído"})
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         return jsonify({"error": str(e)}), 500
@@ -1157,7 +1249,7 @@ def admin_usage_summary():
                FROM usage_logs u
                JOIN users us ON us.id = u.user_id
                JOIN areas a ON a.id = u.area_id
-               LEFT JOIN area_subscriptions s ON s.user_id = u.user_id AND s.area_id = u.area_id
+               LEFT JOIN plan_area_pricing s ON s.plan_id = us.plan_id AND s.area_id = u.area_id
                WHERE u.timestamp >= %s AND u.timestamp < %s AND u.user_id IS NOT NULL
                GROUP BY u.user_id, us.email, u.area_id, a.name ORDER BY us.email""",
             (start, end)

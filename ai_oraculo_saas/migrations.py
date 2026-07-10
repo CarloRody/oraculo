@@ -167,6 +167,30 @@ MIGRATIONS = [
     ALTER TABLE documents ADD COLUMN IF NOT EXISTS parent_doc_id INTEGER REFERENCES documents(id) ON DELETE SET NULL;
     CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_doc_id);
     """,
+
+    # 9 — subscription plans: reusable quota/price templates per area, live-linked
+    # to users via users.plan_id (replaces per-user area_subscriptions editing).
+    """
+    CREATE TABLE IF NOT EXISTS plans (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(100) NOT NULL UNIQUE,
+        description TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS plan_area_pricing (
+        id SERIAL PRIMARY KEY,
+        plan_id INTEGER REFERENCES plans(id) ON DELETE CASCADE,
+        area_id INTEGER REFERENCES areas(id) ON DELETE CASCADE,
+        monthly_token_quota INTEGER,
+        price_per_1k_tokens NUMERIC(10,4),
+        UNIQUE(plan_id, area_id)
+    );
+
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL;
+
+    CREATE INDEX IF NOT EXISTS idx_plan_area_pricing_plan ON plan_area_pricing(plan_id);
+    """,
 ]
 
 

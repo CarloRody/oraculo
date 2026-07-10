@@ -3,17 +3,7 @@
 -- (idempotente — nunca faz DROP). Para mudanças futuras de schema, adicione uma nova
 -- entrada em MIGRATIONS (migrations.py) e reflita aqui.
 
--- 1. Tabela: users
-CREATE TABLE IF NOT EXISTS users (
-    id SERIAL PRIMARY KEY,
-    email VARCHAR(255) UNIQUE NOT NULL,
-    password_hash TEXT NOT NULL,
-    role VARCHAR(10) DEFAULT 'user' CHECK (role IN ('admin', 'user')),
-    created_at TIMESTAMPTZ DEFAULT NOW(),
-    api_key VARCHAR(64) UNIQUE -- Chave de acesso do cliente (1 cliente = 1 chave), usada em /api/chat
-);
-
--- 2. Tabela: areas (Engenharia, Matemática, etc.)
+-- 1. Tabela: areas (Engenharia, Matemática, etc.)
 CREATE TABLE IF NOT EXISTS areas (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL,
@@ -22,7 +12,36 @@ CREATE TABLE IF NOT EXISTS areas (
     status VARCHAR(10) DEFAULT 'draft' CHECK (status IN ('active', 'draft', 'archived'))
 );
 
--- 3. Tabela: documents (Unificada com links e conteúdo processado)
+-- 2. Tabela: plans (Planos de assinatura reutilizáveis — Teste, Mín, Pro, etc.)
+CREATE TABLE IF NOT EXISTS plans (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL UNIQUE,
+    description TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- 3. Tabela: plan_area_pricing (Cota + preço por área, por plano)
+CREATE TABLE IF NOT EXISTS plan_area_pricing (
+    id SERIAL PRIMARY KEY,
+    plan_id INTEGER REFERENCES plans(id) ON DELETE CASCADE,
+    area_id INTEGER REFERENCES areas(id) ON DELETE CASCADE,
+    monthly_token_quota INTEGER, -- Cota mensal de tokens (NULL = sem limite)
+    price_per_1k_tokens NUMERIC(10,4), -- Taxa em R$ por 1000 tokens (NULL = custo não configurado)
+    UNIQUE(plan_id, area_id)
+);
+
+-- 4. Tabela: users
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    email VARCHAR(255) UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    role VARCHAR(10) DEFAULT 'user' CHECK (role IN ('admin', 'user')),
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    api_key VARCHAR(64) UNIQUE, -- Chave de acesso do cliente (1 cliente = 1 chave), usada em /api/chat
+    plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL -- Plano de assinatura atual (cota/preço por área vêm daqui, vínculo ao vivo)
+);
+
+-- 5. Tabela: documents (Unificada com links e conteúdo processado)
 CREATE TABLE IF NOT EXISTS documents (
     id SERIAL PRIMARY KEY,
     area_id INTEGER REFERENCES areas(id),
@@ -41,7 +60,7 @@ CREATE TABLE IF NOT EXISTS documents (
     parent_doc_id INTEGER REFERENCES documents(id) ON DELETE SET NULL -- Documento que originou este (árvore de links do Monitor Agent)
 );
 
--- 4. Tabela: document_chunks (Mapeamento dos chunks do RAG)
+-- 6. Tabela: document_chunks (Mapeamento dos chunks do RAG)
 CREATE TABLE IF NOT EXISTS document_chunks (
     id SERIAL PRIMARY KEY,
     doc_id INTEGER REFERENCES documents(id), -- Documento pai ao qual o chunk pertence
@@ -53,7 +72,7 @@ CREATE TABLE IF NOT EXISTS document_chunks (
     processed_at TIMESTAMPTZ DEFAULT NOW() -- Quando o embedding foi gerado
 );
 
--- 5. Tabela: sessions (Histórico de conversas)
+-- 7. Tabela: sessions (Histórico de conversas)
 CREATE TABLE IF NOT EXISTS sessions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id),
@@ -62,7 +81,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 6. Tabela: messages (Mensagens com contador de tokens)
+-- 8. Tabela: messages (Mensagens com contador de tokens)
 CREATE TABLE IF NOT EXISTS messages (
     id SERIAL PRIMARY KEY,
     session_id INTEGER REFERENCES sessions(id),
@@ -72,7 +91,9 @@ CREATE TABLE IF NOT EXISTS messages (
     timestamp TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 7. Tabela: area_subscriptions (Controle de acesso e Billing)
+-- 9. Tabela: area_subscriptions (LEGADO — cota/preço por cliente+área.
+-- Substituída pelos planos (plans/plan_area_pricing) acima; mantida sem
+-- DROP por já ter dado histórico, mas não é mais lida nem escrita.)
 CREATE TABLE IF NOT EXISTS area_subscriptions (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id),
@@ -83,7 +104,7 @@ CREATE TABLE IF NOT EXISTS area_subscriptions (
     price_per_1k_tokens NUMERIC(10,4) -- Taxa em R$ por 1000 tokens (NULL = custo não configurado)
 );
 
--- 8. Tabela: usage_logs (Controle total de Tokens e Billing por usuário/sessão)
+-- 10. Tabela: usage_logs (Controle total de Tokens e Billing por usuário/sessão)
 CREATE TABLE IF NOT EXISTS usage_logs (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id),
@@ -107,3 +128,4 @@ CREATE INDEX idx_users_api_key ON users(api_key);
 CREATE INDEX idx_usage_logs_area ON usage_logs(area_id);
 CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp);
 CREATE INDEX idx_usage_logs_user_area_time ON usage_logs(user_id, area_id, timestamp);
+CREATE INDEX idx_plan_area_pricing_plan ON plan_area_pricing(plan_id);
