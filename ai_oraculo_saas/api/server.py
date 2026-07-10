@@ -735,28 +735,37 @@ def admin_delete_area(area_id):
 
 @app.route('/admin/documents', methods=['GET'])
 def admin_get_documents():
-    """Lista todos os documentos com nome da área."""
+    """Lista todos os documentos com nome da área. Aceita ?area_id= e ?parent_doc_id=
+    (parent_doc_id=0 filtra só documentos raiz, sem pai)."""
     area_id = request.args.get('area_id')
+    parent_doc_id = request.args.get('parent_doc_id')
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "total": 0, "documents": []}), 500
     try:
         cur = conn.cursor()
+        where = []
+        params = []
         if area_id:
-            cur.execute(
-                """SELECT d.id, d.name, a.name as area_name, d.is_external_link, d.url,
-                          d.processing_status, d.chunk_count, d.status, d.fetch_mode
-                   FROM documents d JOIN areas a ON a.id = d.area_id
-                   WHERE d.area_id = %s ORDER BY d.upload_date DESC""",
-                (area_id,)
-            )
-        else:
-            cur.execute(
-                """SELECT d.id, d.name, a.name as area_name, d.is_external_link, d.url,
-                          d.processing_status, d.chunk_count, d.status, d.fetch_mode
-                   FROM documents d JOIN areas a ON a.id = d.area_id
-                   ORDER BY d.upload_date DESC"""
-            )
+            where.append("d.area_id = %s")
+            params.append(area_id)
+        if parent_doc_id == '0':
+            where.append("d.parent_doc_id IS NULL")
+        elif parent_doc_id:
+            where.append("d.parent_doc_id = %s")
+            params.append(parent_doc_id)
+        where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+        cur.execute(
+            f"""SELECT d.id, d.name, a.name as area_name, d.is_external_link, d.url,
+                       d.processing_status, d.chunk_count, d.status, d.fetch_mode,
+                       d.parent_doc_id, p.name as parent_name,
+                       (SELECT count(*) FROM documents c WHERE c.parent_doc_id = d.id) as child_count
+                FROM documents d JOIN areas a ON a.id = d.area_id
+                LEFT JOIN documents p ON p.id = d.parent_doc_id
+                {where_clause}
+                ORDER BY d.upload_date DESC""",
+            params
+        )
         rows = cur.fetchall()
         docs = []
         for r in rows:
@@ -766,7 +775,10 @@ def admin_get_documents():
                 "processing_status": r[5] or "pending",
                 "chunk_count": r[6] or 0,
                 "status": r[7] or "active",
-                "fetch_mode": r[8] or "http"
+                "fetch_mode": r[8] or "http",
+                "parent_doc_id": r[9],
+                "parent_name": r[10],
+                "child_count": r[11] or 0
             })
         conn.close()
         return jsonify({"total": len(docs), "documents": docs})

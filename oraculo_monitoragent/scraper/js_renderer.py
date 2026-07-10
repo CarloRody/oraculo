@@ -4,10 +4,13 @@ Handles ASP.NET, SPA, and other portals that require JavaScript execution
 to load content (e.g., nfe.fazenda.gov.br).
 """
 
-import re
 from typing import Optional
 
 from playwright.sync_api import sync_playwright
+
+from scraper.html_utils import extract_text as _extract_text_shared
+from scraper.html_utils import extract_title as _extract_title_shared
+from scraper.html_utils import parse_links as _parse_links_shared
 
 # Realistic Chrome user-agent to avoid bot detection / ASP.NET quirks
 USER_AGENT = (
@@ -54,7 +57,7 @@ def fetch_text(url: str, timeout: int = 60, wait_for_selector: str | None = None
             html = str(page.content())
             browser.close()
 
-        return _extract_text(html)
+        return _extract_text_shared(html)
 
     except Exception as e:
         print(f"JS renderer error for {url}: {e}")
@@ -78,7 +81,7 @@ def extract_links(url: str, timeout: int = 60) -> list[dict]:
             html = str(page.content())
             browser.close()
 
-        links = _parse_links(html)
+        links = _parse_links_shared(html)
 
     except Exception as e:
         print(f"Link extraction error for {url}: {e}")
@@ -86,68 +89,30 @@ def extract_links(url: str, timeout: int = 60) -> list[dict]:
     return links
 
 
-def _extract_text(html_str: str) -> Optional[str]:
-    """Parse HTML and extract clean body text using BeautifulSoup."""
-    from bs4 import BeautifulSoup
+def fetch_page(url: str, timeout: int = 60) -> Optional[dict]:
+    """Navigate to a JS-rendered page once and return title, clean text, and
+    links together — used by the recursive link crawler, which needs both
+    from every page without loading it twice.
 
-    soup = BeautifulSoup(str(html_str), "html.parser")
+    Returns None if navigation fails. Returns {"title", "text", "links"}
+    otherwise (text may be None if the page has too little content).
+    """
+    try:
+        url = _normalize_url(url)
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent=USER_AGENT)
+            page = context.new_page()
 
-    # Remove non-content elements
-    for tag in soup(["script", "style", "nav", "header", "footer"]):
-        tag.decompose()
+            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+            html = str(page.content())
+            browser.close()
 
-    text = soup.get_text(separator=" ", strip=True)
-    text = re.sub(r"\s+", " ", text).strip()
-
-    return text if len(text) > 50 else None
-
-
-def _parse_links(html_str: str) -> list[dict]:
-    """Extract meaningful links from HTML using BeautifulSoup."""
-    from bs4 import BeautifulSoup
-
-    links = []
-    seen_urls = set()
-
-    soup = BeautifulSoup(str(html_str), "html.parser")
-
-    for a_tag in soup.find_all("a", href=True):
-        raw_url = str(a_tag.get("href")).strip()
-
-        if not raw_url:
-            continue
-
-        # Skip relative / internal / javascript URLs
-        if not raw_url.startswith(("http://", "https://")):
-            continue
-
-        if raw_url in seen_urls:
-            continue
-
-        # Get visible text
-        try:
-            clean_name = a_tag.get_text(strip=True)
-        except Exception:
-            clean_name = None
-        if not clean_name:
-            clean_name = "Unknown"
-        else:
-            clean_name = clean_name[:100]
-
-        # Determine type
-        lower_url = raw_url.lower()
-        if lower_url.endswith(".pdf"):
-            link_type = "pdf"
-        elif lower_url.endswith((".txt", ".csv", ".xml")):
-            link_type = "txt"
-        else:
-            link_type = "html"
-
-        links.append({
-            "name": clean_name,
-            "url": raw_url,
-            "type": link_type,
-        })
-        seen_urls.add(raw_url)
-
-    return links
+        return {
+            "title": _extract_title_shared(html),
+            "text": _extract_text_shared(html),
+            "links": _parse_links_shared(html),
+        }
+    except Exception as e:
+        print(f"fetch_page (js_browser) error for {url}: {e}")
+        return None

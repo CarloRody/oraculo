@@ -103,6 +103,23 @@ class ScanResult(BaseModel):
     error_message: str | None = None
 
 
+class CrawlStart(BaseModel):
+    url_id: int
+    max_depth: int = 3
+    area_id: int | None = None
+
+
+class CrawlAdvanceLink(BaseModel):
+    name: str
+    url: str
+    type: str = "html"
+
+
+class CrawlAdvance(BaseModel):
+    parent_page_id: int
+    links: list[CrawlAdvanceLink]
+
+
 # ---------------------------------------------------------------------------
 # Routes — Health
 # ---------------------------------------------------------------------------
@@ -525,6 +542,252 @@ def extract_links_route(url_id: int | None = None, url: str | None = None):
         "links_saved": saved,
         "links": extracted,
     }
+
+
+# ---------------------------------------------------------------------------
+# Routes — Knowledge tree (recursive link crawl)
+#
+# Each reviewed page becomes its own Tutor document immediately (linked to
+# its parent page's document via parent_doc_id) — there's no "combine into
+# one document" step. monitor_crawls/monitor_crawl_pages only track the
+# review session itself (depth, dedup, which Tutor doc each page became).
+# ---------------------------------------------------------------------------
+
+@app.post("/crawl/start")
+def crawl_start(data: CrawlStart):
+    """Start a knowledge-tree crawl from a monitored URL: fetch the root
+    page, create its Tutor document right away, and return candidate links
+    for the next level."""
+    from monitor.url_registry import get_url as _get_url
+    from monitor.crawler import fetch_page_for_crawl, root_netloc, MAX_DEPTH_CEILING
+    import rag_wrapper as rw
+
+    url_data = _get_url(data.url_id)
+    if not url_data:
+        raise HTTPException(404, "URL not found")
+
+    max_depth = max(1, min(data.max_depth, MAX_DEPTH_CEILING))
+    area_id = data.area_id or url_data.get("area_id")
+    if not area_id:
+        raise HTTPException(400, "area_id é obrigatório (a URL monitorada não tem área definida)")
+    fetch_mode = url_data.get("fetch_mode", "http")
+    root_url = url_data["url"]
+
+    page = fetch_page_for_crawl(root_url, fetch_mode=fetch_mode)
+    if not page or not page.get("text"):
+        raise HTTPException(502, f"Não foi possível extrair conteúdo de {root_url}")
+
+    doc_name = page.get("title") or url_data.get("name") or root_url
+    result = rw.ingest_and_index(
+        page["text"], doc_name, area_id,
+        url=root_url, parent_doc_id=None, fetch_mode=fetch_mode
+    )
+    tutor_doc_id = result.get("doc_id")
+    if not tutor_doc_id:
+        raise HTTPException(502, f"Falha ao criar documento raiz na Tutor: {result.get('error')}")
+
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """INSERT INTO monitor_crawls (root_url_id, root_url, max_depth, fetch_mode, area_id)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+            (data.url_id, root_url, max_depth, fetch_mode, area_id),
+        )
+        crawl_id = cur.fetchone()["id"]
+
+        cur.execute(
+            """INSERT INTO monitor_crawl_pages (crawl_id, parent_page_id, url, title, depth, tutor_doc_id)
+               VALUES (%s, NULL, %s, %s, 1, %s) RETURNING id""",
+            (crawl_id, root_url, doc_name, tutor_doc_id),
+        )
+        root_page_id = cur.fetchone()["id"]
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "crawl_id": crawl_id,
+        "max_depth": max_depth,
+        "domain": root_netloc(root_url),
+        "root_page": {
+            "id": root_page_id, "url": root_url, "title": doc_name,
+            "depth": 1, "tutor_doc_id": tutor_doc_id,
+        },
+        "links": page.get("links", []),
+    }
+
+
+@app.post("/crawl/{crawl_id}/advance")
+def crawl_advance(crawl_id: int, data: CrawlAdvance):
+    """Fetch the selected child links, create a Tutor document for each
+    (parent_doc_id = the page that linked to it), and return the fetched
+    pages plus their candidate links for the next level."""
+    from monitor.crawler import fetch_page_for_crawl, is_same_domain, root_netloc, MAX_PAGES_PER_CRAWL
+    import rag_wrapper as rw
+
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM monitor_crawls WHERE id = %s", (crawl_id,))
+        crawl = cur.fetchone()
+        if not crawl:
+            raise HTTPException(404, "Crawl not found")
+        if crawl["status"] != "in_progress":
+            raise HTTPException(400, f"Crawl já está '{crawl['status']}'")
+
+        cur.execute(
+            "SELECT * FROM monitor_crawl_pages WHERE id = %s AND crawl_id = %s",
+            (data.parent_page_id, crawl_id),
+        )
+        parent_page = cur.fetchone()
+        if not parent_page:
+            raise HTTPException(404, "Parent page not found in this crawl")
+
+        next_depth = parent_page["depth"] + 1
+        if next_depth > crawl["max_depth"]:
+            raise HTTPException(400, "Profundidade máxima já atingida")
+
+        cur.execute("SELECT count(*) AS n FROM monitor_crawl_pages WHERE crawl_id = %s", (crawl_id,))
+        total_pages = cur.fetchone()["n"]
+
+        domain = root_netloc(crawl["root_url"])
+        fetched = []
+        for link in data.links:
+            if total_pages >= MAX_PAGES_PER_CRAWL:
+                break
+            if crawl["same_domain_only"] and not is_same_domain(link.url, domain):
+                continue
+            cur.execute(
+                "SELECT id FROM monitor_crawl_pages WHERE crawl_id = %s AND url = %s",
+                (crawl_id, link.url),
+            )
+            if cur.fetchone():
+                continue  # já visitado nesse crawl
+
+            page = fetch_page_for_crawl(link.url, fetch_mode=crawl["fetch_mode"])
+            if not page or not page.get("text"):
+                continue
+
+            doc_name = page.get("title") or link.name or link.url
+            result = rw.ingest_and_index(
+                page["text"], doc_name, crawl["area_id"],
+                url=link.url, parent_doc_id=parent_page["tutor_doc_id"], fetch_mode=crawl["fetch_mode"]
+            )
+            tutor_doc_id = result.get("doc_id")
+            if not tutor_doc_id:
+                continue
+
+            cur.execute(
+                """INSERT INTO monitor_crawl_pages (crawl_id, parent_page_id, url, title, depth, tutor_doc_id)
+                   VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                (crawl_id, data.parent_page_id, link.url, doc_name, next_depth, tutor_doc_id),
+            )
+            page_id = cur.fetchone()["id"]
+            total_pages += 1
+
+            fetched.append({
+                "id": page_id, "url": link.url, "title": doc_name,
+                "depth": next_depth, "tutor_doc_id": tutor_doc_id,
+                "links": page.get("links", []) if next_depth < crawl["max_depth"] else [],
+            })
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "crawl_id": crawl_id,
+        "depth": next_depth,
+        "reached_max_depth": next_depth >= crawl["max_depth"],
+        "pages": fetched,
+    }
+
+
+@app.post("/crawl/{crawl_id}/finalize")
+def crawl_finalize(crawl_id: int):
+    """Mark a crawl session as done. Documents were already created
+    incrementally during /advance — there's nothing left to build."""
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """UPDATE monitor_crawls SET status = 'completed', finished_at = NOW()
+               WHERE id = %s AND status = 'in_progress' RETURNING id""",
+            (crawl_id,),
+        )
+        if not cur.fetchone():
+            raise HTTPException(404, "Crawl not found or already finished")
+        conn.commit()
+
+        cur.execute("SELECT count(*) AS n FROM monitor_crawl_pages WHERE crawl_id = %s", (crawl_id,))
+        total = cur.fetchone()["n"]
+    finally:
+        conn.close()
+
+    return {"crawl_id": crawl_id, "status": "completed", "total_pages": total}
+
+
+@app.post("/crawl/{crawl_id}/cancel")
+def crawl_cancel(crawl_id: int):
+    """Cancel a crawl in progress and delete every Tutor document already
+    created in this session (chunks included) — no leftover documents."""
+    import rag_wrapper as rw
+
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM monitor_crawls WHERE id = %s", (crawl_id,))
+        crawl = cur.fetchone()
+        if not crawl:
+            raise HTTPException(404, "Crawl not found")
+        if crawl["status"] != "in_progress":
+            raise HTTPException(400, f"Crawl já está '{crawl['status']}'")
+
+        cur.execute(
+            "SELECT tutor_doc_id FROM monitor_crawl_pages WHERE crawl_id = %s AND tutor_doc_id IS NOT NULL",
+            (crawl_id,),
+        )
+        doc_ids = [r["tutor_doc_id"] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    deleted = sum(1 for doc_id in doc_ids if rw.delete_document(doc_id))
+
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE monitor_crawls SET status = 'cancelled', finished_at = NOW() WHERE id = %s",
+            (crawl_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"crawl_id": crawl_id, "status": "cancelled", "documents_deleted": deleted}
+
+
+@app.get("/crawl/{crawl_id}")
+def crawl_detail(crawl_id: int):
+    """Full tree detail for a crawl session — used to reload the review UI
+    without losing state."""
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM monitor_crawls WHERE id = %s", (crawl_id,))
+        crawl = cur.fetchone()
+        if not crawl:
+            raise HTTPException(404, "Crawl not found")
+        cur.execute(
+            "SELECT * FROM monitor_crawl_pages WHERE crawl_id = %s ORDER BY depth, id",
+            (crawl_id,),
+        )
+        pages = [dict(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+    return {"crawl": dict(crawl), "pages": pages}
 
 
 @app.post("/rag/process/{tutor_doc_id}")

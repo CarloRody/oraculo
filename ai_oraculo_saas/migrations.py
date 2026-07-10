@@ -161,6 +161,12 @@ MIGRATIONS = [
         END IF;
     END $$;
     """,
+
+    # 8 — parent_doc_id on documents, for link-tree crawls (Monitor Agent)
+    """
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS parent_doc_id INTEGER REFERENCES documents(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS idx_documents_parent ON documents(parent_doc_id);
+    """,
 ]
 
 

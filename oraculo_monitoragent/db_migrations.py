@@ -97,6 +97,39 @@ MIGRATIONS = [
         END IF;
     END $$;
     """,
+
+    # 6 — monitor_crawls / monitor_crawl_pages: sessão de rastreamento recursivo
+    # de links (árvore de conhecimento). O conteúdo real fica nos documentos
+    # da Tutor (tutor_doc_id) — estas tabelas só controlam a sessão de revisão.
+    """
+    CREATE TABLE IF NOT EXISTS monitor_crawls (
+        id SERIAL PRIMARY KEY,
+        root_url_id INTEGER REFERENCES monitor_urls(id) ON DELETE SET NULL,
+        root_url TEXT NOT NULL,
+        max_depth INTEGER NOT NULL DEFAULT 3,
+        same_domain_only BOOLEAN DEFAULT TRUE,
+        fetch_mode VARCHAR(20) DEFAULT 'http',
+        area_id INTEGER REFERENCES areas(id),
+        status VARCHAR(20) DEFAULT 'in_progress' CHECK (status IN ('in_progress', 'completed', 'cancelled')),
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        finished_at TIMESTAMPTZ
+    );
+
+    CREATE TABLE IF NOT EXISTS monitor_crawl_pages (
+        id SERIAL PRIMARY KEY,
+        crawl_id INTEGER REFERENCES monitor_crawls(id) ON DELETE CASCADE,
+        parent_page_id INTEGER REFERENCES monitor_crawl_pages(id) ON DELETE CASCADE,
+        url TEXT NOT NULL,
+        title VARCHAR(500),
+        depth INTEGER NOT NULL,
+        tutor_doc_id INTEGER,
+        fetched_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(crawl_id, url)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_monitor_crawl_pages_crawl ON monitor_crawl_pages(crawl_id);
+    CREATE INDEX IF NOT EXISTS idx_monitor_crawl_pages_parent ON monitor_crawl_pages(parent_page_id);
+    """,
 ]
 
 

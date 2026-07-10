@@ -136,6 +136,11 @@
         </div>
         <p class="search-hint" id="docsSearchHint" style="display:none;"></p>
 
+        <div id="docsParentFilterBanner" style="display:none; align-items:center; gap:0.75rem; background:#1e293b; border:1px solid #a78bfa; border-radius:6px; padding:0.6rem 1rem; margin-bottom:1rem;">
+            <span style="color:#a78bfa; font-size:0.85rem;"></span>
+            <button class="btn btn-sm" onclick="clearDocsParentFilter()">Ver todos</button>
+        </div>
+
         <div id="docs-list" class="card-list"></div>
     </div>
 
@@ -277,6 +282,8 @@
 const ADMIN_API = window.location.protocol + '//' + window.location.host;
 let allAreas = [];
 
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+
 // ---- Tabs ----
 function switchTab(name) {
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
@@ -362,6 +369,7 @@ async function deleteArea(id, name) {
 
 // ---- Documentos ----
 let currentDocAreaFilter = null; // null = todas as áreas
+let currentDocParentFilter = null; // {id, name} ou null = sem filtro por árvore
 
 function statusBadge(status) {
     const s = status || 'pending';
@@ -385,6 +393,12 @@ function filterDocsByArea(areaId) {
 
 function renderDocCard(d) {
     const fetchModeLabel = d.type === 'link' ? (d.fetch_mode === 'js_browser' ? ' • <span style="color:#a78bfa;">JS Browser</span>' : ' • HTTP') : '';
+    const treeLine = (d.parent_name || d.child_count > 0) ? `
+        <p style="font-size:0.85rem;">
+            ${d.parent_name ? `<span style="color:#a78bfa; cursor:pointer;" data-parent-id="${d.parent_doc_id}" data-parent-name="${esc(d.parent_name)}" onclick="filterDocsByParentEl(this)">↳ Filho de: ${esc(d.parent_name)}</span>` : ''}
+            ${d.parent_name && d.child_count > 0 ? ' • ' : ''}
+            ${d.child_count > 0 ? `<span style="color:#a78bfa; cursor:pointer;" data-parent-id="${d.id}" data-parent-name="${esc(d.name)}" onclick="filterDocsByParentEl(this)">▸ ${d.child_count} documento(s) filho(s)</span>` : ''}
+        </p>` : '';
     return `
         <div class="card-item">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
@@ -393,6 +407,7 @@ function renderDocCard(d) {
             </div>
             <p>Área: <strong>${d.area_name || '-'}</strong> • ${d.chunk_count || 0} chunks • ${d.type === 'link' ? 'Link monitorado' : 'Arquivo'}${fetchModeLabel}</p>
             ${d.url ? `<p style="word-break:break-all; color:#64748b; font-size:0.85rem;">${d.url}</p>` : ''}
+            ${treeLine}
             <div style="margin-top:0.75rem;">
                 <button class="btn btn-sm" onclick="showDocEditModal(${d.id})">Editar</button>
                 <button class="btn btn-sm" onclick="reprocessDoc(${d.id})">Reprocessar RAG</button>
@@ -404,13 +419,39 @@ function renderDocCard(d) {
 
 async function loadDocs() {
     try {
-        const url = ADMIN_API + '/admin/documents' + (currentDocAreaFilter ? `?area_id=${currentDocAreaFilter}` : '');
+        const params = [];
+        if (currentDocAreaFilter) params.push(`area_id=${currentDocAreaFilter}`);
+        if (currentDocParentFilter) params.push(`parent_doc_id=${currentDocParentFilter.id}`);
+        const url = ADMIN_API + '/admin/documents' + (params.length ? '?' + params.join('&') : '');
         const res = await fetch(url);
         const data = await res.json();
         const docs = data.documents || [];
-        if (!docs.length) { document.getElementById('docs-list').innerHTML = '<p style="color:#64748b;">Nenhum documento nesta área.</p>'; return; }
+
+        const banner = document.getElementById('docsParentFilterBanner');
+        if (currentDocParentFilter) {
+            banner.style.display = 'flex';
+            banner.querySelector('span').textContent = `Mostrando documentos filhos de: ${currentDocParentFilter.name}`;
+        } else {
+            banner.style.display = 'none';
+        }
+
+        if (!docs.length) { document.getElementById('docs-list').innerHTML = '<p style="color:#64748b;">Nenhum documento encontrado.</p>'; return; }
         document.getElementById('docs-list').innerHTML = docs.map(renderDocCard).join('');
     } catch(e) { document.getElementById('docs-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar documentos.</p>'; }
+}
+
+function filterDocsByParent(parentId, parentName) {
+    currentDocParentFilter = { id: parentId, name: parentName };
+    loadDocs();
+}
+
+function filterDocsByParentEl(el) {
+    filterDocsByParent(Number(el.dataset.parentId), el.dataset.parentName);
+}
+
+function clearDocsParentFilter() {
+    currentDocParentFilter = null;
+    loadDocs();
 }
 
 function clearDocsSearch() {

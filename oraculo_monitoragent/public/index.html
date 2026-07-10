@@ -171,6 +171,19 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 <div id="linksContainer"><p style="color:#888">Nenhum link extraído ainda.</p></div>
 </div>
 
+<!-- Knowledge Tree (recursive crawl) -->
+<div class="card">
+<div class="card-header">
+  <h2>🌳 Árvore de Conhecimento</h2>
+  <div class="card-header-actions" id="crawlHeaderActions" style="display:none">
+    <button class="btn btn-scan" onclick="crawlFinalize()">✔ Finalizar</button>
+    <button class="btn btn-del" onclick="crawlCancel()">✖ Cancelar Árvore</button>
+  </div>
+</div>
+<div id="crawlStatus" style="color:#9fb3d9;font-size:.85rem;margin-bottom:10px"></div>
+<div id="crawlContainer"><p style="color:#888">Clique em "🌳 Árvore" numa URL monitorada pra começar. Cada página que você aprovar vira um documento próprio no Oráculo, ligado ao documento da página que o originou.</p></div>
+</div>
+
 </div>
 
 <div class="toast-container" id="toastContainer"></div>
@@ -264,6 +277,7 @@ async function refresh() {
           <div class="url-card-actions">
             <button class="btn btn-scan" onclick="scanUrl(${u.id}, this)">🔍 Scan</button>
             <button class="btn btn-links" onclick="extractLinks(${u.id}, this)">🔗 Links</button>
+            <button class="btn btn-links" onclick="startCrawlTree(${u.id}, this)">🌳 Árvore</button>
             <button class="btn btn-del" onclick="delUrl(${u.id})">🗑 Remover</button>
           </div>
         </div>
@@ -364,6 +378,126 @@ async function extractLinks(urlId, btn) {
     showToast(`Encontrados ${r.links_found} links (${r.links_saved} salvos).`);
     refresh();
   } catch(e) { showToast('Erro ao extrair links: '+e.message, true); }
+}
+
+// ---------- Knowledge tree (recursive crawl) ----------
+// Each approved page becomes its own Tutor document immediately — reviewed
+// one level at a time, not fully automatic (keeps the tree under control).
+let currentCrawl = null; // {crawl_id, max_depth, domain}
+let crawlLinksByGroup = {}; // groupId -> candidate links array for that page
+
+async function startCrawlTree(urlId, btn) {
+  const depthStr = prompt('Quantos níveis de profundidade? (1 a 5, ex: 3 = página + filhas + netas)', '3');
+  if (!depthStr) return;
+  const maxDepth = Math.max(1, Math.min(5, parseInt(depthStr) || 3));
+  try {
+    const r = await withButtonLoading(btn, '...', () => api('/crawl/start', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ url_id: urlId, max_depth: maxDepth })
+    }));
+    currentCrawl = { crawl_id: r.crawl_id, max_depth: r.max_depth, domain: r.domain };
+    crawlLinksByGroup = {};
+    document.getElementById('crawlContainer').innerHTML = '';
+    renderCrawlLevel({ ...r.root_page }, r.links);
+    showToast(`Árvore iniciada — documento raiz criado (#${r.root_page.tutor_doc_id}).`);
+  } catch(e) { showToast('Erro ao iniciar árvore: '+e.message, true); }
+}
+
+function renderCrawlLevel(page, links) {
+  document.getElementById('crawlHeaderActions').style.display = 'flex';
+  document.getElementById('crawlStatus').textContent =
+    `Árvore #${currentCrawl.crawl_id} • domínio: ${currentCrawl.domain} • nível ${page.depth} de ${currentCrawl.max_depth}`;
+
+  const groupId = 'crawlGroup_' + page.id;
+  crawlLinksByGroup[groupId] = links;
+
+  const linksHtml = links.length ? links.map((l, i) => `
+    <label class="link-row" style="display:flex;align-items:center;gap:8px;cursor:pointer">
+      <input type="checkbox" data-group="${groupId}" data-idx="${i}">
+      <span><b>${esc(l.name)}</b> — <code>${esc(l.url)}</code></span>
+    </label>
+  `).join('') : '<p style="color:#888;padding:6px 0">Nenhum link encontrado nesta página.</p>';
+
+  const atMaxDepth = page.depth >= currentCrawl.max_depth;
+  const actionsHtml = atMaxDepth
+    ? `<p style="color:#fdcb6e;font-size:.82rem;margin-top:8px">Profundidade máxima atingida — não é possível avançar mais a partir daqui.</p>`
+    : (links.length ? `<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn btn-auto" onclick="selectAllCrawlLinks('${groupId}', true)">Selecionar todos</button>
+        <button class="btn btn-auto" onclick="selectAllCrawlLinks('${groupId}', false)">Nenhum</button>
+        <button class="btn btn-scan" onclick="advanceCrawl(${page.id}, '${groupId}', this)">Buscar links selecionados →</button>
+      </div>` : '');
+
+  const indent = 16 * (page.depth - 1);
+  const block = document.createElement('div');
+  block.id = groupId + '_block';
+  block.style.cssText = `margin:10px 0;margin-left:${indent}px;padding:12px;background:#1a2540;border-radius:8px;border:1px solid #253552`;
+  block.innerHTML = `
+    <div style="margin-bottom:8px;color:#fff;font-weight:600">
+      Nível ${page.depth}: ${esc(page.title)}
+      <span style="color:#5a6b8c;font-size:.78rem;font-weight:400">(documento #${page.tutor_doc_id})</span>
+    </div>
+    ${linksHtml}
+    ${actionsHtml}
+  `;
+  document.getElementById('crawlContainer').appendChild(block);
+}
+
+function selectAllCrawlLinks(groupId, checked) {
+  document.querySelectorAll(`input[data-group="${groupId}"]`).forEach(cb => cb.checked = checked);
+}
+
+async function advanceCrawl(parentPageId, groupId, btn) {
+  const links = crawlLinksByGroup[groupId] || [];
+  const selected = [];
+  document.querySelectorAll(`input[data-group="${groupId}"]:checked`).forEach(cb => {
+    selected.push(links[+cb.dataset.idx]);
+  });
+  if (!selected.length) { showToast('Marque pelo menos um link antes de avançar.', true); return; }
+
+  try {
+    const r = await withButtonLoading(btn, 'Buscando...', () => api(`/crawl/${currentCrawl.crawl_id}/advance`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ parent_page_id: parentPageId, links: selected })
+    }));
+
+    document.querySelectorAll(`input[data-group="${groupId}"]`).forEach(cb => cb.disabled = true);
+    if (btn) { btn.disabled = true; btn.textContent = 'Já buscado ✓'; }
+
+    if (!r.pages.length) {
+      showToast('Nenhuma página nova foi buscada (fora do domínio, já visitada, ou sem conteúdo suficiente).', true);
+    } else {
+      r.pages.forEach(p => renderCrawlLevel(p, p.links));
+      showToast(`${r.pages.length} documento(s) criado(s) no nível ${r.depth}.`);
+    }
+    if (r.reached_max_depth) {
+      document.getElementById('crawlStatus').textContent += ' — profundidade máxima atingida.';
+    }
+  } catch(e) { showToast('Erro ao avançar a árvore: '+e.message, true); }
+}
+
+async function crawlFinalize() {
+  if (!currentCrawl) return;
+  try {
+    const r = await api(`/crawl/${currentCrawl.crawl_id}/finalize`, { method: 'POST' });
+    showToast(`Árvore finalizada — ${r.total_pages} documento(s) criados no total.`);
+    document.getElementById('crawlHeaderActions').style.display = 'none';
+    currentCrawl = null;
+    refresh();
+  } catch(e) { showToast('Erro ao finalizar árvore: '+e.message, true); }
+}
+
+async function crawlCancel() {
+  if (!currentCrawl) return;
+  if (!confirm('Cancelar esta árvore? Todos os documentos já criados nesta sessão serão apagados do Oráculo.')) return;
+  try {
+    const r = await api(`/crawl/${currentCrawl.crawl_id}/cancel`, { method: 'POST' });
+    showToast(`Árvore cancelada — ${r.documents_deleted} documento(s) removido(s).`);
+    document.getElementById('crawlContainer').innerHTML = '<p style="color:#888">Clique em "🌳 Árvore" numa URL monitorada pra começar.</p>';
+    document.getElementById('crawlStatus').textContent = '';
+    document.getElementById('crawlHeaderActions').style.display = 'none';
+    currentCrawl = null;
+    refresh();
+  } catch(e) { showToast('Erro ao cancelar árvore: '+e.message, true); }
 }
 
 // Health check

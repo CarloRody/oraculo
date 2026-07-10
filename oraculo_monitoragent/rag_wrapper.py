@@ -41,16 +41,20 @@ check_rag_engine_available = is_rag_available
 # ---------------------------------------------------------------------------
 
 
-def create_document_in_tutor(name, area_id, content_text=None, url=None):
-    """Insert a new document into the Tutor's documents table."""
+def create_document_in_tutor(name, area_id, content_text=None, url=None, parent_doc_id=None, fetch_mode='http'):
+    """Insert a new document into the Tutor's documents table.
+
+    parent_doc_id links this document into a knowledge tree (Monitor Agent's
+    recursive link crawl) — None means a root/standalone document, same as
+    every document created before this feature existed."""
     conn = _conn()
     try:
         cur = conn.cursor()
         is_external = url is not None
         cur.execute(
-            """INSERT INTO documents (name, area_id, content_text, url, is_external_link, processing_status)
-               VALUES (%s, %s, %s, %s, %s, 'pending') RETURNING id""",
-            (name, area_id, content_text, url, is_external),
+            """INSERT INTO documents (name, area_id, content_text, url, is_external_link, processing_status, parent_doc_id, fetch_mode)
+               VALUES (%s, %s, %s, %s, %s, 'pending', %s, %s) RETURNING id""",
+            (name, area_id, content_text, url, is_external, parent_doc_id, fetch_mode),
         )
         doc_id = cur.fetchone()[0]
         conn.commit()
@@ -61,6 +65,18 @@ def create_document_in_tutor(name, area_id, content_text=None, url=None):
         return None
     finally:
         conn.close()
+
+
+def delete_document(doc_id):
+    """Delete a Tutor document (and its chunks) via the Tutor's admin API —
+    reuses the same endpoint the admin panel uses, instead of duplicating
+    the cascading-delete SQL here. Used to roll back a cancelled crawl."""
+    try:
+        res = requests.delete(f"{TUTOR_API_URL}/admin/documents/{doc_id}", timeout=30)
+        return res.status_code == 200
+    except Exception as e:
+        print(f"Error deleting document {doc_id}: {e}")
+        return False
 
 
 def update_document_content(doc_id, content_text):
@@ -128,9 +144,12 @@ def process_document(doc_id):
         return {"ok": False, "chunks_created": 0, "saved_count": 0, "error": str(e)}
 
 
-def ingest_and_index(content_text, name, area_id):
+def ingest_and_index(content_text, name, area_id, url=None, parent_doc_id=None, fetch_mode='http'):
     """Create document + attempt RAG indexing. Never raises."""
-    doc_id = create_document_in_tutor(name=name, area_id=area_id, content_text=content_text)
+    doc_id = create_document_in_tutor(
+        name=name, area_id=area_id, content_text=content_text,
+        url=url, parent_doc_id=parent_doc_id, fetch_mode=fetch_mode
+    )
     if not doc_id:
         return {"ok": False, "error": "Failed to create document"}
     result = process_document(doc_id)
