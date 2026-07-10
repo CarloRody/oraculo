@@ -198,7 +198,7 @@ def rag_search():
     """Busca semântica RAG via embeddings + cosine similarity no Postgres."""
     data = request.get_json()
     query = data.get('query', '')
-    area_id = data.get('area_id')
+    area_ids = resolve_area_ids(data)
     try:
         top_k = max(1, min(int(data.get('top_k') or 8), 20))
     except (TypeError, ValueError):
@@ -208,7 +208,7 @@ def rag_search():
         return jsonify({"error": "Campo 'query' é obrigatório"}), 400
 
     try:
-        results = search_similar(query, area_id=area_id, top_k=top_k)
+        results = search_similar(query, area_ids=area_ids, top_k=top_k)
 
         # Enrich com nome do documento
         enriched = []
@@ -248,17 +248,17 @@ def rag_search():
             if not conn:
                 return jsonify({"error": "RAG indisponível, fallback também falhou"}), 500
             cur = conn.cursor()
-            where_clause = "WHERE d.area_id = %s" if area_id else ""
-            params = [area_id] if area_id else []
+            area_clause = "AND d.area_id = ANY(%s)" if area_ids else ""
+            params = [list(area_ids)] if area_ids else []
 
             cur.execute(
                 f"""SELECT dc.id, d.name as doc_name, dc.content_chunk, dc.chunk_index
                     FROM document_chunks dc
                     JOIN documents d ON d.id = dc.doc_id
-                    {where_clause}
                     WHERE dc.content_chunk ILIKE %s
+                    {area_clause}
                     ORDER BY dc.chunk_index LIMIT 5""",
-                params + [f"%{query}%"]
+                [f"%{query}%"] + params
             )
             rows = cur.fetchall()
             fallback_results = [{
@@ -312,6 +312,34 @@ def resolve_user_from_request():
         return None
 
 
+def _area_name(area_id):
+    """Nome de uma área pelo id, para mensagens de cota e cabeçalhos de contexto."""
+    if not area_id:
+        return "Desconhecida"
+    conn = get_db_connection()
+    if not conn:
+        return f"Área #{area_id}"
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT name FROM areas WHERE id = %s", (area_id,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else f"Área #{area_id}"
+    except Exception:
+        if conn: conn.close()
+        return f"Área #{area_id}"
+
+
+def resolve_area_ids(data):
+    """Lê 'area_ids' (lista, formato atual) do corpo da requisição; aceita
+    'area_id' (escalar, formato antigo) como fallback. None/[] = todas as áreas."""
+    area_ids = data.get('area_ids')
+    if area_ids:
+        return [int(a) for a in area_ids]
+    area_id = data.get('area_id')
+    return [int(area_id)] if area_id else None
+
+
 def get_quota_status(user_id, area_id):
     """Cota mensal, uso do mês corrente e preço configurado para um cliente+área.
     None se não houver assinatura configurada para essa combinação (sem cota = sem checagem)."""
@@ -350,38 +378,60 @@ def get_quota_status(user_id, area_id):
         return None
 
 
-def log_chat_usage(user_id, area_id, message, response_text, tokens_input, tokens_output):
-    """Grava sessions/messages/usage_logs. Nunca levanta — falha aqui não deve quebrar o chat."""
+def log_chat_message(user_id, area_ids, message, response_text, tokens_input, tokens_output):
+    """Grava a sessão + as duas mensagens (pergunta/resposta) uma vez só,
+    independente de quantas áreas a pergunta usou. A sessão fica associada à
+    primeira área da lista só para fins de exibição de histórico.
+    Nunca levanta — falha aqui não deve quebrar o chat. Retorna session_id ou None."""
+    if not user_id:
+        return None
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        primary_area_id = area_ids[0] if area_ids else None
+        cur.execute(
+            """SELECT id FROM sessions WHERE user_id = %s AND area_id = %s
+               AND created_at::date = CURRENT_DATE ORDER BY created_at DESC LIMIT 1""",
+            (user_id, primary_area_id)
+        )
+        row = cur.fetchone()
+        session_id = row[0] if row else None
+        if session_id is None:
+            cur.execute(
+                "INSERT INTO sessions (user_id, area_id, title) VALUES (%s, %s, %s) RETURNING id",
+                (user_id, primary_area_id, message[:60])
+            )
+            session_id = cur.fetchone()[0]
+
+        cur.execute(
+            "INSERT INTO messages (session_id, role, content, token_count) VALUES (%s, 'user', %s, %s)",
+            (session_id, message, tokens_input)
+        )
+        cur.execute(
+            "INSERT INTO messages (session_id, role, content, token_count) VALUES (%s, 'assistant', %s, %s)",
+            (session_id, response_text, tokens_output)
+        )
+        conn.commit()
+        conn.close()
+        return session_id
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        print(f"ERRO ao gravar sessions/messages: {e}")
+        return None
+
+
+def log_area_usage(user_id, session_id, area_id, tokens_input, tokens_output):
+    """Grava uma linha de usage_logs para uma área, com a fatia de tokens já
+    calculada (rateio proporcional é feito pelo chamador). Nunca levanta."""
     conn = get_db_connection()
     if not conn:
         return
     try:
         cur = conn.cursor()
-        session_id = None
-        if user_id:
-            cur.execute(
-                """SELECT id FROM sessions WHERE user_id = %s AND area_id = %s
-                   AND created_at::date = CURRENT_DATE ORDER BY created_at DESC LIMIT 1""",
-                (user_id, area_id)
-            )
-            row = cur.fetchone()
-            session_id = row[0] if row else None
-            if session_id is None:
-                cur.execute(
-                    "INSERT INTO sessions (user_id, area_id, title) VALUES (%s, %s, %s) RETURNING id",
-                    (user_id, area_id, message[:60])
-                )
-                session_id = cur.fetchone()[0]
-
-            cur.execute(
-                "INSERT INTO messages (session_id, role, content, token_count) VALUES (%s, 'user', %s, %s)",
-                (session_id, message, tokens_input)
-            )
-            cur.execute(
-                "INSERT INTO messages (session_id, role, content, token_count) VALUES (%s, 'assistant', %s, %s)",
-                (session_id, response_text, tokens_output)
-            )
-
         cur.execute(
             "INSERT INTO usage_logs (user_id, session_id, area_id, tokens_input, tokens_output) VALUES (%s, %s, %s, %s, %s)",
             (user_id, session_id, area_id, tokens_input, tokens_output)
@@ -395,37 +445,81 @@ def log_chat_usage(user_id, area_id, message, response_text, tokens_input, token
         print(f"ERRO ao gravar usage_logs: {e}")
 
 
+def split_tokens_by_area(area_ids, chunk_counts_by_area, tokens_input, tokens_output):
+    """Rateia tokens_input/tokens_output entre as áreas, proporcional a quantos
+    chunks cada área contribuiu para o contexto. Sem chunks em nenhuma área
+    (contexto vazio), rateia igualmente. A última área recebe o resto da
+    divisão inteira, para a soma das partes fechar com o total exato."""
+    n = len(area_ids)
+    total_chunks = sum(chunk_counts_by_area.get(aid, 0) for aid in area_ids)
+
+    shares = []
+    if total_chunks > 0:
+        for aid in area_ids:
+            shares.append(chunk_counts_by_area.get(aid, 0) / total_chunks)
+    else:
+        shares = [1.0 / n] * n
+
+    result = []
+    used_input = used_output = 0
+    for i, (aid, share) in enumerate(zip(area_ids, shares)):
+        if i == n - 1:
+            area_input = tokens_input - used_input
+            area_output = tokens_output - used_output
+        else:
+            area_input = round(tokens_input * share)
+            area_output = round(tokens_output * share)
+            used_input += area_input
+            used_output += area_output
+        result.append((aid, area_input, area_output))
+    return result
+
+
 @app.route('/api/chat', methods=['POST'])
 def chat():
-    """Chat com contexto RAG — busca chunks similares, monta prompt e chama LLM local."""
+    """Chat com contexto RAG — busca chunks similares, monta prompt e chama LLM local.
+    Aceita `area_ids` (lista) para combinar várias áreas numa mesma pergunta;
+    None/[] busca em todas as áreas."""
     data = request.get_json()
     message = data.get('message', '')
-    area_id = data.get('area_id')
+    requested_area_ids = resolve_area_ids(data)
     user_id = resolve_user_from_request()
 
     if not message:
         return jsonify({"error": "Campo 'message' é obrigatório"}), 400
 
-    # Checagem de cota mensal, antes de gastar uma chamada de LLM
-    quota_warning = None
-    quota_status = get_quota_status(user_id, area_id)
-    if quota_status and quota_status["quota"] is not None and quota_status["used"] >= quota_status["quota"]:
-        if QUOTA_ENFORCEMENT == "block":
-            return jsonify({
-                "error": "Limite mensal de tokens excedido para esta área.",
-                "quota": quota_status["quota"],
-                "used": quota_status["used"]
-            }), 429
-        elif QUOTA_ENFORCEMENT == "warn":
-            quota_warning = "Uso de tokens acima do limite mensal contratado para esta área."
-
     try:
-        # Busca chunks relevantes via RAG
-        context_chunks = search_similar(message, area_id=area_id, top_k=50)
+        # Busca chunks relevantes via RAG (uma ou várias áreas, ou todas se None)
+        context_chunks = search_similar(message, area_ids=requested_area_ids, top_k=50)
 
-        # Enrich com nomes de documentos
+        # Áreas que de fato contribuíram trechos para o contexto — é isso que
+        # define a cota/billing, não o que foi pedido (uma área pedida sem
+        # nenhum trecho relevante não deve ser cobrada nem checada).
+        chunk_counts_by_area = {}
+        for chunk in context_chunks:
+            aid = chunk["area_id"]
+            chunk_counts_by_area[aid] = chunk_counts_by_area.get(aid, 0) + 1
+        billing_area_ids = list(chunk_counts_by_area.keys()) or (requested_area_ids or [])
+
+        # Checagem de cota mensal, antes de gastar uma chamada de LLM
+        quota_warning = None
+        over_quota_names = []
+        for aid in billing_area_ids:
+            quota_status = get_quota_status(user_id, aid)
+            if quota_status and quota_status["quota"] is not None and quota_status["used"] >= quota_status["quota"]:
+                over_quota_names.append(_area_name(aid))
+        if over_quota_names:
+            if QUOTA_ENFORCEMENT == "block":
+                return jsonify({
+                    "error": f"Limite mensal de tokens excedido para: {', '.join(over_quota_names)}."
+                }), 429
+            elif QUOTA_ENFORCEMENT == "warn":
+                quota_warning = f"Uso de tokens acima do limite mensal contratado para: {', '.join(over_quota_names)}."
+
+        # Enrich com nomes de documentos e áreas
         conn = get_db_connection()
         doc_names = {}
+        area_names = {}
         if conn and context_chunks:
             cur = conn.cursor()
             doc_ids = list(set(r["doc_id"] for r in context_chunks))
@@ -436,27 +530,45 @@ def chat():
                     doc_ids
                 )
                 doc_names = {row[0]: row[1] for row in cur.fetchall()}
+            for aid in chunk_counts_by_area:
+                area_names[aid] = _area_name(aid)
 
         context_sources = []
-        full_context_text = ""
+        # Agrupa o contexto por área, com um cabeçalho por seção — ajuda o
+        # modelo a não misturar regras de domínios diferentes numa pergunta
+        # que cruza áreas (ex: layout técnico de XML + legislação fiscal).
+        chunks_by_area = {}
         for chunk in context_chunks:
-            similarity = round(1.0 - chunk["distance"], 4)
-            context_sources.append({
-                "source": doc_names.get(chunk["doc_id"], f"Doc #{chunk['doc_id']}"),
-                "text": chunk["content_chunk"][:600],
-                "similarity": similarity,
-                "chunk_index": chunk["chunk_index"]
-            })
-            full_context_text += chunk["content_chunk"] + "\n\n"
+            chunks_by_area.setdefault(chunk["area_id"], []).append(chunk)
+
+        context_sections = []
+        for aid, chunks in chunks_by_area.items():
+            section_lines = [f"=== Contexto: {area_names.get(aid, f'Área #{aid}')} ==="]
+            for chunk in chunks:
+                similarity = round(1.0 - chunk["distance"], 4)
+                context_sources.append({
+                    "source": doc_names.get(chunk["doc_id"], f"Doc #{chunk['doc_id']}"),
+                    "area_id": aid,
+                    "area_name": area_names.get(aid, f"Área #{aid}"),
+                    "text": chunk["content_chunk"][:600],
+                    "similarity": similarity,
+                    "chunk_index": chunk["chunk_index"]
+                })
+                section_lines.append(chunk["content_chunk"])
+            context_sections.append("\n\n".join(section_lines))
 
         if conn:
             conn.close()
+
+        full_context_text = "\n\n".join(context_sections)
 
         # Monta prompt com contexto RAG
         system_prompt = (
             "Você é um tutor inteligente especializado em educação e análise técnica. "
             "Responda as perguntas do usuário usando o contexto fornecido abaixo COMO REFERÊNCIA, "
             "mas também pode usar seu conhecimento geral para complementar a resposta. "
+            "O contexto pode vir de mais de uma área de conhecimento, cada uma em sua própria seção — "
+            "não misture regras de áreas diferentes ao responder. "
             "Se o contexto RAG não cobrir todos os aspectos da pergunta, complete com seu conhecimento prévio. "
             "Cite quando algo vem do contexto vs conhecimento geral. "
             "Responda em português de forma clara e didática."
@@ -496,12 +608,19 @@ Pergunta: {message}"""
             tokens_input = count_tokens(system_prompt + user_prompt)
             tokens_output = count_tokens(response_text)
 
-        log_chat_usage(user_id, area_id, message, response_text, tokens_input, tokens_output)
+        session_id = log_chat_message(user_id, billing_area_ids, message, response_text, tokens_input, tokens_output)
+        if billing_area_ids:
+            for aid, area_input, area_output in split_tokens_by_area(billing_area_ids, chunk_counts_by_area, tokens_input, tokens_output):
+                log_area_usage(user_id, session_id, aid, area_input, area_output)
+        else:
+            # Nenhuma área envolvida (contexto vazio, nenhuma área pedida) —
+            # mesmo comportamento de sempre: um registro sem área associada.
+            log_area_usage(user_id, session_id, None, tokens_input, tokens_output)
 
         result = {
             "response": response_text,
             "context_sources": context_sources,
-            "area_id": area_id,
+            "area_ids": billing_area_ids,
             "message": message
         }
         if quota_warning:
@@ -513,7 +632,7 @@ Pergunta: {message}"""
         return jsonify({
             "response": f"Erro ao processar consulta: {str(e)}",
             "context_sources": [],
-            "area_id": area_id,
+            "area_ids": requested_area_ids,
             "error": str(e)
         })
 

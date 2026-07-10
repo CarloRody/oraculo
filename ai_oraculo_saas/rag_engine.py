@@ -179,11 +179,17 @@ def save_chunks_to_db(doc_id: int, area_id: int, chunks_data: list[dict], embedd
 # ---------------------------------------------------------------------------
 # 5. Buscar por similaridade (cosine) via SQL
 # ---------------------------------------------------------------------------
-def search_similar(query_text: str, area_id: Optional[int] = None, top_k=4) -> list[dict]:
+def search_similar(query_text: str, area_ids: Optional[list[int]] = None, top_k=4) -> list[dict]:
     """Busca chunks similares à query via cosine similarity calculada em Python.
 
     Como pgvector não está disponível no ARM64 deste host,
-    busca todos os chunks da área e ordena por cosine distance local.
+    busca todos os chunks da(s) área(s) e ordena por cosine distance local.
+
+    area_ids=None ou [] busca em todas as áreas. Com uma área só, pega os
+    `top_k` melhores globais (comportamento de sempre). Com várias áreas,
+    reserva uma fatia de `top_k` para cada área (representação garantida),
+    em vez de rankear tudo junto — evita que uma área "suma" da resposta
+    por ter notas de similaridade mais baixas que outra.
     """
     conn = get_conn()
     if not conn:
@@ -193,9 +199,9 @@ def search_similar(query_text: str, area_id: Optional[int] = None, top_k=4) -> l
         emb_model = get_model()
         query_vector = emb_model.encode([query_text])[0].tolist()
 
-        # Busca todos os chunks da área (ou de todas se area_id=None)
-        where_clause = "WHERE dc.area_id = %s" if area_id else ""
-        params = [area_id] if area_id else []
+        # Busca todos os chunks da(s) área(s) (ou de todas se area_ids vazio)
+        where_clause = "WHERE dc.area_id = ANY(%s)" if area_ids else ""
+        params = [list(area_ids)] if area_ids else []
 
         sql = f"""
             SELECT id, doc_id, area_id, content_chunk, chunk_index, embedding_vector
@@ -232,9 +238,18 @@ def search_similar(query_text: str, area_id: Optional[int] = None, top_k=4) -> l
                 "distance": round(1.0 - similarity, 4),
             })
 
-        # Ordena por similaridade (menor distance = mais similar)
-        scored.sort(key=lambda x: x["distance"])
-        results = scored[:top_k]
+        if area_ids and len(area_ids) > 1:
+            # Várias áreas: reserva uma fatia de top_k por área, agrupado por área
+            per_area_k = max(1, top_k // len(area_ids))
+            results = []
+            for aid in area_ids:
+                area_scored = [s for s in scored if s["area_id"] == aid]
+                area_scored.sort(key=lambda x: x["distance"])
+                results.extend(area_scored[:per_area_k])
+        else:
+            # Uma área só (ou nenhuma) — ranking global, como sempre foi
+            scored.sort(key=lambda x: x["distance"])
+            results = scored[:top_k]
 
         conn.close()
         return results
@@ -337,7 +352,7 @@ if __name__ == "__main__":
     elif cmd == "search":
         query = sys.argv[2] if len(sys.argv) > 2 else ""
         area_id = int(sys.argv[3]) if len(sys.argv) > 3 and sys.argv[3].isdigit() else None
-        results = search_similar(query, area_id=area_id)
+        results = search_similar(query, area_ids=[area_id] if area_id else None)
         print(json.dumps(results[:10], indent=2, ensure_ascii=False))
 
     elif cmd == "help":
