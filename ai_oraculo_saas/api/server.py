@@ -854,7 +854,8 @@ def admin_reprocess_document(doc_id):
 
 @app.route('/admin/users', methods=['GET'])
 def admin_list_users():
-    """Lista clientes cadastrados (chave de acesso mascarada)."""
+    """Lista clientes cadastrados, com a chave de acesso completa (painel admin
+    interno, mesmo nível de confiança que o resto do sistema — sem auth)."""
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "total": 0, "users": []}), 500
@@ -864,10 +865,9 @@ def admin_list_users():
         rows = cur.fetchall()
         users = []
         for r in rows:
-            key = r[2] or ""
             users.append({
                 "id": r[0], "email": r[1],
-                "api_key_masked": f"...{key[-4:]}" if key else None,
+                "api_key": r[2],
                 "created_at": r[3].isoformat() if r[3] else None
             })
         conn.close()
@@ -879,7 +879,7 @@ def admin_list_users():
 
 @app.route('/admin/users', methods=['POST'])
 def admin_create_user():
-    """Cria um cliente e gera sua chave de acesso (mostrada uma única vez)."""
+    """Cria um cliente e gera sua chave de acesso."""
     data = request.get_json()
     email = (data.get('email') or '').strip()
     if not email:
@@ -898,6 +898,49 @@ def admin_create_user():
         conn.commit()
         conn.close()
         return jsonify({"id": user_id, "email": email, "api_key": api_key}), 201
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Email '{email}' já cadastrado"}), 409
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/users/<int:user_id>', methods=['PATCH'])
+def admin_update_user(user_id):
+    """Atualiza o email de um cliente e/ou regenera sua chave de acesso
+    (regenerar invalida a chave antiga na hora — qualquer integração usando
+    a chave anterior para de funcionar)."""
+    data = request.get_json()
+    email = (data.get('email') or '').strip() or None
+    regenerate_key = bool(data.get('regenerate_key'))
+    if not email and not regenerate_key:
+        return jsonify({"error": "Nada para atualizar"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        new_api_key = secrets.token_hex(32) if regenerate_key else None
+
+        if email and new_api_key:
+            cur.execute("UPDATE users SET email = %s, api_key = %s WHERE id = %s", (email, new_api_key, user_id))
+        elif email:
+            cur.execute("UPDATE users SET email = %s WHERE id = %s", (email, user_id))
+        else:
+            cur.execute("UPDATE users SET api_key = %s WHERE id = %s", (new_api_key, user_id))
+
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({"error": "Cliente não encontrado"}), 404
+
+        conn.commit()
+        cur.execute("SELECT id, email, api_key FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return jsonify({"id": row[0], "email": row[1], "api_key": row[2]})
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         conn.close()

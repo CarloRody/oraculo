@@ -56,6 +56,27 @@
         th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid #334155; }
         th { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; }
 
+        /* Filter chips (Documentos por área) */
+        .filter-row { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-bottom: 1.25rem; }
+        .filter-chip { background: #1e293b; color: #94a3b8; border: 1px solid #334155; border-radius: 20px; padding: 0.4rem 0.9rem; cursor: pointer; font-size: 0.85rem; white-space: nowrap; }
+        .filter-chip.active { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: #fff; border-color: transparent; }
+
+        /* Status badges (mesma paleta usada em extract.html) */
+        .status-badge { display: inline-block; padding: 2px 9px; border-radius: 10px; font-size: 0.72rem; font-weight: 600; text-transform: uppercase; }
+        .status-pending { background: #4a3a1f; color: #fbbf24; }
+        .status-processing { background: #1f3a4a; color: #60a5fa; }
+        .status-indexed { background: #1f4a2d; color: #4ade80; }
+        .status-failed { background: #4a1f27; color: #f87171; }
+
+        /* Busca de documentos */
+        .search-row { display: flex; gap: 0.5rem; margin-bottom: 0.5rem; flex-wrap: wrap; align-items: center; }
+        .search-row input[type="text"] { flex: 1; min-width: 200px; }
+        .search-row select { max-width: 240px; }
+        .search-hint { color: #64748b; font-size: 0.8rem; margin-bottom: 1.25rem; }
+
+        /* Chave de API na aba Clientes */
+        .api-key-box { background: #0f172a; border: 1px solid #334155; border-radius: 6px; padding: 0.6rem 0.85rem; margin: 0.5rem 0; word-break: break-all; font-family: monospace; font-size: 0.82rem; color: #4ade80; }
+
         .footer { text-align: center; padding: 2rem; border-top: 1px solid #1a2744; margin-top: 3rem; color: #64748b; }
 
         @media (max-width: 640px) {
@@ -100,7 +121,21 @@
 
     <!-- DOCUMENTOS -->
     <div id="documents-tab" class="tab-content">
-        <h2 style="color:#60a5fa; margin-bottom:1.5rem;">Documentos</h2>
+        <h2 style="color:#60a5fa; margin-bottom:1rem;">Documentos</h2>
+
+        <div class="filter-row" id="docs-area-filter"></div>
+
+        <div class="search-row">
+            <select class="form-input" id="docsSearchMethod">
+                <option value="name">Buscar por nome</option>
+                <option value="content">Buscar por conteúdo (busca direta)</option>
+            </select>
+            <input type="text" class="form-input" id="docsSearchInput" placeholder="Digite para buscar..." onkeypress="if(event.key==='Enter') runDocsSearch()">
+            <button class="btn btn-sm" onclick="runDocsSearch()">Buscar</button>
+            <button class="btn btn-sm btn-danger" onclick="clearDocsSearch()">Limpar</button>
+        </div>
+        <p class="search-hint" id="docsSearchHint" style="display:none;"></p>
+
         <div id="docs-list" class="card-list"></div>
     </div>
 
@@ -165,12 +200,34 @@
             <input type="text" class="form-input" id="clientEmail" placeholder="cliente@empresa.com">
         </div>
         <div id="clientKeyBox" style="display:none; background:#0f172a; border:1px solid #22c55e; border-radius:6px; padding:1rem; margin-bottom:1rem; word-break:break-all;">
-            <p style="color:#94a3b8; font-size:0.85rem; margin-bottom:0.5rem;">Chave de acesso gerada — copie agora, ela não será mostrada de novo:</p>
+            <p style="color:#94a3b8; font-size:0.85rem; margin-bottom:0.5rem;">Chave de acesso gerada:</p>
             <code id="clientKeyValue" style="color:#4ade80;"></code>
         </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeClientModal()">Fechar</button>
             <button class="btn" id="clientSaveBtn" onclick="saveClient()">Gerar Chave</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Editar Cliente -->
+<div class="modal-overlay" id="clientEditModal">
+    <div class="modal">
+        <h2>Editar Cliente</h2>
+        <input type="hidden" id="editClientId">
+        <div class="form-group">
+            <label>Email</label>
+            <input type="text" class="form-input" id="editClientEmail">
+        </div>
+        <div class="form-group">
+            <label>Chave de acesso atual</label>
+            <div class="api-key-box" id="editClientKeyValue"></div>
+            <button class="btn btn-sm btn-danger" onclick="regenerateClientKey()">Gerar nova chave</button>
+            <span style="color:#64748b; font-size:0.8rem;">— invalida a chave atual na hora</span>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeClientEditModal()">Cancelar</button>
+            <button class="btn" onclick="saveClientEdit()">Salvar</button>
         </div>
     </div>
 </div>
@@ -227,6 +284,7 @@ async function loadAreas() {
         const data = await res.json();
         const areas = data.areas || [];
         allAreas = areas;
+        renderDocsAreaFilter();
         if (!areas.length) { document.getElementById('areas-list').innerHTML = '<p style="color:#64748b;">Nenhuma área cadastrada.</p>'; return; }
         document.getElementById('areas-list').innerHTML = areas.map(a => `
             <div class="card-item">
@@ -277,25 +335,103 @@ async function deleteArea(id, name) {
 }
 
 // ---- Documentos ----
+let currentDocAreaFilter = null; // null = todas as áreas
+
+function statusBadge(status) {
+    const s = status || 'pending';
+    const labels = { pending: 'pendente', processing: 'processando', indexed: 'indexado', failed: 'falhou' };
+    return `<span class="status-badge status-${s}">${labels[s] || s}</span>`;
+}
+
+function renderDocsAreaFilter() {
+    const total = allAreas.reduce((sum, a) => sum + (a.doc_count || 0), 0);
+    const chips = [`<button class="filter-chip${currentDocAreaFilter === null ? ' active' : ''}" onclick="filterDocsByArea(null)">Todas (${total})</button>`]
+        .concat(allAreas.map(a => `<button class="filter-chip${currentDocAreaFilter === a.id ? ' active' : ''}" onclick="filterDocsByArea(${a.id})">${a.name} (${a.doc_count || 0})</button>`));
+    document.getElementById('docs-area-filter').innerHTML = chips.join('');
+}
+
+function filterDocsByArea(areaId) {
+    currentDocAreaFilter = areaId;
+    document.getElementById('docsSearchInput').value = '';
+    renderDocsAreaFilter();
+    loadDocs();
+}
+
+function renderDocCard(d) {
+    return `
+        <div class="card-item">
+            <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+                <h3 style="margin-bottom:0.25rem;">${d.name}</h3>
+                ${statusBadge(d.processing_status)}
+            </div>
+            <p>Área: <strong>${d.area_name || '-'}</strong> • ${d.chunk_count || 0} chunks • ${d.type === 'link' ? 'Link monitorado' : 'Arquivo'}</p>
+            ${d.url ? `<p style="word-break:break-all; color:#64748b; font-size:0.85rem;">${d.url}</p>` : ''}
+            <div style="margin-top:0.75rem;">
+                <button class="btn btn-sm" onclick='showDocEditModal(${JSON.stringify(d).replace(/'/g, "\\'")})'>Trocar Área</button>
+                <button class="btn btn-sm" onclick="reprocessDoc(${d.id})">Reprocessar RAG</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id}, '${d.name}')">Excluir</button>
+            </div>
+        </div>
+    `;
+}
+
 async function loadDocs() {
     try {
-        const res = await fetch(ADMIN_API + '/admin/documents');
+        const url = ADMIN_API + '/admin/documents' + (currentDocAreaFilter ? `?area_id=${currentDocAreaFilter}` : '');
+        const res = await fetch(url);
         const data = await res.json();
         const docs = data.documents || [];
-        if (!docs.length) { document.getElementById('docs-list').innerHTML = '<p style="color:#64748b;">Nenhum documento cadastrado.</p>'; return; }
-        document.getElementById('docs-list').innerHTML = docs.map(d => `
-            <div class="card-item">
-                <h3>${d.name}</h3>
-                <p>ID: ${d.id} • Área: ${d.area_name || '-'} • Status: ${d.processing_status || '-'}</p>
-                <p>URL: ${d.url || '—'} • Chunks: ${d.chunk_count || 0}</p>
-                <div style="margin-top:0.75rem;">
-                    <button class="btn btn-sm" onclick='showDocEditModal(${JSON.stringify(d).replace(/'/g, "\\'")})'>Trocar Área</button>
-                    <button class="btn btn-sm" onclick="reprocessDoc(${d.id})">Reprocessar RAG</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id}, '${d.name}')">Excluir</button>
-                </div>
-            </div>
-        `).join('');
+        if (!docs.length) { document.getElementById('docs-list').innerHTML = '<p style="color:#64748b;">Nenhum documento nesta área.</p>'; return; }
+        document.getElementById('docs-list').innerHTML = docs.map(renderDocCard).join('');
     } catch(e) { document.getElementById('docs-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar documentos.</p>'; }
+}
+
+function clearDocsSearch() {
+    document.getElementById('docsSearchInput').value = '';
+    document.getElementById('docsSearchHint').style.display = 'none';
+    loadDocs();
+}
+
+async function runDocsSearch() {
+    const query = document.getElementById('docsSearchInput').value.trim();
+    const method = document.getElementById('docsSearchMethod').value;
+    if (!query) return loadDocs();
+
+    if (method === 'name') {
+        // Filtro local por nome, sobre os documentos já carregados na área atual
+        const url = ADMIN_API + '/admin/documents' + (currentDocAreaFilter ? `?area_id=${currentDocAreaFilter}` : '');
+        try {
+            const res = await fetch(url);
+            const data = await res.json();
+            const docs = (data.documents || []).filter(d => d.name.toLowerCase().includes(query.toLowerCase()));
+            document.getElementById('docsSearchHint').style.display = 'block';
+            document.getElementById('docsSearchHint').textContent = `${docs.length} documento(s) com "${query}" no nome.`;
+            document.getElementById('docs-list').innerHTML = docs.length ? docs.map(renderDocCard).join('') : '<p style="color:#64748b;">Nenhum documento encontrado.</p>';
+        } catch(e) { document.getElementById('docs-list').innerHTML = '<p style="color:#ef4444;">Erro na busca.</p>'; }
+        return;
+    }
+
+    // Busca direta (js browser): chama /api/search sem passar pelo LLM,
+    // mostrando os trechos exatamente como foram indexados — mesma
+    // precisão da página de Busca RAG, útil pra conferir o que está
+    // realmente no índice de uma área.
+    try {
+        const res = await fetch(ADMIN_API + '/api/search', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ query, area_id: currentDocAreaFilter, top_k: 15 })
+        });
+        const data = await res.json();
+        const results = data.results || [];
+        document.getElementById('docsSearchHint').style.display = 'block';
+        document.getElementById('docsSearchHint').textContent = `${results.length} trecho(s) encontrado(s) por busca direta (sem IA).`;
+        document.getElementById('docs-list').innerHTML = results.length ? results.map(r => `
+            <div class="card-item">
+                <h3>${r.doc_name || 'Documento #' + r.doc_id}</h3>
+                <p>Similaridade: <strong>${((r.similarity ?? 0) * 100).toFixed(0)}%</strong> • Trecho #${r.chunk_index}</p>
+                <p style="color:#94a3b8; font-size:0.85rem;">${(r.content_chunk || '').slice(0, 300)}${(r.content_chunk || '').length > 300 ? '…' : ''}</p>
+            </div>
+        `).join('') : '<p style="color:#64748b;">Nenhum trecho relevante encontrado.</p>';
+    } catch(e) { document.getElementById('docs-list').innerHTML = '<p style="color:#ef4444;">Erro na busca direta.</p>'; }
 }
 
 async function reprocessDoc(id) {
@@ -328,32 +464,76 @@ async function saveDocEdit() {
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao trocar a área do documento.');
         closeDocEditModal();
-        loadDocs(); loadStats();
+        loadDocs(); loadStats(); loadAreas();
     } catch(e) { alert('Erro ao trocar a área do documento.'); }
 }
 
 async function deleteDoc(id, title) {
     if (!confirm(`Excluir "${title}"?`)) return;
-    try { await fetch(ADMIN_API + `/admin/documents/${id}`, { method: 'DELETE' }); loadDocs(); loadStats(); } catch(e) { alert('Erro ao excluir.'); }
+    try { await fetch(ADMIN_API + `/admin/documents/${id}`, { method: 'DELETE' }); loadDocs(); loadStats(); loadAreas(); } catch(e) { alert('Erro ao excluir.'); }
 }
 
 // ---- Clientes ----
+let allClients = [];
+
 async function loadClients() {
     try {
         const res = await fetch(ADMIN_API + '/admin/users');
         const data = await res.json();
         const users = data.users || [];
+        allClients = users;
         if (!users.length) { document.getElementById('clients-list').innerHTML = '<p style="color:#64748b;">Nenhum cliente cadastrado.</p>'; return; }
         document.getElementById('clients-list').innerHTML = users.map(u => `
             <div class="card-item">
                 <h3>${u.email}</h3>
-                <p>ID: ${u.id} • Chave: ${u.api_key_masked || '—'}</p>
+                <p>ID: ${u.id}</p>
+                <div class="api-key-box">${u.api_key || '—'}</div>
                 <div style="margin-top:0.75rem;">
                     <button class="btn btn-sm" onclick="showSubsModal(${u.id}, '${u.email}')">Assinaturas</button>
+                    <button class="btn btn-sm" onclick="showClientEditModal(${u.id})">Editar</button>
                 </div>
             </div>
         `).join('');
     } catch(e) { document.getElementById('clients-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar clientes.</p>'; }
+}
+
+function showClientEditModal(userId) {
+    const client = allClients.find(u => u.id === userId);
+    if (!client) return;
+    document.getElementById('editClientId').value = client.id;
+    document.getElementById('editClientEmail').value = client.email;
+    document.getElementById('editClientKeyValue').textContent = client.api_key || '—';
+    document.getElementById('clientEditModal').classList.add('active');
+}
+
+function closeClientEditModal() { document.getElementById('clientEditModal').classList.remove('active'); }
+
+async function regenerateClientKey() {
+    if (!confirm('Gerar uma nova chave? A chave atual deixa de funcionar imediatamente.')) return;
+    const id = document.getElementById('editClientId').value;
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${id}`, {
+            method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ regenerate_key: true })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao gerar nova chave.');
+        document.getElementById('editClientKeyValue').textContent = data.api_key;
+    } catch(e) { alert('Erro ao gerar nova chave.'); }
+}
+
+async function saveClientEdit() {
+    const id = document.getElementById('editClientId').value;
+    const email = document.getElementById('editClientEmail').value.trim();
+    if (!email) return alert('Email é obrigatório.');
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${id}`, {
+            method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao salvar cliente.');
+        closeClientEditModal();
+        loadClients();
+    } catch(e) { alert('Erro ao salvar cliente.'); }
 }
 
 function showClientModal() {
