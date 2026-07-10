@@ -171,18 +171,44 @@
     </div>
 </div>
 
-<!-- Modal Trocar Área do Documento -->
+<!-- Modal Editar Documento -->
 <div class="modal-overlay" id="docEditModal">
-    <div class="modal">
-        <h2>Trocar Área do Documento</h2>
+    <div class="modal" style="max-width:640px;">
+        <h2>Editar Documento</h2>
         <input type="hidden" id="editDocId">
+        <input type="hidden" id="editDocOriginalContent">
         <div class="form-group">
-            <label>Documento</label>
-            <input type="text" class="form-input" id="docEditName" disabled>
+            <label>Nome</label>
+            <input type="text" class="form-input" id="docEditName">
         </div>
         <div class="form-group">
-            <label>Nova Área</label>
+            <label>Área</label>
             <select class="form-input" id="docEditArea"></select>
+        </div>
+        <div class="form-group">
+            <label>URL <span style="color:#64748b; font-weight:normal;">(documentos enviados por upload não têm URL)</span></label>
+            <input type="text" class="form-input" id="docEditUrl" placeholder="https://...">
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select class="form-input" id="docEditStatus">
+                <option value="active">Ativo</option>
+                <option value="stale">Desatualizado</option>
+                <option value="invalid">Inválido</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Método de busca do conteúdo</label>
+            <select class="form-input" id="docEditFetchMode">
+                <option value="http">HTTP simples (padrão — rápido, não roda JavaScript)</option>
+                <option value="js_browser">Navegador com JS (Playwright — para páginas SPA/ASP.NET que só carregam conteúdo via JavaScript)</option>
+            </select>
+            <p style="color:#64748b; font-size:0.8rem; margin-top:0.4rem;">Trocar a URL ou o método aqui limpa o texto já extraído — clique em "Reprocessar RAG" depois de salvar para buscar de novo com o novo método.</p>
+        </div>
+        <div class="form-group">
+            <label>Texto extraído (editável)</label>
+            <textarea class="form-input" id="docEditContent" rows="8" style="font-family:monospace; font-size:0.82rem; resize:vertical;"></textarea>
+            <p style="color:#64748b; font-size:0.8rem; margin-top:0.4rem;">Editar aqui substitui o texto usado no RAG diretamente, sem precisar buscar a URL de novo.</p>
         </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeDocEditModal()">Cancelar</button>
@@ -358,16 +384,17 @@ function filterDocsByArea(areaId) {
 }
 
 function renderDocCard(d) {
+    const fetchModeLabel = d.type === 'link' ? (d.fetch_mode === 'js_browser' ? ' • <span style="color:#a78bfa;">JS Browser</span>' : ' • HTTP') : '';
     return `
         <div class="card-item">
             <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
                 <h3 style="margin-bottom:0.25rem;">${d.name}</h3>
                 ${statusBadge(d.processing_status)}
             </div>
-            <p>Área: <strong>${d.area_name || '-'}</strong> • ${d.chunk_count || 0} chunks • ${d.type === 'link' ? 'Link monitorado' : 'Arquivo'}</p>
+            <p>Área: <strong>${d.area_name || '-'}</strong> • ${d.chunk_count || 0} chunks • ${d.type === 'link' ? 'Link monitorado' : 'Arquivo'}${fetchModeLabel}</p>
             ${d.url ? `<p style="word-break:break-all; color:#64748b; font-size:0.85rem;">${d.url}</p>` : ''}
             <div style="margin-top:0.75rem;">
-                <button class="btn btn-sm" onclick='showDocEditModal(${JSON.stringify(d).replace(/'/g, "\\'")})'>Trocar Área</button>
+                <button class="btn btn-sm" onclick="showDocEditModal(${d.id})">Editar</button>
                 <button class="btn btn-sm" onclick="reprocessDoc(${d.id})">Reprocessar RAG</button>
                 <button class="btn btn-sm btn-danger" onclick="deleteDoc(${d.id}, '${d.name}')">Excluir</button>
             </div>
@@ -439,33 +466,62 @@ async function reprocessDoc(id) {
     try { await fetch(ADMIN_API + `/admin/documents/${id}/reprocess`, { method: 'POST' }); alert('Reprocessamento iniciado.'); loadDocs(); } catch(e) { alert('Erro no reprocessamento.'); }
 }
 
-function showDocEditModal(doc) {
-    document.getElementById('editDocId').value = doc.id;
-    document.getElementById('docEditName').value = doc.name;
-    const select = document.getElementById('docEditArea');
-    select.innerHTML = allAreas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
-    const currentArea = allAreas.find(a => a.name === doc.area_name);
-    if (currentArea) select.value = currentArea.id;
-    document.getElementById('docEditModal').classList.add('active');
+async function showDocEditModal(docId) {
+    try {
+        const res = await fetch(ADMIN_API + `/admin/documents/${docId}`);
+        const doc = await res.json();
+        if (!res.ok) return alert(doc.error || 'Erro ao carregar documento.');
+
+        document.getElementById('editDocId').value = doc.id;
+        document.getElementById('docEditName').value = doc.name;
+        document.getElementById('docEditUrl').value = doc.url || '';
+        document.getElementById('docEditStatus').value = doc.status || 'active';
+        document.getElementById('docEditFetchMode').value = doc.fetch_mode || 'http';
+        document.getElementById('docEditContent').value = doc.content_text || '';
+        document.getElementById('editDocOriginalContent').value = doc.content_text || '';
+
+        const select = document.getElementById('docEditArea');
+        select.innerHTML = allAreas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
+        select.value = doc.area_id;
+
+        document.getElementById('docEditModal').classList.add('active');
+    } catch(e) { alert('Erro ao carregar documento.'); }
 }
 
 function closeDocEditModal() { document.getElementById('docEditModal').classList.remove('active'); }
 
 async function saveDocEdit() {
     const id = document.getElementById('editDocId').value;
+    const name = document.getElementById('docEditName').value.trim();
     const areaId = document.getElementById('docEditArea').value;
+    if (!name) return alert('Nome é obrigatório.');
     if (!areaId) return alert('Selecione uma área.');
+
+    const payload = {
+        name,
+        area_id: Number(areaId),
+        url: document.getElementById('docEditUrl').value.trim(),
+        status: document.getElementById('docEditStatus').value,
+        fetch_mode: document.getElementById('docEditFetchMode').value
+    };
+    // Só manda content_text se o admin de fato editou o texto — caso
+    // contrário, trocar URL/método precisa poder limpar o texto antigo
+    // no backend pra forçar uma nova busca no próximo reprocessamento.
+    const newContent = document.getElementById('docEditContent').value;
+    const originalContent = document.getElementById('editDocOriginalContent').value;
+    if (newContent !== originalContent) payload.content_text = newContent;
+
     try {
-        const res = await fetch(ADMIN_API + `/admin/documents/${id}/move`, {
+        const res = await fetch(ADMIN_API + `/admin/documents/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ area_id: Number(areaId) })
+            body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if (!res.ok) return alert(data.error || 'Erro ao trocar a área do documento.');
+        if (!res.ok) return alert(data.error || 'Erro ao salvar documento.');
         closeDocEditModal();
         loadDocs(); loadStats(); loadAreas();
-    } catch(e) { alert('Erro ao trocar a área do documento.'); }
+    } catch(e) { alert('Erro ao salvar documento.'); }
 }
 
 async function deleteDoc(id, title) {

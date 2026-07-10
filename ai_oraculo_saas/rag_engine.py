@@ -48,7 +48,9 @@ def get_conn():
 # 1. Extrair texto de URL (link externo)
 # ---------------------------------------------------------------------------
 def fetch_url_text(url: str, timeout=30) -> Optional[str]:
-    """Baixa a página e extrai o corpo principal como texto limpo."""
+    """Baixa a página via HTTP simples e extrai o corpo principal como texto limpo.
+    Não executa JavaScript — para portais SPA/ASP.NET que renderizam conteúdo
+    via JS, usar fetch_url_text_js (fetch_mode='js_browser')."""
     try:
         res = requests.get(url, timeout=timeout, headers={"User-Agent": "AI-Tutor/1.0"})
         res.raise_for_status()
@@ -64,6 +66,40 @@ def fetch_url_text(url: str, timeout=30) -> Optional[str]:
         return text if len(text) > 50 else None
     except Exception as e:
         print(f"Erro ao fetch {url}: {e}")
+        return None
+
+
+def fetch_url_text_js(url: str, timeout=60) -> Optional[str]:
+    """Abre a URL num Chromium headless (Playwright) e extrai o texto após o
+    JavaScript rodar — mesma técnica usada no Monitor Agent para portais que
+    não têm conteúdo no HTML bruto (SPA, ASP.NET). Import feito sob demanda
+    para não travar o serviço inteiro se o Playwright não estiver instalado."""
+    try:
+        from playwright.sync_api import sync_playwright
+    except ImportError:
+        print("fetch_url_text_js: Playwright não instalado neste venv.")
+        return None
+
+    try:
+        with sync_playwright() as p:
+            browser = p.chromium.launch(headless=True)
+            context = browser.new_context(user_agent=(
+                "Mozilla/5.0 (X11; Linux aarch64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36"
+            ))
+            page = context.new_page()
+            page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
+            html = str(page.content())
+            browser.close()
+
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup(["script", "style", "nav", "header", "footer"]):
+            tag.decompose()
+        text = soup.get_text(separator=" ", strip=True)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text if len(text) > 50 else None
+    except Exception as e:
+        print(f"Erro ao fetch (js_browser) {url}: {e}")
         return None
 
 
@@ -274,16 +310,19 @@ def process_document(doc_id: int) -> dict:
         cur = conn.cursor()
 
         # Busca documento
-        cur.execute("SELECT id, area_id, is_external_link, url, content_text FROM documents WHERE id = %s", (doc_id,))
+        cur.execute("SELECT id, area_id, is_external_link, url, content_text, fetch_mode FROM documents WHERE id = %s", (doc_id,))
         row = cur.fetchone()
         if not row:
             return {"ok": False, "error": f"Documento {doc_id} não encontrado"}
 
-        doc_id_val, area_id_val, is_external, url, existing_content = row[0], row[1], row[2], row[3], row[4]
+        doc_id_val, area_id_val, is_external, url, existing_content, fetch_mode = row[0], row[1], row[2], row[3], row[4], row[5]
 
-        # Se é link externo e ainda não tem conteúdo, busca da URL
+        # Se é link externo e ainda não tem conteúdo, busca da URL.
+        # fetch_mode='js_browser' usa um Chromium headless (Playwright) para
+        # portais que só renderizam conteúdo via JavaScript; 'http' (padrão)
+        # é o fetch simples de sempre.
         if is_external and not existing_content:
-            text = fetch_url_text(url)  # type: ignore[arg-type]
+            text = fetch_url_text_js(url) if fetch_mode == "js_browser" else fetch_url_text(url)  # type: ignore[arg-type]
             if not text:
                 return {"ok": False, "error": f"Não foi possível obter texto da URL: {url}"}
             # Salva conteúdo extraído na tabela documents

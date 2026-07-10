@@ -745,7 +745,7 @@ def admin_get_documents():
         if area_id:
             cur.execute(
                 """SELECT d.id, d.name, a.name as area_name, d.is_external_link, d.url,
-                          d.processing_status, d.chunk_count
+                          d.processing_status, d.chunk_count, d.status, d.fetch_mode
                    FROM documents d JOIN areas a ON a.id = d.area_id
                    WHERE d.area_id = %s ORDER BY d.upload_date DESC""",
                 (area_id,)
@@ -753,7 +753,7 @@ def admin_get_documents():
         else:
             cur.execute(
                 """SELECT d.id, d.name, a.name as area_name, d.is_external_link, d.url,
-                          d.processing_status, d.chunk_count
+                          d.processing_status, d.chunk_count, d.status, d.fetch_mode
                    FROM documents d JOIN areas a ON a.id = d.area_id
                    ORDER BY d.upload_date DESC"""
             )
@@ -764,10 +764,45 @@ def admin_get_documents():
                 "id": r[0], "name": r[1], "area_name": r[2],
                 "type": "link" if r[3] else "file", "url": r[4] or "",
                 "processing_status": r[5] or "pending",
-                "chunk_count": r[6] or 0
+                "chunk_count": r[6] or 0,
+                "status": r[7] or "active",
+                "fetch_mode": r[8] or "http"
             })
         conn.close()
         return jsonify({"total": len(docs), "documents": docs})
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/documents/<int:doc_id>', methods=['GET'])
+def admin_get_document(doc_id):
+    """Detalhe completo de um documento, incluindo o texto extraído — usado
+    pelo modal de edição no painel admin."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT d.id, d.name, d.url, d.area_id, a.name, d.status, d.fetch_mode,
+                      d.is_external_link, d.processing_status, d.chunk_count, d.content_text
+               FROM documents d JOIN areas a ON a.id = d.area_id
+               WHERE d.id = %s""",
+            (doc_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": "Documento não encontrado"}), 404
+        return jsonify({
+            "id": row[0], "name": row[1], "url": row[2] or "",
+            "area_id": row[3], "area_name": row[4],
+            "status": row[5] or "active", "fetch_mode": row[6] or "http",
+            "type": "link" if row[7] else "file",
+            "processing_status": row[8] or "pending", "chunk_count": row[9] or 0,
+            "content_text": row[10] or ""
+        })
     except Exception as e:
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500
@@ -795,45 +830,73 @@ def admin_delete_document(doc_id):
         return jsonify({"error": str(e)}), 500
 
 
-@app.route('/admin/documents/<int:doc_id>/move', methods=['PATCH'])
-def admin_move_document(doc_id):
-    """Move um documento para outra área."""
+@app.route('/admin/documents/<int:doc_id>', methods=['PATCH'])
+def admin_update_document(doc_id):
+    """Edita qualquer campo de um documento — nome, URL, área, status, método
+    de busca (http/js_browser) e o texto já extraído.
+
+    Trocar a URL ou o método de busca limpa o content_text existente (a menos
+    que um novo content_text já venha junto no mesmo request), forçando uma
+    nova extração da URL da próxima vez que 'Reprocessar RAG' for chamado —
+    sem isso, o pipeline reaproveitaria o texto extraído com o método antigo."""
     data = request.get_json()
-    new_area_id = data.get('area_id')
-    if not new_area_id:
-        return jsonify({"error": "area_id é obrigatório"}), 400
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível"}), 500
     try:
         cur = conn.cursor()
-        # Verifica se a área existe
-        cur.execute("SELECT id, name FROM areas WHERE id = %s AND status = 'active'", (new_area_id,))
-        area_row = cur.fetchone()
-        if not area_row:
-            conn.close()
-            return jsonify({"error": "Área não encontrada ou inativa"}), 404
-
-        # Atualiza a área do documento
-        cur.execute(
-            "UPDATE documents SET area_id = %s WHERE id = %s",
-            (new_area_id, doc_id)
-        )
-        if cur.rowcount == 0:
+        cur.execute("SELECT url, fetch_mode FROM documents WHERE id = %s", (doc_id,))
+        row = cur.fetchone()
+        if not row:
             conn.close()
             return jsonify({"error": "Documento não encontrado"}), 404
+        current_url, current_fetch_mode = row[0], row[1] or "http"
 
-        # Atualiza area_id nos chunks vinculados
-        cur.execute(
-            "UPDATE document_chunks SET area_id = %s WHERE doc_id = %s",
-            (new_area_id, doc_id)
-        )
+        fields = {}
+        if 'name' in data:
+            name = (data.get('name') or '').strip()
+            if not name:
+                conn.close()
+                return jsonify({"error": "Nome não pode ser vazio"}), 400
+            fields['name'] = name
+        if 'url' in data:
+            fields['url'] = (data.get('url') or '').strip() or None
+        if 'status' in data and data.get('status'):
+            fields['status'] = data.get('status')
+        if 'fetch_mode' in data and data.get('fetch_mode'):
+            fields['fetch_mode'] = data.get('fetch_mode')
+        if 'area_id' in data and data.get('area_id'):
+            new_area_id = data.get('area_id')
+            cur.execute("SELECT id FROM areas WHERE id = %s AND status = 'active'", (new_area_id,))
+            if not cur.fetchone():
+                conn.close()
+                return jsonify({"error": "Área não encontrada ou inativa"}), 404
+            fields['area_id'] = new_area_id
+
+        if 'content_text' in data:
+            fields['content_text'] = data.get('content_text') or None
+        else:
+            url_changed = 'url' in fields and fields['url'] != current_url
+            mode_changed = 'fetch_mode' in fields and fields['fetch_mode'] != current_fetch_mode
+            if url_changed or mode_changed:
+                fields['content_text'] = None
+                fields['processing_status'] = 'pending'
+
+        if not fields:
+            conn.close()
+            return jsonify({"error": "Nada para atualizar"}), 400
+
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
+        cur.execute(f"UPDATE documents SET {set_clause} WHERE id = %s", list(fields.values()) + [doc_id])
+
+        if 'area_id' in fields:
+            cur.execute("UPDATE document_chunks SET area_id = %s WHERE doc_id = %s", (fields['area_id'], doc_id))
+
         conn.commit()
         conn.close()
-        return jsonify({"message": f"Documento {doc_id} movido para área '{area_row[1]}'"})
+        return jsonify({"message": f"Documento {doc_id} atualizado"})
     except Exception as e:
-        if conn: conn.rollback()
-        conn.close()
+        if conn: conn.rollback(); conn.close()
         return jsonify({"error": str(e)}), 500
 
 

@@ -146,6 +146,21 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp);
     CREATE INDEX IF NOT EXISTS idx_usage_logs_user_area_time ON usage_logs(user_id, area_id, timestamp);
     """,
+
+    # 7 — fetch_mode on documents (http vs js_browser, mirrors oraculo_monitoragent's urls.fetch_mode)
+    """
+    ALTER TABLE documents ADD COLUMN IF NOT EXISTS fetch_mode VARCHAR(20) DEFAULT 'http';
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM pg_constraint WHERE conname = 'documents_fetch_mode_check'
+        ) THEN
+            ALTER TABLE documents ADD CONSTRAINT documents_fetch_mode_check
+                CHECK (fetch_mode IN ('http', 'js_browser'));
+        END IF;
+    END $$;
+    """,
 ]
 
 

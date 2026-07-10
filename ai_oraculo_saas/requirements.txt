@@ -6,3 +6,4 @@ beautifulsoup4
 pypdf
 sentence-transformers
 tiktoken
+playwright

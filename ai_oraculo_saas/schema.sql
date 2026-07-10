@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS documents (
     extracted_text TEXT, -- Texto extraído (uploads de arquivo), separado de content_text
     processing_status VARCHAR(20) DEFAULT 'pending' CHECK (processing_status IN ('pending', 'processing', 'indexed', 'failed')),
     chunk_count INTEGER DEFAULT 0, -- Quantos chunks o RAG gerou para este documento
-    last_processed_at TIMESTAMPTZ -- Última vez que o pipeline RAG processou este documento
+    last_processed_at TIMESTAMPTZ, -- Última vez que o pipeline RAG processou este documento
+    fetch_mode VARCHAR(20) DEFAULT 'http' CHECK (fetch_mode IN ('http', 'js_browser')) -- Como buscar o conteúdo de links externos
 );
 
 -- 4. Tabela: document_chunks (Mapeamento dos chunks do RAG)
