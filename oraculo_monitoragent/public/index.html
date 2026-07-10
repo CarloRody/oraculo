@@ -10,7 +10,10 @@ body{background:#1a1a2e;color:#e0e0e0;font-family:'Segoe UI',system-ui,-apple-sy
 
 /* ---------- Topbar ---------- */
 .topbar{display:flex;align-items:center;justify-content:space-between;padding:14px 24px;background:#16213e;border-bottom:2px solid #0f3460;flex-wrap:wrap;gap:10px}
+.topbar-left{display:flex;align-items:center;gap:16px;flex-wrap:wrap}
 .topbar h1{font-size:1.3rem;color:#fff;display:flex;align-items:center;gap:8px}
+.back-link{color:#9fb3d9;text-decoration:none;font-size:.85rem;display:flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid #253552;border-radius:6px;transition:.15s}
+.back-link:hover{color:#fff;border-color:#3a4d78}
 .health-dot{display:inline-block;width:10px;height:10px;border-radius:50%;background:#666;flex-shrink:0}
 .health-dot.ok{background:#00b894}.health-dot.err{background:#e94560}
 .refresh-info{font-size:.78rem;color:#888}
@@ -103,7 +106,10 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 </head>
 <body>
 <div class="topbar">
+<div class="topbar-left">
+<a href="#" id="backLink" class="back-link">&larr; Oráculo</a>
 <h1>🛰 Monitor Agent</h1>
+</div>
 <div class="health-group">
   <span class="health-item"><span id="healthDot" class="health-dot"></span>Banco</span>
   <span class="health-item"><span id="ragDot" class="health-dot"></span>RAG (Tutor)</span>
@@ -173,6 +179,8 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 const BASE = window.location.origin;
 let refreshInterval;
 let areasCache = [];
+
+document.getElementById('backLink').href = `${window.location.protocol}//${window.location.hostname}:5001/`;
 
 async function api(path, opts={}) {
   const r = await fetch(BASE + path, opts);

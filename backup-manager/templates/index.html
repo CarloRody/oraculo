@@ -44,12 +44,17 @@ tbody tr:hover{background:#1e293b60}
 
 /* Footer */
 .footer{margin-top:2rem;color:#475569;font-size:.75rem;text-align:center}
+
+/* Back link */
+.back-link{color:#94a3b8;text-decoration:none;font-size:.85rem;display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid #334155;border-radius:6px;margin-bottom:1rem;transition:.15s}
+.back-link:hover{color:#fff;border-color:#38bdf8}
 </style>
 </head>
 <body>
 
+<a href="#" id="backLink" class="back-link">&larr; Oráculo</a>
 <h1>📦 Backup Manager</h1>
-<p class="subtitle">Gerenciamento de backups — AI Tutor SaaS & Monitor Agent</p>
+<p class="subtitle">Gerenciamento de backups — Oráculo & Monitor Agent</p>
 
 <div class="container">
 
@@ -97,6 +102,8 @@ tbody tr:hover{background:#1e293b60}
 
 <script>
 const $ = id => document.getElementById(id);
+
+$('backLink').href = `${window.location.protocol}//${window.location.hostname}:5001/`;
 
 function showProgress(label) {
   $('progressWrap').style.display = 'block';
