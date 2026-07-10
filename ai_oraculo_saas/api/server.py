@@ -332,7 +332,7 @@ def chat():
 
 Pergunta: {message}"""
 
-        # Chama LLM local (timeout=60s, max_tokens=30k)
+        # Chama LLM local (timeout=600s, max_tokens=6k)
         llm_response = _http_requests.post(
             LLM_API_URL,
             json={
@@ -342,9 +342,9 @@ Pergunta: {message}"""
                     {"role": "user", "content": user_prompt}
                 ],
                 "temperature": 0.7,
-                "max_tokens": 30000
+                "max_tokens": 6000
             },
-            timeout=6000
+            timeout=600
         )
         llm_response.raise_for_status()
         llm_data = llm_response.json()
