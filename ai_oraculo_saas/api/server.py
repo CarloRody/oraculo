@@ -55,24 +55,33 @@ def get_areas():
 
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
-    """Retorna todos os documentos de uma área ou todos."""
+    """Retorna documentos de uma área ou todos. ?limit= restringe aos N mais recentes."""
     area_id = request.args.get('area_id')
+    try:
+        limit = min(int(request.args.get('limit')), 200) if request.args.get('limit') else None
+    except (TypeError, ValueError):
+        limit = None
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Não foi possível conectar ao banco de dados"}), 500
 
     try:
         cur = conn.cursor()
+        limit_clause = " LIMIT %s" if limit else ""
         if area_id:
+            params = (area_id, limit) if limit else (area_id,)
             cur.execute(
-                """SELECT id, name, is_external_link, url, processing_status, chunk_count
-                   FROM documents WHERE area_id = %s ORDER BY upload_date DESC""",
-                (area_id,)
+                f"""SELECT id, name, is_external_link, url, processing_status, chunk_count, fetch_mode
+                   FROM documents WHERE area_id = %s ORDER BY upload_date DESC{limit_clause}""",
+                params
             )
         else:
+            params = (limit,) if limit else ()
             cur.execute(
-                """SELECT id, name, is_external_link, url, processing_status, chunk_count
-                   FROM documents ORDER BY upload_date DESC"""
+                f"""SELECT id, name, is_external_link, url, processing_status, chunk_count, fetch_mode
+                   FROM documents ORDER BY upload_date DESC{limit_clause}""",
+                params
             )
 
         rows = cur.fetchall()
@@ -82,7 +91,8 @@ def get_documents():
             docs.append({
                 "id": r[0], "name": r[1], "type": doc_type, "url": r[3] or "",
                 "processing_status": r[4] or "pending",
-                "chunk_count": r[5] or 0
+                "chunk_count": r[5] or 0,
+                "fetch_mode": r[6] or "http"
             })
 
         conn.close()
@@ -102,6 +112,7 @@ def create_document():
     url = data.get('url')
     is_external = data.get('is_external_link', False)
     content_text = data.get('content_text', '')  # Texto direto (para uploads de arquivo)
+    fetch_mode = data.get('fetch_mode') or 'http'
 
     conn = get_db_connection()
     if not conn:
@@ -112,9 +123,9 @@ def create_document():
 
         # INSERT básico com RETURNING
         cur.execute(
-            """INSERT INTO documents (area_id, name, url, is_external_link, status, processing_status, last_checked_at, upload_date)
-               VALUES (%s, %s, %s, %s, 'active', 'pending', NOW(), NOW()) RETURNING id""",
-            (area_id, data.get('name', 'Documento sem nome'), url if url else None, is_external)
+            """INSERT INTO documents (area_id, name, url, is_external_link, status, processing_status, last_checked_at, upload_date, fetch_mode)
+               VALUES (%s, %s, %s, %s, 'active', 'pending', NOW(), NOW(), %s) RETURNING id""",
+            (area_id, data.get('name', 'Documento sem nome'), url if url else None, is_external, fetch_mode)
         )
         doc_id = cur.fetchone()[0]
 

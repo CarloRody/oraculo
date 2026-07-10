@@ -45,6 +45,19 @@
                 <input type="text" id="linkUrl" placeholder="https://exemplo.com/docs/tecnologia.html" required>
             </div>
 
+            <div class="form-group">
+                <label for="linkName">Nome do documento <span style="font-weight:normal; color:#64748b;">(opcional — se vazio, usa o domínio da URL)</span>:</label>
+                <input type="text" id="linkName" placeholder="Ex: Manual de Contingência NF-e">
+            </div>
+
+            <div class="form-group">
+                <label for="linkFetchMode">Tipo de extração:</label>
+                <select id="linkFetchMode">
+                    <option value="http">HTTP simples (padrão — rápido, não roda JavaScript)</option>
+                    <option value="js_browser">Navegador com JS (para páginas SPA/ASP.NET que só carregam conteúdo via JavaScript)</option>
+                </select>
+            </div>
+
             <button type="submit" class="btn-primary">&#128640; Incorporar Documento</button>
         </form>
 
@@ -70,7 +83,7 @@
 
     <!-- Document List -->
     <div class="content-area">
-        <h3 style="color: #a78bfa; margin-bottom: 0.5rem;">Documentos incorporados</h3>
+        <h3 style="color: #a78bfa; margin-bottom: 0.5rem;">Documentos incorporados <span style="color:#64748b; font-weight:normal; font-size:0.85rem;">(10 mais recentes)</span></h3>
         <div class="doc-list" id="doc-list"><p class="loading-text">Carregando...</p></div>
     </div>
 
@@ -105,7 +118,7 @@ async function loadAreas() {
 
 async function loadDocuments() {
     try {
-        const res = await fetch(`${API}/api/documents`);
+        const res = await fetch(`${API}/api/documents?limit=10`);
         const data = await res.json();
         documents = data.documents || [];
         renderDocuments();
@@ -113,6 +126,12 @@ async function loadDocuments() {
         console.error('Erro ao carregar documentos:', err);
         document.getElementById('doc-list').innerHTML = '<p class="banner-error">Erro ao carregar documentos.</p>';
     }
+}
+
+function fetchModeLabel(mode) {
+    return mode === 'js_browser'
+        ? '<span style="color:#a78bfa;">Navegador com JS</span>'
+        : '<span>HTTP simples</span>';
 }
 
 function renderDocuments() {
@@ -130,6 +149,7 @@ function renderDocuments() {
                     <span class="doc-info">${icon} ${esc(doc.name)}</span>
                     <div class="doc-meta">
                         <span>${doc.type === 'link' ? 'Link externo' : 'Arquivo local'} • ID: ${doc.id}</span>
+                        ${doc.type === 'link' ? `<span>• ${fetchModeLabel(doc.fetch_mode)}</span>` : ''}
                         ${statusBadge(doc.processing_status)}
                         <span>${doc.chunk_count || 0} chunks</span>
                     </div>
@@ -149,6 +169,8 @@ document.getElementById('linkForm').addEventListener('submit', async function(e)
     e.preventDefault();
     const url = document.getElementById('linkUrl').value;
     const areaId = document.getElementById('areaId').value;
+    const name = document.getElementById('linkName').value.trim();
+    const fetchMode = document.getElementById('linkFetchMode').value;
     const btn = e.target.querySelector('.btn-primary');
     const originalText = btn.textContent;
 
@@ -158,13 +180,18 @@ document.getElementById('linkForm').addEventListener('submit', async function(e)
         const res = await fetch(`${API}/api/documents`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ area_id: parseInt(areaId), url, is_external_link: true, name: new URL(url).hostname })
+            body: JSON.stringify({
+                area_id: parseInt(areaId), url, is_external_link: true,
+                name: name || new URL(url).hostname,
+                fetch_mode: fetchMode
+            })
         });
         const data = await res.json();
         if (data.error) {
             alert('Erro: ' + data.error);
         } else {
             document.getElementById('linkUrl').value = '';
+            document.getElementById('linkName').value = '';
             loadDocuments();
             alert('Documento incorporado com sucesso!');
         }
