@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS users (
     email VARCHAR(255) UNIQUE NOT NULL,
     password_hash TEXT NOT NULL,
     role VARCHAR(10) DEFAULT 'user' CHECK (role IN ('admin', 'user')),
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    api_key VARCHAR(64) UNIQUE -- Chave de acesso do cliente (1 cliente = 1 chave), usada em /api/chat
 );
 
 -- 2. Tabela: areas (Engenharia, Matemática, etc.)
@@ -75,7 +76,9 @@ CREATE TABLE IF NOT EXISTS area_subscriptions (
     user_id INTEGER REFERENCES users(id),
     area_id INTEGER REFERENCES areas(id),
     status VARCHAR(10) DEFAULT 'active' CHECK (status IN ('active', 'expired')),
-    expires_at TIMESTAMPTZ -- Data de vencimento da assinatura
+    expires_at TIMESTAMPTZ, -- Data de vencimento da assinatura
+    monthly_token_quota INTEGER, -- Cota mensal de tokens (NULL = sem limite)
+    price_per_1k_tokens NUMERIC(10,4) -- Taxa em R$ por 1000 tokens (NULL = custo não configurado)
 );
 
 -- 8. Tabela: usage_logs (Controle total de Tokens e Billing por usuário/sessão)
@@ -83,6 +86,7 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     id SERIAL PRIMARY KEY,
     user_id INTEGER REFERENCES users(id),
     session_id INTEGER REFERENCES sessions(id), -- Se for uso direto do sistema, pode ser null
+    area_id INTEGER REFERENCES areas(id), -- Gravado direto para evitar join com sessions nos relatórios
     tokens_input INTEGER, -- Tokens da entrada (pergunta/contexto)
     tokens_output INTEGER, -- Tokens da saída (resposta gerada)
     timestamp TIMESTAMPTZ DEFAULT NOW() -- Quando ocorreu o uso
@@ -97,3 +101,7 @@ CREATE INDEX idx_document_chunks_docid ON document_chunks(doc_id);
 CREATE INDEX idx_chunks_content_fts ON document_chunks USING gin (to_tsvector('portuguese', content_chunk));
 CREATE INDEX idx_messages_session ON messages(session_id);
 CREATE INDEX idx_usage_logs_user ON usage_logs(user_id);
+CREATE INDEX idx_users_api_key ON users(api_key);
+CREATE INDEX idx_usage_logs_area ON usage_logs(area_id);
+CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp);
+CREATE INDEX idx_usage_logs_user_area_time ON usage_logs(user_id, area_id, timestamp);

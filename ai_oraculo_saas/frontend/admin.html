@@ -85,6 +85,7 @@
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('areas')">Áreas</button>
         <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
+        <button class="tab-btn" onclick="switchTab('clients')">Clientes</button>
         <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
     </div>
 
@@ -101,6 +102,15 @@
     <div id="documents-tab" class="tab-content">
         <h2 style="color:#60a5fa; margin-bottom:1.5rem;">Documentos</h2>
         <div id="docs-list" class="card-list"></div>
+    </div>
+
+    <!-- CLIENTES -->
+    <div id="clients-tab" class="tab-content">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+            <h2 class="section-title" style="border:none; padding:0; margin:0;">Clientes</h2>
+            <button class="btn" onclick="showClientModal()">+ Novo Cliente</button>
+        </div>
+        <div id="clients-list" class="card-list"></div>
     </div>
 
     <!-- SAÚDE -->
@@ -142,6 +152,40 @@
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeDocEditModal()">Cancelar</button>
             <button class="btn" onclick="saveDocEdit()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Novo Cliente -->
+<div class="modal-overlay" id="clientModal">
+    <div class="modal">
+        <h2>Novo Cliente</h2>
+        <div class="form-group">
+            <label>Email</label>
+            <input type="text" class="form-input" id="clientEmail" placeholder="cliente@empresa.com">
+        </div>
+        <div id="clientKeyBox" style="display:none; background:#0f172a; border:1px solid #22c55e; border-radius:6px; padding:1rem; margin-bottom:1rem; word-break:break-all;">
+            <p style="color:#94a3b8; font-size:0.85rem; margin-bottom:0.5rem;">Chave de acesso gerada — copie agora, ela não será mostrada de novo:</p>
+            <code id="clientKeyValue" style="color:#4ade80;"></code>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeClientModal()">Fechar</button>
+            <button class="btn" id="clientSaveBtn" onclick="saveClient()">Gerar Chave</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Assinaturas do Cliente -->
+<div class="modal-overlay" id="subsModal">
+    <div class="modal" style="max-width:640px;">
+        <h2>Assinaturas — <span id="subsClientEmail"></span></h2>
+        <input type="hidden" id="subsUserId">
+        <table>
+            <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th><th></th></tr></thead>
+            <tbody id="subs-table-body"></tbody>
+        </table>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeSubsModal()">Fechar</button>
         </div>
     </div>
 </div>
@@ -293,6 +337,96 @@ async function deleteDoc(id, title) {
     try { await fetch(ADMIN_API + `/admin/documents/${id}`, { method: 'DELETE' }); loadDocs(); loadStats(); } catch(e) { alert('Erro ao excluir.'); }
 }
 
+// ---- Clientes ----
+async function loadClients() {
+    try {
+        const res = await fetch(ADMIN_API + '/admin/users');
+        const data = await res.json();
+        const users = data.users || [];
+        if (!users.length) { document.getElementById('clients-list').innerHTML = '<p style="color:#64748b;">Nenhum cliente cadastrado.</p>'; return; }
+        document.getElementById('clients-list').innerHTML = users.map(u => `
+            <div class="card-item">
+                <h3>${u.email}</h3>
+                <p>ID: ${u.id} • Chave: ${u.api_key_masked || '—'}</p>
+                <div style="margin-top:0.75rem;">
+                    <button class="btn btn-sm" onclick="showSubsModal(${u.id}, '${u.email}')">Assinaturas</button>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) { document.getElementById('clients-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar clientes.</p>'; }
+}
+
+function showClientModal() {
+    document.getElementById('clientEmail').value = '';
+    document.getElementById('clientEmail').disabled = false;
+    document.getElementById('clientKeyBox').style.display = 'none';
+    document.getElementById('clientSaveBtn').style.display = 'inline-block';
+    document.getElementById('clientModal').classList.add('active');
+}
+
+function closeClientModal() {
+    document.getElementById('clientModal').classList.remove('active');
+    loadClients();
+}
+
+async function saveClient() {
+    const email = document.getElementById('clientEmail').value.trim();
+    if (!email) return alert('Email é obrigatório.');
+    try {
+        const res = await fetch(ADMIN_API + '/admin/users', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao criar cliente.');
+        document.getElementById('clientEmail').disabled = true;
+        document.getElementById('clientKeyValue').textContent = data.api_key;
+        document.getElementById('clientKeyBox').style.display = 'block';
+        document.getElementById('clientSaveBtn').style.display = 'none';
+    } catch(e) { alert('Erro ao criar cliente.'); }
+}
+
+async function showSubsModal(userId, email) {
+    document.getElementById('subsUserId').value = userId;
+    document.getElementById('subsClientEmail').textContent = email;
+    document.getElementById('subsModal').classList.add('active');
+    const tbody = document.getElementById('subs-table-body');
+    tbody.innerHTML = '<tr><td colspan="4">Carregando...</td></tr>';
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}/subscriptions`);
+        const data = await res.json();
+        const byArea = {};
+        (data.subscriptions || []).forEach(s => byArea[s.area_id] = s);
+        tbody.innerHTML = allAreas.map(a => {
+            const s = byArea[a.id] || {};
+            return `<tr>
+                <td>${a.name}</td>
+                <td><input type="number" class="form-input" id="subsQuota_${a.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
+                <td><input type="number" step="0.01" class="form-input" id="subsPrice_${a.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
+                <td><button class="btn btn-sm" onclick="saveSubscription(${userId}, ${a.id})">Salvar</button></td>
+            </tr>`;
+        }).join('');
+    } catch(e) { tbody.innerHTML = '<tr><td colspan="4" style="color:#ef4444;">Erro ao carregar assinaturas.</td></tr>'; }
+}
+
+function closeSubsModal() { document.getElementById('subsModal').classList.remove('active'); }
+
+async function saveSubscription(userId, areaId) {
+    const quotaVal = document.getElementById(`subsQuota_${areaId}`).value;
+    const priceVal = document.getElementById(`subsPrice_${areaId}`).value;
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}/subscriptions`, {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({
+                area_id: areaId,
+                monthly_token_quota: quotaVal ? Number(quotaVal) : null,
+                price_per_1k_tokens: priceVal ? Number(priceVal) : null
+            })
+        });
+        if (!res.ok) { const d = await res.json(); return alert(d.error || 'Erro ao salvar assinatura.'); }
+        alert('Assinatura salva.');
+    } catch(e) { alert('Erro ao salvar assinatura.'); }
+}
+
 // ---- Health ----
 async function loadHealth() {
     try {
@@ -313,7 +447,7 @@ async function loadHealth() {
 }
 
 // ---- Init ----
-loadStats(); loadAreas(); loadDocs(); loadHealth();
+loadStats(); loadAreas(); loadDocs(); loadClients(); loadHealth();
 document.getElementById('footer-year').textContent = new Date().getFullYear();
 </script>
 

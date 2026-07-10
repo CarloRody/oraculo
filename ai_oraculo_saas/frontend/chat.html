@@ -71,6 +71,15 @@ let currentAreaId = '';
 
 function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
 
+function getApiKey() {
+    let key = localStorage.getItem('oraculo_api_key');
+    if (!key) {
+        key = prompt('Chave de acesso (fornecida pelo administrador):');
+        if (key) localStorage.setItem('oraculo_api_key', key.trim());
+    }
+    return key || '';
+}
+
 // Carregar áreas do backend e renderizar botões
 async function loadAreas() {
     try {
@@ -121,7 +130,7 @@ async function sendMessage() {
     try {
         const res = await fetch(`${API}/api/chat`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
+            headers: { 'Content-Type': 'application/json', 'X-Oraculo-Key': getApiKey() },
             body: JSON.stringify({ message: text, area_id: parseInt(currentAreaId) })
         });
         chatContainer.removeChild(loadingMsg);
@@ -131,6 +140,7 @@ async function sendMessage() {
             addMessage('assistant', `Erro: ${data.error}`);
         } else {
             addMessage('assistant', data.response || 'Sem resposta.');
+            if (data.quota_warning) addMessage('assistant', `⚠ ${data.quota_warning}`);
         }
     } catch (err) {
         chatContainer.removeChild(loadingMsg);

@@ -128,6 +128,24 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
     CREATE INDEX IF NOT EXISTS idx_usage_logs_user ON usage_logs(user_id);
     """,
+
+    # 5 — identity, quota, and price columns for per-client token billing
+    """
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS api_key VARCHAR(64) UNIQUE;
+    CREATE INDEX IF NOT EXISTS idx_users_api_key ON users(api_key);
+
+    ALTER TABLE area_subscriptions ADD COLUMN IF NOT EXISTS monthly_token_quota INTEGER;
+    ALTER TABLE area_subscriptions ADD COLUMN IF NOT EXISTS price_per_1k_tokens NUMERIC(10,4);
+
+    ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS area_id INTEGER REFERENCES areas(id);
+    """,
+
+    # 6 — indexes for quota checks and usage reporting queries
+    """
+    CREATE INDEX IF NOT EXISTS idx_usage_logs_area ON usage_logs(area_id);
+    CREATE INDEX IF NOT EXISTS idx_usage_logs_timestamp ON usage_logs(timestamp);
+    CREATE INDEX IF NOT EXISTS idx_usage_logs_user_area_time ON usage_logs(user_id, area_id, timestamp);
+    """,
 ]
 
 

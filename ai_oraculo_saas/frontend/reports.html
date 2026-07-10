@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oráculo — Análise & Relatórios</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .stats-row { display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }
+        .stat-card { background: #1e293b; border-radius: 8px; padding: 1.5rem; flex: 1; min-width: 160px; text-align: center; border: 1px solid #334155; }
+        .stat-value { font-size: 1.8rem; color: #60a5fa; font-weight: 700; }
+        .stat-label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; margin-top: 0.5rem; }
+
+        .period-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
+        .period-row input[type="month"] { width: auto; }
+        .period-row button { flex-shrink: 0; }
+
+        table { width: 100%; border-collapse: collapse; }
+        th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid #334155; font-size: 0.9rem; }
+        th { color: #64748b; font-size: 0.75rem; text-transform: uppercase; letter-spacing: 1px; }
+        .table-scroll { overflow-x: auto; }
+
+        .pct-bar { display: inline-block; width: 80px; height: 6px; background: #334155; border-radius: 3px; overflow: hidden; vertical-align: middle; margin-right: 6px; }
+        .pct-bar-fill { height: 100%; background: #60a5fa; }
+        .pct-bar-fill.over { background: #ef4444; }
+
+        .tab-content { display: none; }
+        .tab-content.active { display: block; }
+    </style>
+</head>
+<body>
+
+<a href="index.html" class="back-link">&larr; Voltar ao Portal</a>
+
+<div class="header">
+    <h1>&#128202; Análise & Relatórios</h1>
+    <p>Consumo de tokens, custo estimado e cota por cliente e área</p>
+</div>
+
+<div class="container wide">
+
+    <div class="period-row">
+        <label for="periodInput" style="margin:0;">Período:</label>
+        <input type="month" id="periodInput">
+        <button class="btn-primary" onclick="loadReport()">Atualizar</button>
+    </div>
+
+    <div class="tabs">
+        <div class="tab active" data-tab="overview" onclick="showTab('overview', this)">Visão Geral</div>
+        <div class="tab" data-tab="by-client" onclick="showTab('by-client', this)">Por Cliente</div>
+        <div class="tab" data-tab="by-area" onclick="showTab('by-area', this)">Por Área</div>
+    </div>
+
+    <!-- Visão Geral -->
+    <div id="overview-tab" class="tab-content active" style="margin-top:1.5rem;">
+        <div class="stats-row" id="overviewStats"></div>
+        <h3 style="color:#a78bfa; margin-bottom:0.75rem;">Top clientes por consumo</h3>
+        <div class="table-scroll">
+        <table>
+            <thead><tr><th>Cliente</th><th>Área</th><th>Tokens</th><th>Custo Estimado</th></tr></thead>
+            <tbody id="topClientsBody"></tbody>
+        </table>
+        </div>
+    </div>
+
+    <!-- Por Cliente -->
+    <div id="by-client-tab" class="tab-content" style="margin-top:1.5rem;">
+        <div class="table-scroll">
+        <table>
+            <thead><tr><th>Cliente</th><th>Área</th><th>Entrada</th><th>Saída</th><th>Requisições</th><th>Cota Mensal</th><th>% Usado</th><th>Custo Estimado</th></tr></thead>
+            <tbody id="byClientBody"></tbody>
+        </table>
+        </div>
+    </div>
+
+    <!-- Por Área -->
+    <div id="by-area-tab" class="tab-content" style="margin-top:1.5rem;">
+        <div class="table-scroll">
+        <table>
+            <thead><tr><th>Área</th><th>Entrada</th><th>Saída</th><th>Total</th><th>Requisições</th></tr></thead>
+            <tbody id="byAreaBody"></tbody>
+        </table>
+        </div>
+    </div>
+
+</div>
+
+<div class="footer">Oráculo</div>
+
+<script>
+const API = window.location.protocol + '//' + window.location.host;
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+function fmtNum(n) { return (n ?? 0).toLocaleString('pt-BR'); }
+function fmtCost(c) { return c === null || c === undefined ? '—' : `R$ ${c.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})}`; }
+
+function showTab(name, el) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    document.getElementById(name + '-tab').classList.add('active');
+    el.classList.add('active');
+}
+
+function currentPeriod() {
+    const val = document.getElementById('periodInput').value; // 'YYYY-MM'
+    return val || null;
+}
+
+async function loadReport() {
+    const period = currentPeriod();
+    const url = API + '/admin/usage-summary' + (period ? `?period=${period}` : '');
+    try {
+        const res = await fetch(url);
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Erro ao carregar relatório.'); return; }
+        renderOverview(data);
+        renderByClient(data.by_user || []);
+        renderByArea(data.by_area || []);
+    } catch (e) {
+        console.error(e);
+        alert('Erro ao conectar com a API.');
+    }
+}
+
+function renderOverview(data) {
+    document.getElementById('overviewStats').innerHTML = `
+        <div class="stat-card"><div class="stat-value">${fmtNum(data.total_tokens_input)}</div><div class="stat-label">Tokens Entrada</div></div>
+        <div class="stat-card"><div class="stat-value">${fmtNum(data.total_tokens_output)}</div><div class="stat-label">Tokens Saída</div></div>
+        <div class="stat-card"><div class="stat-value">${fmtNum(data.total_requests)}</div><div class="stat-label">Requisições</div></div>
+        <div class="stat-card"><div class="stat-value">${fmtCost(data.total_estimated_cost)}</div><div class="stat-label">Custo Estimado</div></div>
+    `;
+    const top = [...(data.by_user || [])]
+        .sort((a, b) => (b.tokens_input + b.tokens_output) - (a.tokens_input + a.tokens_output))
+        .slice(0, 5);
+    document.getElementById('topClientsBody').innerHTML = top.length
+        ? top.map(u => `<tr>
+            <td>${esc(u.email)}</td><td>${esc(u.area_name)}</td>
+            <td>${fmtNum(u.tokens_input + u.tokens_output)}</td>
+            <td>${fmtCost(u.estimated_cost)}</td>
+          </tr>`).join('')
+        : '<tr><td colspan="4" style="color:#64748b;">Nenhum consumo neste período.</td></tr>';
+}
+
+function renderByClient(byUser) {
+    document.getElementById('byClientBody').innerHTML = byUser.length
+        ? byUser.map(u => {
+            const pct = u.quota_pct_used;
+            const pctDisplay = pct === null || pct === undefined
+                ? '—'
+                : `<span class="pct-bar"><span class="pct-bar-fill ${pct > 100 ? 'over' : ''}" style="width:${Math.min(pct,100)}%"></span></span>${pct}%`;
+            return `<tr>
+                <td>${esc(u.email)}</td><td>${esc(u.area_name)}</td>
+                <td>${fmtNum(u.tokens_input)}</td><td>${fmtNum(u.tokens_output)}</td>
+                <td>${fmtNum(u.requests)}</td>
+                <td>${u.monthly_token_quota != null ? fmtNum(u.monthly_token_quota) : 'ilimitado'}</td>
+                <td>${pctDisplay}</td>
+                <td>${fmtCost(u.estimated_cost)}</td>
+            </tr>`;
+          }).join('')
+        : '<tr><td colspan="8" style="color:#64748b;">Nenhum consumo neste período.</td></tr>';
+}
+
+function renderByArea(byArea) {
+    document.getElementById('byAreaBody').innerHTML = byArea.length
+        ? byArea.map(a => `<tr>
+            <td>${esc(a.name)}</td><td>${fmtNum(a.tokens_input)}</td><td>${fmtNum(a.tokens_output)}</td>
+            <td>${fmtNum(a.tokens_input + a.tokens_output)}</td><td>${fmtNum(a.requests)}</td>
+          </tr>`).join('')
+        : '<tr><td colspan="5" style="color:#64748b;">Nenhum consumo neste período.</td></tr>';
+}
+
+// Init: mês corrente pré-selecionado
+(function() {
+    const now = new Date();
+    const ym = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    document.getElementById('periodInput').value = ym;
+})();
+loadReport();
+</script>
+
+</body>
+</html>
