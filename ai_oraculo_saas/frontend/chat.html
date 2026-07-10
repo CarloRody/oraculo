@@ -126,6 +126,10 @@ async function loadAreas() {
             selector.appendChild(btn);
         });
 
+        // Padrão: uma única área selecionada (a primeira) — igual ao
+        // comportamento de sempre. "Todas as áreas" continua disponível,
+        // mas só entra se o usuário escolher explicitamente.
+        selectedAreaIds.add(data.areas[0].id);
         renderAreaSelection();
     } catch (err) {
         console.error('Erro ao carregar áreas:', err);
@@ -209,7 +213,7 @@ messageInput.addEventListener('keypress', function(e) {
 
 document.addEventListener('DOMContentLoaded', async function() {
     await loadAreas();
-    addMessage('assistant', 'Olá! Sou o Oráculo. Marque uma ou mais áreas no topo (ou deixe "Todas as áreas") e faça sua pergunta.');
+    addMessage('assistant', 'Olá! Sou o Oráculo. Uma área já vem selecionada no topo — marque outras para combinar, ou escolha "Todas as áreas" se quiser buscar em tudo.');
 });
 </script>
 
