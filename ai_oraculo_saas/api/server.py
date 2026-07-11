@@ -918,8 +918,19 @@ def chat():
         return jsonify({"error": msg}), 403
 
     # Modelo de IA do plano do cliente (roteamento real) + preço em R$/1M
-    # tokens. Sem plano/modelo = cai no LLM_CONFIG global, sem cobrança.
+    # tokens. Cliente identificado sem plano/modelo configurado é bloqueado
+    # abaixo — só uso interno/anônimo (user_id=None) cai no LLM_CONFIG global.
     llm_cfg = resolve_llm_config_for_user(user_id)
+
+    # Cliente identificado (chave válida) mas sem modelo de IA configurado no
+    # plano — não pesquisa, não chama LLM nenhum, porque não existe preço
+    # definido pra cobrar por essa consulta. Uso interno/anônimo (user_id=None)
+    # continua caindo no LLM_CONFIG global, sem cobrança (comportamento de sempre).
+    if user_id and llm_cfg["model_row_id"] is None:
+        return jsonify({
+            "error": "Sua conta ainda não tem um modelo de IA configurado. Fale com o administrador."
+        }), 403
+
     if llm_cfg["price_input_per_million"] is not None:
         current_balance = get_user_balance(user_id)
         if current_balance is not None and current_balance <= 0:
@@ -1050,6 +1061,16 @@ def agent_research():
         return jsonify({"error": msg}), 403
 
     llm_cfg = resolve_llm_config_for_user(user_id)
+
+    # Cliente identificado (chave válida) mas sem modelo de IA configurado no
+    # plano — não pesquisa, não chama LLM nenhum, porque não existe preço
+    # definido pra cobrar por essa consulta. Uso interno/anônimo (user_id=None)
+    # continua caindo no LLM_CONFIG global, sem cobrança (comportamento de sempre).
+    if user_id and llm_cfg["model_row_id"] is None:
+        return jsonify({
+            "error": "Sua conta ainda não tem um modelo de IA configurado. Fale com o administrador."
+        }), 403
+
     if llm_cfg["price_input_per_million"] is not None:
         current_balance = get_user_balance(user_id)
         if current_balance is not None and current_balance <= 0:
