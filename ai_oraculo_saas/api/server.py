@@ -567,7 +567,7 @@ def resolve_llm_config_for_user(user_id):
                 cur.execute(
                     """SELECT m.id, m.base_url, m.api_key, m.model_name, m.temperature,
                               m.max_tokens, m.timeout_seconds, m.price_input_per_million,
-                              m.price_output_per_million, m.markup_percentage
+                              m.price_output_per_million, m.markup_percentage, m.pro_high_multiplier
                        FROM users u JOIN plans p ON p.id = u.plan_id
                        JOIN ai_models m ON m.id = p.model_id
                        WHERE u.id = %s AND m.status = 'active'""",
@@ -585,6 +585,7 @@ def resolve_llm_config_for_user(user_id):
                         "price_input_per_million": float(row[7]),
                         "price_output_per_million": float(row[8]),
                         "markup_percentage": float(row[9]),
+                        "pro_high_multiplier": float(row[10]),
                     }
             except Exception as e:
                 if conn: conn.close()
@@ -596,6 +597,7 @@ def resolve_llm_config_for_user(user_id):
         "max_tokens": LLM_CONFIG.get("max_tokens", 6000),
         "timeout_seconds": LLM_CONFIG.get("timeout_seconds", 600),
         "price_input_per_million": None, "price_output_per_million": None, "markup_percentage": None,
+        "pro_high_multiplier": 1.0,
     }
 
 
@@ -1160,12 +1162,18 @@ Produza a resposta final."""
             log_area_usage(user_id, session_id, None, tokens_input_total, tokens_output_total)
 
         # ---- Débito de crédito, consolidado numa única transação ----
+        # pro_high_multiplier: sobretaxa exclusiva dessa feature (Pesquisa 3
+        # PRO High é mais cara que o chat normal por natureza — 3 chamadas de
+        # LLM — e pode levar uma margem extra por cima disso). Não afeta o
+        # preço do /api/chat, só é aplicado aqui.
         credit_status = None
         consumption_value = compute_consumption_value(llm_cfg, tokens_input_total, tokens_output_total)
         if consumption_value is not None:
+            multiplier = llm_cfg.get('pro_high_multiplier') or 1
+            consumption_value = round(consumption_value * multiplier, 4)
             new_balance = apply_credit_transaction(
                 user_id, -consumption_value, 'consumption',
-                'Pesquisa 3 agentes', session_id=session_id,
+                f'Pesquisa 3 PRO High (x{multiplier})', session_id=session_id,
                 tokens_input=tokens_input_total, tokens_output=tokens_output_total
             )
             if new_balance is not None:
@@ -1798,7 +1806,8 @@ def _model_row_to_dict(r):
         "temperature": float(r[5]) if r[5] is not None else None,
         "max_tokens": r[6], "timeout_seconds": r[7],
         "price_input_per_million": float(r[8]), "price_output_per_million": float(r[9]),
-        "markup_percentage": float(r[10]), "status": r[11]
+        "markup_percentage": float(r[10]), "status": r[11],
+        "pro_high_multiplier": float(r[12])
     }
 
 
@@ -1813,7 +1822,7 @@ def admin_get_models():
         cur.execute(
             """SELECT id, name, base_url, api_key, model_name, temperature, max_tokens,
                       timeout_seconds, price_input_per_million, price_output_per_million,
-                      markup_percentage, status
+                      markup_percentage, status, pro_high_multiplier
                FROM ai_models ORDER BY name"""
         )
         models = [_model_row_to_dict(r) for r in cur.fetchall()]
@@ -1845,12 +1854,13 @@ def admin_create_model():
         cur.execute(
             """INSERT INTO ai_models
                (name, base_url, api_key, model_name, temperature, max_tokens, timeout_seconds,
-                price_input_per_million, price_output_per_million, markup_percentage, status)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                price_input_per_million, price_output_per_million, markup_percentage,
+                pro_high_multiplier, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (name, base_url, data.get('api_key') or None, model_name,
              data.get('temperature'), data.get('max_tokens'), data.get('timeout_seconds'),
              data.get('price_input_per_million') or 0, data.get('price_output_per_million') or 0,
-             data.get('markup_percentage') or 0, status)
+             data.get('markup_percentage') or 0, data.get('pro_high_multiplier') or 1, status)
         )
         model_id = cur.fetchone()[0]
         conn.commit()
@@ -1873,7 +1883,7 @@ def admin_update_model(model_id):
         allowed = (
             'name', 'base_url', 'api_key', 'model_name', 'temperature', 'max_tokens',
             'timeout_seconds', 'price_input_per_million', 'price_output_per_million',
-            'markup_percentage', 'status'
+            'markup_percentage', 'pro_high_multiplier', 'status'
         )
         fields = {}
         for k in allowed:

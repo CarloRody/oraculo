@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS ai_models (
     price_input_per_million NUMERIC(12,4) NOT NULL DEFAULT 0, -- R$ por 1M tokens de entrada
     price_output_per_million NUMERIC(12,4) NOT NULL DEFAULT 0, -- R$ por 1M tokens de saída
     markup_percentage NUMERIC(6,2) NOT NULL DEFAULT 0, -- % aplicado sobre o custo acima
+    pro_high_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00, -- Multiplicador extra aplicado só na Pesquisa 3 PRO High (1.00 = sem sobretaxa)
     status VARCHAR(10) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
     created_at TIMESTAMPTZ DEFAULT NOW()
 );

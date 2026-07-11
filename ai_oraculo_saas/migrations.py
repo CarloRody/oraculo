@@ -243,6 +243,14 @@ MIGRATIONS = [
         page VARCHAR(100) PRIMARY KEY
     );
     """,
+
+    # 13 — multiplicador de preço por feature: permite cobrar mais caro por
+    # um recurso premium (ex: Pesquisa 3 PRO High, que faz 3 chamadas de LLM)
+    # sem mudar o preço base do modelo usado no chat normal. Default 1.00 =
+    # sem sobretaxa (comportamento de sempre pra quem não mexer nisso).
+    """
+    ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS pro_high_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00;
+    """,
 ]
 
 
