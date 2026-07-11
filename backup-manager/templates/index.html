@@ -2,6 +2,37 @@
 <html lang="pt-BR">
 <head>
 <meta charset="utf-8">
+<script>
+(function() {
+    // Backup Manager roda numa porta separada (5004) da API principal (5001) —
+    // origens diferentes não compartilham localStorage, então a chave do
+    // cliente chega via ?k= na URL (mandada pelo index.html do portal
+    // quando existe uma chave salva) e é guardada aqui na própria origem
+    // pra persistir em visitas futuras direto nesta página.
+    var KEY_STORAGE = 'oraculo_client_key';
+    var params = new URLSearchParams(location.search);
+    var urlKey = params.get('k');
+    if (urlKey) {
+        localStorage.setItem(KEY_STORAGE, urlKey);
+        params.delete('k');
+        var clean = location.pathname + (params.toString() ? '?' + params.toString() : '');
+        history.replaceState({}, '', clean);
+    }
+    var key = urlKey || localStorage.getItem(KEY_STORAGE);
+    if (!key) return; // sem chave de cliente = admin, acesso total (comportamento de sempre)
+
+    fetch(location.protocol + '//' + location.hostname + ':5001/api/allowed-pages')
+        .then(function(r) { return r.json(); })
+        .then(function(data) {
+            var allowed = data.pages || [];
+            if (allowed.indexOf('backup') === -1) {
+                alert('Você não tem acesso a esta ferramenta.');
+                location.href = location.protocol + '//' + location.hostname + ':5001/index.html';
+            }
+        })
+        .catch(function() { /* falha ao checar não bloqueia — falha aberta */ });
+})();
+</script>
 <title>Backup Manager</title>
 <style>
 *{box-sizing:border-box;margin:0;padding:0}

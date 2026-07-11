@@ -222,8 +222,15 @@ function doLogout() {
 }
 
 function setupMaintenanceLinks() {
-    document.getElementById('monitorLink').href = `${window.location.protocol}//${HOST}:5003/`;
-    document.getElementById('backupLink').href = `${window.location.protocol}//${HOST}:5004/`;
+    // Monitor Agent e Backup Manager rodam em portas separadas — o navegador
+    // trata cada porta como uma origem isolada, então o localStorage daqui
+    // não é visível lá. Manda a chave junto na URL (só quando existe uma
+    // chave de cliente salva); a página de destino lê, guarda na própria
+    // origem e limpa da URL. Sem chave salva = admin, link continua limpo.
+    const key = getStoredApiKey();
+    const suffix = key ? `?k=${encodeURIComponent(key)}` : '';
+    document.getElementById('monitorLink').href = `${window.location.protocol}//${HOST}:5003/${suffix}`;
+    document.getElementById('backupLink').href = `${window.location.protocol}//${HOST}:5004/${suffix}`;
 }
 
 // Sem chave salva = admin, mostra todos os cards (comportamento de sempre).
