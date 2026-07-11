@@ -9,7 +9,7 @@ from pathlib import Path
 
 import yaml
 
-CONFIG_PATH = Path(__file__).parent.parent / "config.yaml"
+CONFIG_PATH = Path(__file__).resolve().parent.parent / "config.yaml"
 
 
 def load_config():
