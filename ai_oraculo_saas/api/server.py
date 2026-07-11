@@ -32,23 +32,22 @@ def get_db_connection():
 
 @app.route('/api/areas', methods=['GET'])
 def get_areas():
-    """Retorna as áreas ativas visíveis pra quem está perguntando: áreas
-    globais (owner_user_id NULL) sempre aparecem; uma área privada só aparece
-    pro próprio dono, identificado pela X-Oraculo-Key. Sem chave = só globais."""
+    """Retorna só as áreas que o plano do cliente atual realmente inclui
+    (ver get_plan_area_ids) — sem chave válida ou sem plano atribuído,
+    nenhuma área é retornada."""
     user_id = resolve_user_from_request()
+    area_ids = get_plan_area_ids(user_id)
+    if not area_ids:
+        return jsonify({"areas": []})
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Não foi possível conectar ao banco de dados"}), 500
 
     try:
         cur = conn.cursor()
-        if user_id:
-            cur.execute(
-                "SELECT id, name, slug FROM areas WHERE status = 'active' AND (owner_user_id IS NULL OR owner_user_id = %s) ORDER BY name",
-                (user_id,)
-            )
-        else:
-            cur.execute("SELECT id, name, slug FROM areas WHERE status = 'active' AND owner_user_id IS NULL ORDER BY name")
+        placeholders = ",".join(["%s"] * len(area_ids))
+        cur.execute(f"SELECT id, name, slug FROM areas WHERE id IN ({placeholders}) ORDER BY name", area_ids)
         rows = cur.fetchall()
         areas = [{"id": r[0], "name": r[1], "slug": r[2]} for r in rows]
 
@@ -394,40 +393,48 @@ def resolve_area_ids(data):
     return [int(area_id)] if area_id else None
 
 
+def get_plan_area_ids(user_id):
+    """Áreas que o plano atual do cliente realmente inclui (têm linha em
+    plan_area_pricing) — isso define o que o cliente pode ver/perguntar, não
+    mais 'toda área global'. Sem chave, sem plano ou plano sem nenhuma área
+    precificada = lista vazia (nenhuma área)."""
+    if not user_id:
+        return []
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT pap.area_id FROM users u
+               JOIN plan_area_pricing pap ON pap.plan_id = u.plan_id
+               JOIN areas a ON a.id = pap.area_id
+               WHERE u.id = %s AND a.status = 'active'""",
+            (user_id,)
+        )
+        area_ids = [r[0] for r in cur.fetchall()]
+        conn.close()
+        return area_ids
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO get_plan_area_ids: {e}")
+        return []
+
+
 def resolve_authorized_area_ids(requested_area_ids, user_id):
-    """Restringe requested_area_ids às áreas que essa chave pode ver: áreas
-    globais (owner_user_id NULL) sempre entram; uma área privada só entra se
-    owner_user_id == user_id. requested_area_ids=None ("todas as áreas") vira
-    explicitamente a lista de áreas autorizadas — nunca deixa "todas" incluir
-    a área privada de outro cliente por omissão.
+    """Restringe requested_area_ids às áreas que o plano dessa chave inclui.
+    requested_area_ids=None ("todas as áreas") vira explicitamente a lista de
+    áreas do plano — nunca deixa "todas" significar mais do que o plano cobre.
 
     Retorna (area_ids_autorizados, houve_pedido_negado). houve_pedido_negado
     só é True quando area_ids específicos foram pedidos e pelo menos um foi
-    recusado — usado pelo chamador pra devolver 403 se a lista ficar vazia."""
-    conn = get_db_connection()
-    if not conn:
-        return [], bool(requested_area_ids)
-    try:
-        cur = conn.cursor()
-        if requested_area_ids:
-            placeholders = ",".join(["%s"] * len(requested_area_ids))
-            cur.execute(
-                f"SELECT id FROM areas WHERE id IN ({placeholders}) AND (owner_user_id IS NULL OR owner_user_id = %s)",
-                requested_area_ids + [user_id]
-            )
-        else:
-            cur.execute(
-                "SELECT id FROM areas WHERE status = 'active' AND (owner_user_id IS NULL OR owner_user_id = %s)",
-                (user_id,)
-            )
-        authorized = [r[0] for r in cur.fetchall()]
-        conn.close()
-        had_unauthorized = bool(requested_area_ids) and len(authorized) < len(requested_area_ids)
+    recusado — usado pelo chamador pra escolher a mensagem de erro certa."""
+    plan_area_ids = set(get_plan_area_ids(user_id))
+    if requested_area_ids:
+        authorized = [aid for aid in requested_area_ids if aid in plan_area_ids]
+        had_unauthorized = len(authorized) < len(requested_area_ids)
         return authorized, had_unauthorized
-    except Exception as e:
-        if conn: conn.close()
-        print(f"ERRO resolve_authorized_area_ids: {e}")
-        return [], bool(requested_area_ids)
+    return list(plan_area_ids), False
 
 
 def authorize_client_area_write(area_id):
@@ -632,12 +639,16 @@ def chat():
     # omissão (area_ids vazio = "todas as áreas", que sem esse filtro
     # incluiria literalmente todas, inclusive as privadas de terceiros).
     authorized_area_ids, had_unauthorized_request = resolve_authorized_area_ids(requested_area_ids, user_id)
-    if had_unauthorized_request and not authorized_area_ids:
-        return jsonify({"error": "Nenhuma das áreas pedidas está disponível pra essa chave de acesso."}), 403
+    if not authorized_area_ids:
+        msg = ("Nenhuma das áreas pedidas está disponível pra essa chave de acesso."
+               if had_unauthorized_request else
+               "Nenhuma área disponível no seu plano de acesso.")
+        return jsonify({"error": msg}), 403
 
     try:
-        # Busca chunks relevantes via RAG (uma ou várias áreas autorizadas)
-        context_chunks = search_similar(message, area_ids=authorized_area_ids, top_k=50) if authorized_area_ids else []
+        # Busca chunks relevantes via RAG (uma ou várias áreas autorizadas —
+        # já garantido não-vazio pelo retorno 403 acima)
+        context_chunks = search_similar(message, area_ids=authorized_area_ids, top_k=50)
 
         # Áreas que de fato contribuíram trechos para o contexto — é isso que
         # define a cota/billing, não o que foi pedido (uma área pedida sem

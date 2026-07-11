@@ -95,9 +95,12 @@ function getApiKey() {
 // Carregar áreas do backend e renderizar chips de seleção múltipla
 async function loadAreas() {
     try {
-        const res = await fetch(`${API}/api/areas`);
+        const res = await fetch(`${API}/api/areas`, { headers: { 'X-Oraculo-Key': getApiKey() } });
         const data = await res.json();
-        if (!data.areas || data.areas.length === 0) return;
+        if (!data.areas || data.areas.length === 0) {
+            document.getElementById('areaSelector').innerHTML = '<span style="color:#94a3b8;">Nenhuma área disponível no seu plano. Fale com o administrador.</span>';
+            return;
+        }
         allAreas = data.areas;
 
         const selector = document.getElementById('areaSelector');
