@@ -841,9 +841,11 @@ def web_search(query, max_results=8):
     """Consulta o SearXNG local (container Docker, só acessível em
     localhost — evita expor publicamente e evita CORS) e devolve resultados
     (title, url, content). Nunca levanta — lista vazia em qualquer falha
-    (SearXNG fora do ar, timeout, etc.). max_results=8 (era 6) e corte de
-    1200 caracteres por resultado (era 800) — mais material pro agente de
-    internet sintetizar uma resposta desenvolvida, não só um resumo raso."""
+    (SearXNG fora do ar, timeout, etc.). Corte de 6000 caracteres por
+    resultado — na prática o "content" do SearXNG é um snippet do motor de
+    busca (geralmente bem mais curto que isso), então esse limite quase
+    nunca é atingido; ele só evita um resultado atípico de estourar o
+    prompt sem necessidade."""
     try:
         resp = _http_requests.get(
             "http://127.0.0.1:8888/search",
@@ -853,7 +855,7 @@ def web_search(query, max_results=8):
         resp.raise_for_status()
         results = resp.json().get("results", [])[:max_results]
         return [{"title": r.get("title", ""), "url": r.get("url", ""),
-                  "content": (r.get("content") or "")[:1200]} for r in results]
+                  "content": (r.get("content") or "")[:6000]} for r in results]
     except Exception as e:
         print(f"ERRO web_search: {e}")
         return []
