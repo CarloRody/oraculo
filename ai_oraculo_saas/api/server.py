@@ -1565,15 +1565,17 @@ def admin_create_user():
 
 @app.route('/admin/users/<int:user_id>', methods=['PATCH'])
 def admin_update_user(user_id):
-    """Atualiza o email, o plano e/ou regenera a chave de acesso de um cliente
-    (regenerar invalida a chave antiga na hora — qualquer integração usando
-    a chave anterior para de funcionar)."""
+    """Atualiza o email, o plano e/ou a chave de acesso de um cliente —
+    regenera aleatoriamente (regenerate_key) ou define um valor customizado
+    (api_key). Trocar a chave invalida a antiga na hora — qualquer
+    integração usando a chave anterior para de funcionar."""
     data = request.get_json()
     email = (data.get('email') or '').strip() or None
     regenerate_key = bool(data.get('regenerate_key'))
+    custom_api_key = (data.get('api_key') or '').strip() or None
     plan_id_given = 'plan_id' in data
     plan_id = data.get('plan_id') if plan_id_given else None
-    if not email and not regenerate_key and not plan_id_given:
+    if not email and not regenerate_key and not custom_api_key and not plan_id_given:
         return jsonify({"error": "Nada para atualizar"}), 400
 
     conn = get_db_connection()
@@ -1587,6 +1589,8 @@ def admin_update_user(user_id):
             fields['email'] = email
         if regenerate_key:
             fields['api_key'] = secrets.token_hex(32)
+        elif custom_api_key:
+            fields['api_key'] = custom_api_key
         if plan_id_given:
             fields['plan_id'] = plan_id
 
@@ -1609,7 +1613,8 @@ def admin_update_user(user_id):
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         conn.close()
-        return jsonify({"error": f"Email '{email}' já cadastrado"}), 409
+        detail = f"Email '{email}' já cadastrado" if email else "Chave de acesso já está em uso por outro cliente"
+        return jsonify({"error": detail}), 409
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         return jsonify({"error": str(e)}), 500
