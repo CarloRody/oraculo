@@ -91,6 +91,35 @@ def get_my_area():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/api/me', methods=['GET'])
+def get_me():
+    """Identifica o cliente pela X-Oraculo-Key — usado pra mostrar o nome de
+    quem está conectado (barra de login/logout do index.html e outras
+    páginas voltadas pro cliente)."""
+    api_key = request.headers.get('X-Oraculo-Key')
+    if not api_key:
+        return jsonify({"error": "Chave de acesso é obrigatória"}), 401
+
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida"}), 401
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return jsonify({"error": "Cliente não encontrado"}), 404
+        return jsonify({"email": row[0]})
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/api/documents', methods=['GET'])
 def get_documents():
     """Retorna documentos de uma área ou todos. ?limit= restringe aos N mais recentes."""

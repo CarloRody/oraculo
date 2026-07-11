@@ -11,6 +11,13 @@
         .status-label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 0.25rem; }
         .value { color: #a78bfa; font-weight: 600; font-size: 1.1rem; }
 
+        .account-bar { background: #1e293b; border-radius: 8px; padding: 0.75rem 1.5rem; margin-bottom: 1rem; display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem; border: 1px solid #334155; }
+        .account-status { color: #94a3b8; font-size: 0.9rem; }
+        .account-status.connected { color: #4ade80; }
+        .account-btn { padding: 0.5rem 1.1rem; font-size: 0.85rem; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; }
+        .account-btn.login { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; }
+        .account-btn.logout { background: #334155; color: #e2e8f0; }
+
         .cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 3rem; }
         .card { background: #1e293b; border-radius: 12px; padding: 2rem; text-decoration: none; color: inherit; transition: transform 0.2s, box-shadow 0.2s; border: 1px solid #334155; display: block; }
         .card:hover { transform: translateY(-4px); box-shadow: 0 8px 30px rgba(96, 165, 250, 0.2); border-color: #60a5fa; }
@@ -29,6 +36,15 @@
     </div>
 
     <div class="container wide">
+
+        <!-- Conta do cliente (opcional — mesma chave usada em chat.html/meu-portal.html) -->
+        <div class="account-bar">
+            <span class="account-status" id="account-status">Não conectado</span>
+            <span>
+                <button class="account-btn login" id="loginBtn" onclick="doLogin()">Entrar</button>
+                <button class="account-btn logout" id="logoutBtn" onclick="doLogout()" style="display:none;">Sair</button>
+            </span>
+        </div>
 
         <!-- Status -->
         <div class="status-bar">
@@ -119,9 +135,12 @@ const HOST = window.location.hostname;
 async function loadStatus() {
     const dbEl = document.getElementById('db-status');
     try {
+        // /admin/areas (não /api/areas) porque este é o portal interno do
+        // admin — /api/areas agora só devolve áreas do plano de quem manda
+        // uma chave de cliente válida, e esta página nunca manda chave.
         const [statsRes, areasRes] = await Promise.all([
             fetch(`${API}/api/stats`),
-            fetch(`${API}/api/areas`)
+            fetch(`${API}/admin/areas`)
         ]);
         const stats = await statsRes.json();
         const areas = await areasRes.json();
@@ -134,13 +153,65 @@ async function loadStatus() {
             dbEl.style.color = '#ef4444';
         }
 
+        const activeAreas = (areas.areas || []).filter(a => a.status === 'active');
         document.getElementById('doc-count').textContent = `${stats.doc_count || 0} carregados`;
-        document.getElementById('area-count').textContent = `${areas.areas ? areas.areas.length : 0} áreas`;
+        document.getElementById('area-count').textContent = `${activeAreas.length} áreas`;
     } catch (err) {
         console.error('Erro ao carregar status:', err);
         dbEl.textContent = '● API Indisponível';
         dbEl.style.color = '#ef4444';
     }
+}
+
+function getStoredApiKey() {
+    return localStorage.getItem('oraculo_api_key') || '';
+}
+
+async function refreshAccountBar() {
+    const statusEl = document.getElementById('account-status');
+    const loginBtn = document.getElementById('loginBtn');
+    const logoutBtn = document.getElementById('logoutBtn');
+    const key = getStoredApiKey();
+
+    if (!key) {
+        statusEl.textContent = 'Não conectado';
+        statusEl.classList.remove('connected');
+        loginBtn.style.display = 'inline-block';
+        logoutBtn.style.display = 'none';
+        return;
+    }
+
+    try {
+        const res = await fetch(`${API}/api/me`, { headers: { 'X-Oraculo-Key': key } });
+        const data = await res.json();
+        if (!res.ok) {
+            localStorage.removeItem('oraculo_api_key');
+            statusEl.textContent = 'Não conectado';
+            statusEl.classList.remove('connected');
+            loginBtn.style.display = 'inline-block';
+            logoutBtn.style.display = 'none';
+            return;
+        }
+        statusEl.textContent = `Conectado como ${data.email}`;
+        statusEl.classList.add('connected');
+        loginBtn.style.display = 'none';
+        logoutBtn.style.display = 'inline-block';
+    } catch (err) {
+        statusEl.textContent = 'Não foi possível verificar a chave.';
+        statusEl.classList.remove('connected');
+    }
+}
+
+function doLogin() {
+    const key = prompt('Chave de acesso (fornecida pelo administrador):');
+    if (!key) return;
+    localStorage.setItem('oraculo_api_key', key.trim());
+    refreshAccountBar();
+}
+
+function doLogout() {
+    localStorage.removeItem('oraculo_api_key');
+    refreshAccountBar();
 }
 
 function setupMaintenanceLinks() {
@@ -150,7 +221,7 @@ function setupMaintenanceLinks() {
 
 document.getElementById('year').textContent = new Date().getFullYear();
 setupMaintenanceLinks();
-document.addEventListener('DOMContentLoaded', loadStatus);
+document.addEventListener('DOMContentLoaded', () => { loadStatus(); refreshAccountBar(); });
 </script>
 </body>
 </html>
