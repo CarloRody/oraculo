@@ -145,10 +145,8 @@ async function loadAreas() {
             selector.appendChild(btn);
         });
 
-        // Padrão: uma única área selecionada (a primeira) — igual ao
-        // comportamento de sempre. "Todas as áreas" continua disponível,
-        // mas só entra se o usuário escolher explicitamente.
-        selectedAreaIds.add(data.areas[0].id);
+        // Padrão: "Todas as áreas" pré-selecionada (selectedAreaIds vazio).
+        // O usuário pode marcar uma ou mais áreas específicas se quiser.
         renderAreaSelection();
     } catch (err) {
         console.error('Erro ao carregar áreas:', err);
