@@ -195,6 +195,44 @@ MIGRATIONS = [
     ALTER TABLE areas ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
     CREATE INDEX IF NOT EXISTS idx_areas_owner ON areas(owner_user_id);
     """,
+
+    # 11 — sistema de créditos pré-pagos: cadastro de modelos de IA (com preço
+    # em R$/1M tokens + markup, um modelo real por plano define qual API é
+    # chamada), saldo em users.balance e o ledger de depósitos/consumo.
+    """
+    CREATE TABLE IF NOT EXISTS ai_models (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(120) NOT NULL,
+        base_url TEXT NOT NULL,
+        api_key TEXT,
+        model_name VARCHAR(120) NOT NULL,
+        temperature NUMERIC(3,2),
+        max_tokens INTEGER,
+        timeout_seconds INTEGER,
+        price_input_per_million NUMERIC(12,4) NOT NULL DEFAULT 0,
+        price_output_per_million NUMERIC(12,4) NOT NULL DEFAULT 0,
+        markup_percentage NUMERIC(6,2) NOT NULL DEFAULT 0,
+        status VARCHAR(10) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL;
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS balance NUMERIC(12,4) NOT NULL DEFAULT 0;
+
+    CREATE TABLE IF NOT EXISTS credit_transactions (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        type VARCHAR(12) NOT NULL CHECK (type IN ('deposit', 'consumption', 'adjustment')),
+        amount NUMERIC(12,4) NOT NULL,
+        balance_after NUMERIC(12,4) NOT NULL,
+        description TEXT,
+        session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+        tokens_input INTEGER,
+        tokens_output INTEGER,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_credit_transactions_user_time ON credit_transactions(user_id, created_at DESC);
+    """,
 ]
 
 

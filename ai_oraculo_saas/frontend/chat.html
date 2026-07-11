@@ -20,6 +20,18 @@
         .area-btn.all-btn { border-style: dashed; }
         .area-hint { width: 100%; text-align: center; color: #64748b; font-size: 0.75rem; margin-top: -0.35rem; }
 
+        /* Saldo de créditos */
+        .balance-bar { text-align: center; padding: 0.4rem 1rem; font-size: 0.8rem; color: #94a3b8; background: #0f172a; border-bottom: 1px solid #334155; }
+        .balance-bar .balance-value { font-weight: 600; }
+        .balance-bar .low { color: #f87171; }
+
+        /* Banner de saldo esgotado */
+        .credit-banner { max-width: min(80%, 640px); margin: 0 0 1rem; background: #2a1215; border: 1px solid #ef4444; border-radius: 12px; padding: 1rem; }
+        .credit-banner h4 { color: #f87171; margin-bottom: 0.5rem; }
+        .credit-banner table { width: 100%; border-collapse: collapse; margin-top: 0.5rem; font-size: 0.8rem; }
+        .credit-banner th, .credit-banner td { text-align: left; padding: 0.3rem 0.4rem; border-bottom: 1px solid #4a1f27; color: #e0e0e0; }
+        .credit-banner th { color: #f87171; font-weight: 600; }
+
         /* Context sources (transparência de área por trecho) */
         .msg-sources { margin-top: 0.5rem; font-size: 0.75rem; }
         .msg-sources summary { cursor: pointer; color: #64748b; }
@@ -55,6 +67,9 @@
     <h1>&#128172; Chat com Oráculo</h1>
     <p>Pergunte sobre uma ou mais áreas e receba respostas fundamentadas nos documentos indexados.</p>
 </div>
+
+<!-- Saldo de créditos -->
+<div class="balance-bar" id="balanceBar" style="display:none;"></div>
 
 <!-- Area selector -->
 <div class="area-selector" id="areaSelector">
@@ -149,6 +164,48 @@ function renderAreaSelection() {
     });
 }
 
+// Saldo de créditos — só aparece se o cliente tiver uma chave válida com
+// plano/modelo participando do sistema de crédito (senão /api/my-credits
+// simplesmente não é chamado com sucesso e a barra fica escondida).
+function updateBalanceBar(balance) {
+    const bar = document.getElementById('balanceBar');
+    if (balance == null) { bar.style.display = 'none'; return; }
+    bar.style.display = 'block';
+    const low = balance <= 0;
+    bar.innerHTML = `Saldo de créditos: <span class="balance-value${low ? ' low' : ''}">R$ ${Number(balance).toFixed(2)}</span>`;
+}
+
+async function refreshBalance() {
+    const key = getApiKey();
+    if (!key) return;
+    try {
+        const res = await fetch(`${API}/api/my-credits`, { headers: { 'X-Oraculo-Key': key } });
+        if (!res.ok) return; // cliente sem plano de crédito — sem barra, sem erro
+        const data = await res.json();
+        updateBalanceBar(data.balance);
+    } catch (err) { /* silencioso — barra de saldo é informativa, não crítica */ }
+}
+
+function renderCreditBanner(creditStatus) {
+    const banner = document.createElement('div');
+    banner.className = 'credit-banner';
+    const rows = (creditStatus.recent || []).map(r => `
+        <tr>
+            <td>${r.date ? new Date(r.date).toLocaleString('pt-BR') : '-'}</td>
+            <td>${(r.tokens_input || 0) + (r.tokens_output || 0)} tokens</td>
+            <td>R$ ${Number(r.amount).toFixed(2)}</td>
+        </tr>
+    `).join('');
+    banner.innerHTML = `
+        <h4>⚠ Seus créditos acabaram</h4>
+        <p>Saldo atual: <strong>R$ ${Number(creditStatus.balance).toFixed(2)}</strong></p>
+        ${rows ? `<table><thead><tr><th>Data</th><th>Tokens</th><th>Valor</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
+        <p style="margin-top:0.5rem; color:#94a3b8; font-size:0.85rem;">Fale com o administrador para recarregar seu saldo.</p>
+    `;
+    chatContainer.appendChild(banner);
+    chatContainer.scrollTop = chatContainer.scrollHeight;
+}
+
 async function sendMessage() {
     const text = messageInput.value.trim();
     if (!text) return;
@@ -173,11 +230,18 @@ async function sendMessage() {
         chatContainer.removeChild(loadingMsg);
 
         const data = await res.json();
-        if (data.error) {
+        if (res.status === 402 && data.credit_status) {
+            renderCreditBanner(data.credit_status);
+            updateBalanceBar(data.credit_status.balance);
+        } else if (data.error) {
             addMessage('assistant', `Erro: ${data.error}`);
         } else {
             addMessage('assistant', data.response || 'Sem resposta.', data.context_sources);
             if (data.quota_warning) addMessage('assistant', `⚠ ${data.quota_warning}`);
+            if (data.credit_status) {
+                updateBalanceBar(data.credit_status.balance);
+                if (data.credit_status.depleted) renderCreditBanner(data.credit_status);
+            }
         }
     } catch (err) {
         chatContainer.removeChild(loadingMsg);
@@ -216,6 +280,7 @@ messageInput.addEventListener('keypress', function(e) {
 
 document.addEventListener('DOMContentLoaded', async function() {
     await loadAreas();
+    refreshBalance();
     addMessage('assistant', 'Olá! Sou o Oráculo. Uma área já vem selecionada no topo — marque outras para combinar, ou escolha "Todas as áreas" se quiser buscar em tudo.');
 });
 </script>

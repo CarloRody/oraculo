@@ -10,6 +10,13 @@
         .doc-item { background: #1e293b; border-radius: 8px; padding: 1rem; margin-bottom: 0.85rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; border: 1px solid #334155; }
         .doc-info { color: #e2e8f0; font-size: 0.95rem; }
         .doc-meta { color: #64748b; font-size: 0.8rem; margin-top: 0.35rem; display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+
+        .credits-balance { font-size: 1.4rem; font-weight: 700; margin-bottom: 0.25rem; }
+        .credits-balance.low { color: #f87171; }
+        .credits-balance.ok { color: #4ade80; }
+        .credits-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
+        .credits-table th, .credits-table td { text-align: left; padding: 0.5rem; border-bottom: 1px solid #334155; }
+        .credits-table th { color: #64748b; font-size: 0.75rem; text-transform: uppercase; }
     </style>
 </head>
 <body>
@@ -17,6 +24,12 @@
     <div class="header">
         <h1 class="gradient">Minha Base de Conhecimento</h1>
         <p id="areaSubtitle">Carregando...</p>
+    </div>
+
+    <div id="creditsSection" class="content-area" style="display:none;">
+        <h3 style="color: #60a5fa; margin-bottom: 0.75rem;">Meus Créditos</h3>
+        <div id="creditsBalanceBox"><p class="loading-text">Carregando saldo...</p></div>
+        <div id="creditsExtractBox"></div>
     </div>
 
     <div id="notProvisioned" class="content-area" style="display:none;">
@@ -122,6 +135,42 @@ async function loadMyArea() {
     } catch (err) {
         document.getElementById('areaSubtitle').textContent = 'Erro ao conectar à API.';
     }
+}
+
+async function loadMyCredits() {
+    const key = getApiKey();
+    if (!key) return;
+    try {
+        const res = await fetch(`${API}/api/my-credits`, { headers: { 'X-Oraculo-Key': key } });
+        if (!res.ok) return; // cliente sem plano de crédito — não mostra a seção
+        const data = await res.json();
+        document.getElementById('creditsSection').style.display = 'block';
+        const low = data.balance <= 0;
+        document.getElementById('creditsBalanceBox').innerHTML =
+            `<p class="credits-balance ${low ? 'low' : 'ok'}">R$ ${Number(data.balance).toFixed(2)}</p>
+             <p style="color:#64748b; font-size:0.85rem;">${low ? 'Saldo esgotado — fale com o administrador para recarregar.' : 'Saldo disponível'}</p>`;
+
+        const typeLabel = { deposit: 'Depósito', consumption: 'Consumo', adjustment: 'Ajuste' };
+        const transactions = data.transactions || [];
+        if (!transactions.length) {
+            document.getElementById('creditsExtractBox').innerHTML = '';
+            return;
+        }
+        const rows = transactions.map(t => `
+            <tr>
+                <td>${t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '-'}</td>
+                <td>${typeLabel[t.type] || t.type}</td>
+                <td style="color:${t.amount >= 0 ? '#4ade80' : '#f87171'};">${t.amount >= 0 ? '+' : ''}R$ ${Number(t.amount).toFixed(2)}</td>
+                <td>${t.description ? esc(t.description) : '-'}</td>
+            </tr>
+        `).join('');
+        document.getElementById('creditsExtractBox').innerHTML = `
+            <table class="credits-table">
+                <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Descrição</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    } catch (err) { /* silencioso — igual ao padrão de loadMyArea/loadDocuments */ }
 }
 
 async function loadDocuments() {
@@ -238,6 +287,7 @@ document.getElementById('fileForm').addEventListener('submit', async function(e)
 
 document.getElementById('year').textContent = new Date().getFullYear();
 loadMyArea();
+loadMyCredits();
 </script>
 </body>
 </html>

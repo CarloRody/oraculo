@@ -553,6 +553,138 @@ def get_quota_status(user_id, area_id):
         return None
 
 
+def resolve_llm_config_for_user(user_id):
+    """Resolve base_url/api_key/model/temperatura/max_tokens/timeout e o preço
+    do modelo de IA do plano do cliente (roteamento real — cada plano pode
+    chamar uma API diferente). Sem plano, plano sem modelo, ou sem user_id
+    (uso interno via extract.html/rag.html) cai no LLM_CONFIG global de
+    config.yaml, sem preço nenhum (sem cobrança de crédito)."""
+    if user_id:
+        conn = get_db_connection()
+        if conn:
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    """SELECT m.id, m.base_url, m.api_key, m.model_name, m.temperature,
+                              m.max_tokens, m.timeout_seconds, m.price_input_per_million,
+                              m.price_output_per_million, m.markup_percentage
+                       FROM users u JOIN plans p ON p.id = u.plan_id
+                       JOIN ai_models m ON m.id = p.model_id
+                       WHERE u.id = %s AND m.status = 'active'""",
+                    (user_id,)
+                )
+                row = cur.fetchone()
+                conn.close()
+                if row:
+                    return {
+                        "model_row_id": row[0], "base_url": row[1], "api_key": row[2],
+                        "model": row[3],
+                        "temperature": float(row[4]) if row[4] is not None else LLM_CONFIG.get("temperature", 0.7),
+                        "max_tokens": row[5] or LLM_CONFIG.get("max_tokens", 6000),
+                        "timeout_seconds": row[6] or LLM_CONFIG.get("timeout_seconds", 600),
+                        "price_input_per_million": float(row[7]),
+                        "price_output_per_million": float(row[8]),
+                        "markup_percentage": float(row[9]),
+                    }
+            except Exception as e:
+                if conn: conn.close()
+                print(f"ERRO resolve_llm_config_for_user: {e}")
+    return {
+        "model_row_id": None, "base_url": LLM_CONFIG["base_url"], "api_key": LLM_CONFIG.get("api_key"),
+        "model": LLM_CONFIG.get("model", "auto"),
+        "temperature": LLM_CONFIG.get("temperature", 0.7),
+        "max_tokens": LLM_CONFIG.get("max_tokens", 6000),
+        "timeout_seconds": LLM_CONFIG.get("timeout_seconds", 600),
+        "price_input_per_million": None, "price_output_per_million": None, "markup_percentage": None,
+    }
+
+
+def compute_consumption_value(llm_cfg, tokens_input, tokens_output):
+    """Valor em R$ a debitar do saldo do cliente por esta resposta, ou None se
+    o modelo resolvido não tem preço (uso interno/sem plano — não cobra)."""
+    if llm_cfg.get("price_input_per_million") is None:
+        return None
+    base = (tokens_input / 1_000_000 * llm_cfg["price_input_per_million"]
+            + tokens_output / 1_000_000 * llm_cfg["price_output_per_million"])
+    return round(base * (1 + llm_cfg["markup_percentage"] / 100), 4)
+
+
+def apply_credit_transaction(user_id, amount, type_, description, session_id=None, tokens_input=None, tokens_output=None):
+    """Grava uma linha no ledger de créditos e atualiza users.balance
+    atomicamente — SELECT ... FOR UPDATE trava a linha do cliente durante a
+    transação, evitando corrida entre duas respostas de chat concorrentes do
+    mesmo cliente debitarem em cima uma da outra. Retorna o saldo novo, ou
+    None em erro (nunca levanta)."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE id = %s FOR UPDATE", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.rollback()
+            conn.close()
+            return None
+        new_balance = float(row[0]) + amount
+        cur.execute("UPDATE users SET balance = %s WHERE id = %s", (new_balance, user_id))
+        cur.execute(
+            """INSERT INTO credit_transactions
+               (user_id, type, amount, balance_after, description, session_id, tokens_input, tokens_output)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, type_, amount, new_balance, description, session_id, tokens_input, tokens_output)
+        )
+        conn.commit()
+        conn.close()
+        return new_balance
+    except Exception as e:
+        if conn:
+            conn.rollback()
+            conn.close()
+        print(f"ERRO apply_credit_transaction: {e}")
+        return None
+
+
+def get_user_balance(user_id):
+    """Saldo atual do cliente, ou None se não encontrado/erro."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return float(row[0]) if row else None
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO get_user_balance: {e}")
+        return None
+
+
+def get_recent_consumption(user_id, limit=5):
+    """Últimos consumos do cliente, pro extrato mostrado quando o saldo zera."""
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT created_at, amount, tokens_input, tokens_output, description
+               FROM credit_transactions WHERE user_id = %s AND type = 'consumption'
+               ORDER BY created_at DESC LIMIT %s""",
+            (user_id, limit)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [{"date": r[0].isoformat(), "amount": float(r[1]), "tokens_input": r[2],
+                  "tokens_output": r[3], "description": r[4]} for r in rows]
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO get_recent_consumption: {e}")
+        return []
+
+
 def log_chat_message(user_id, area_ids, message, response_text, tokens_input, tokens_output):
     """Grava a sessão + as duas mensagens (pergunta/resposta) uma vez só,
     independente de quantas áreas a pergunta usou. A sessão fica associada à
@@ -674,6 +806,21 @@ def chat():
                "Nenhuma área disponível no seu plano de acesso.")
         return jsonify({"error": msg}), 403
 
+    # Modelo de IA do plano do cliente (roteamento real) + preço em R$/1M
+    # tokens. Sem plano/modelo = cai no LLM_CONFIG global, sem cobrança.
+    llm_cfg = resolve_llm_config_for_user(user_id)
+    if llm_cfg["price_input_per_million"] is not None:
+        current_balance = get_user_balance(user_id)
+        if current_balance is not None and current_balance <= 0:
+            return jsonify({
+                "error": "Seus créditos acabaram.",
+                "credit_status": {
+                    "balance": round(current_balance, 2),
+                    "depleted": True,
+                    "recent": get_recent_consumption(user_id)
+                }
+            }), 402
+
     try:
         # Busca chunks relevantes via RAG (uma ou várias áreas autorizadas —
         # já garantido não-vazio pelo retorno 403 acima)
@@ -768,21 +915,23 @@ def chat():
 
 Pergunta: {message}"""
 
-        # Chama LLM (provedor/modelo/token/parâmetros vêm de config.yaml)
-        llm_headers = {"Authorization": f"Bearer {LLM_CONFIG['api_key']}"} if LLM_CONFIG.get("api_key") else {}
+        # Chama LLM — base_url/model/parâmetros vêm do modelo do plano do
+        # cliente (llm_cfg, roteamento real) ou do LLM_CONFIG global se o
+        # cliente não tiver plano/modelo associado.
+        llm_headers = {"Authorization": f"Bearer {llm_cfg['api_key']}"} if llm_cfg.get("api_key") else {}
         llm_response = _http_requests.post(
-            LLM_CONFIG["base_url"],
+            llm_cfg["base_url"],
             json={
-                "model": LLM_CONFIG.get("model", "auto"),
+                "model": llm_cfg["model"],
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ],
-                "temperature": LLM_CONFIG.get("temperature", 0.7),
-                "max_tokens": LLM_CONFIG.get("max_tokens", 6000)
+                "temperature": llm_cfg["temperature"],
+                "max_tokens": llm_cfg["max_tokens"]
             },
             headers=llm_headers,
-            timeout=LLM_CONFIG.get("timeout_seconds", 600)
+            timeout=llm_cfg["timeout_seconds"]
         )
         llm_response.raise_for_status()
         llm_data = llm_response.json()
@@ -806,6 +955,21 @@ Pergunta: {message}"""
             # mesmo comportamento de sempre: um registro sem área associada.
             log_area_usage(user_id, session_id, None, tokens_input, tokens_output)
 
+        # Débito do saldo em créditos — só cobra se o plano do cliente tem um
+        # modelo com preço configurado (llm_cfg vindo de ai_models via plano).
+        credit_status = None
+        consumption_value = compute_consumption_value(llm_cfg, tokens_input, tokens_output)
+        if consumption_value is not None:
+            new_balance = apply_credit_transaction(
+                user_id, -consumption_value, 'consumption',
+                f"Chat — {llm_cfg['model']}", session_id=session_id,
+                tokens_input=tokens_input, tokens_output=tokens_output
+            )
+            if new_balance is not None:
+                credit_status = {"balance": round(new_balance, 2), "depleted": new_balance <= 0}
+                if credit_status["depleted"]:
+                    credit_status["recent"] = get_recent_consumption(user_id)
+
         result = {
             "response": response_text,
             "context_sources": context_sources,
@@ -814,6 +978,8 @@ Pergunta: {message}"""
         }
         if quota_warning:
             result["quota_warning"] = quota_warning
+        if credit_status:
+            result["credit_status"] = credit_status
         return jsonify(result)
 
     except Exception as e:
@@ -1164,7 +1330,7 @@ def admin_list_users():
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT u.id, u.email, u.api_key, u.created_at, u.plan_id, p.name
+            """SELECT u.id, u.email, u.api_key, u.created_at, u.plan_id, p.name, u.balance
                FROM users u LEFT JOIN plans p ON p.id = u.plan_id
                ORDER BY u.email"""
         )
@@ -1175,7 +1341,8 @@ def admin_list_users():
                 "id": r[0], "email": r[1],
                 "api_key": r[2],
                 "created_at": r[3].isoformat() if r[3] else None,
-                "plan_id": r[4], "plan_name": r[5]
+                "plan_id": r[4], "plan_name": r[5],
+                "balance": float(r[6])
             })
         conn.close()
         return jsonify({"total": len(users), "users": users})
@@ -1274,8 +1441,11 @@ def admin_list_plans():
         return jsonify({"error": "Banco indisponível"}), 500
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name, description FROM plans ORDER BY name")
-        plans = [{"id": r[0], "name": r[1], "description": r[2]} for r in cur.fetchall()]
+        cur.execute(
+            """SELECT p.id, p.name, p.description, p.model_id, m.name
+               FROM plans p LEFT JOIN ai_models m ON m.id = p.model_id ORDER BY p.name"""
+        )
+        plans = [{"id": r[0], "name": r[1], "description": r[2], "model_id": r[3], "model_name": r[4]} for r in cur.fetchall()]
 
         for plan in plans:
             cur.execute(
@@ -1317,12 +1487,13 @@ def _replace_plan_area_pricing(cur, plan_id, areas):
 
 @app.route('/admin/plans', methods=['POST'])
 def admin_create_plan():
-    """Cria um plano com nome/descrição e a tabela de preço por área."""
+    """Cria um plano com nome/descrição, modelo de IA e a tabela de preço por área."""
     data = request.get_json()
     name = (data.get('name') or '').strip()
     if not name:
         return jsonify({"error": "Nome é obrigatório"}), 400
     description = data.get('description')
+    model_id = data.get('model_id') or None
 
     conn = get_db_connection()
     if not conn:
@@ -1330,8 +1501,8 @@ def admin_create_plan():
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO plans (name, description) VALUES (%s, %s) RETURNING id",
-            (name, description)
+            "INSERT INTO plans (name, description, model_id) VALUES (%s, %s, %s) RETURNING id",
+            (name, description, model_id)
         )
         plan_id = cur.fetchone()[0]
         _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
@@ -1367,6 +1538,8 @@ def admin_update_plan(plan_id):
             fields['name'] = name
         if 'description' in data:
             fields['description'] = data.get('description')
+        if 'model_id' in data:
+            fields['model_id'] = data.get('model_id') or None
 
         if fields:
             set_clause = ", ".join(f"{k} = %s" for k in fields)
@@ -1408,6 +1581,231 @@ def admin_delete_plan(plan_id):
         return jsonify({"message": f"Plano {plan_id} excluído"})
     except Exception as e:
         if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+# ---- Modelos de IA (cadastro usado pelos planos pra roteamento + preço) ----
+
+def _model_row_to_dict(r):
+    return {
+        "id": r[0], "name": r[1], "base_url": r[2], "api_key": r[3], "model_name": r[4],
+        "temperature": float(r[5]) if r[5] is not None else None,
+        "max_tokens": r[6], "timeout_seconds": r[7],
+        "price_input_per_million": float(r[8]), "price_output_per_million": float(r[9]),
+        "markup_percentage": float(r[10]), "status": r[11]
+    }
+
+
+@app.route('/admin/models', methods=['GET'])
+def admin_get_models():
+    """Lista todos os modelos de IA cadastrados (qualquer status)."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível", "total": 0, "models": []}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, name, base_url, api_key, model_name, temperature, max_tokens,
+                      timeout_seconds, price_input_per_million, price_output_per_million,
+                      markup_percentage, status
+               FROM ai_models ORDER BY name"""
+        )
+        models = [_model_row_to_dict(r) for r in cur.fetchall()]
+        conn.close()
+        return jsonify({"total": len(models), "models": models})
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/models', methods=['POST'])
+def admin_create_model():
+    """Cria um modelo de IA (nome + endpoint + preço por 1M tokens + markup)."""
+    data = request.get_json()
+    name = (data.get('name') or '').strip()
+    base_url = (data.get('base_url') or '').strip()
+    model_name = (data.get('model_name') or '').strip()
+    if not name or not base_url or not model_name:
+        return jsonify({"error": "Nome, base_url e model_name são obrigatórios"}), 400
+    status = data.get('status') or 'active'
+    if status not in ('active', 'inactive'):
+        return jsonify({"error": "Status inválido (use active ou inactive)"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO ai_models
+               (name, base_url, api_key, model_name, temperature, max_tokens, timeout_seconds,
+                price_input_per_million, price_output_per_million, markup_percentage, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (name, base_url, data.get('api_key') or None, model_name,
+             data.get('temperature'), data.get('max_tokens'), data.get('timeout_seconds'),
+             data.get('price_input_per_million') or 0, data.get('price_output_per_million') or 0,
+             data.get('markup_percentage') or 0, status)
+        )
+        model_id = cur.fetchone()[0]
+        conn.commit()
+        conn.close()
+        return jsonify({"id": model_id, "name": name}), 201
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/models/<int:model_id>', methods=['PATCH'])
+def admin_update_model(model_id):
+    """Atualiza qualquer campo de um modelo de IA."""
+    data = request.get_json()
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        allowed = (
+            'name', 'base_url', 'api_key', 'model_name', 'temperature', 'max_tokens',
+            'timeout_seconds', 'price_input_per_million', 'price_output_per_million',
+            'markup_percentage', 'status'
+        )
+        fields = {}
+        for k in allowed:
+            if k in data:
+                fields[k] = data.get(k)
+
+        if 'name' in fields and not (fields['name'] or '').strip():
+            conn.close()
+            return jsonify({"error": "Nome não pode ser vazio"}), 400
+        if 'status' in fields and fields['status'] not in ('active', 'inactive'):
+            conn.close()
+            return jsonify({"error": "Status inválido (use active ou inactive)"}), 400
+        if not fields:
+            conn.close()
+            return jsonify({"error": "Nada para atualizar"}), 400
+
+        set_clause = ", ".join(f"{k} = %s" for k in fields)
+        cur.execute(f"UPDATE ai_models SET {set_clause} WHERE id = %s", list(fields.values()) + [model_id])
+        conn.commit()
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({"error": "Modelo não encontrado"}), 404
+        conn.close()
+        return jsonify({"message": f"Modelo {model_id} atualizado"})
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/models/<int:model_id>', methods=['DELETE'])
+def admin_delete_model(model_id):
+    """Desativa um modelo (soft delete — planos que apontam pra ele passam a
+    cair no LLM_CONFIG global até um novo modelo ser escolhido)."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE ai_models SET status = 'inactive' WHERE id = %s", (model_id,))
+        conn.commit()
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({"error": "Modelo não encontrado"}), 404
+        conn.close()
+        return jsonify({"message": f"Modelo {model_id} desativado"})
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+# ---- Créditos (depósitos manuais do admin + extrato) ----
+
+@app.route('/admin/credits/deposit', methods=['POST'])
+def admin_deposit_credit():
+    """Lança um depósito (ou ajuste manual, se amount for negativo) no saldo
+    de um cliente. Não é usado pra registrar consumo — isso é feito só pelo
+    /api/chat via apply_credit_transaction."""
+    data = request.get_json()
+    user_id = data.get('user_id')
+    amount = data.get('amount')
+    description = (data.get('description') or '').strip() or None
+    if not user_id or amount is None:
+        return jsonify({"error": "user_id e amount são obrigatórios"}), 400
+    try:
+        amount = float(amount)
+    except (TypeError, ValueError):
+        return jsonify({"error": "amount inválido"}), 400
+    if amount == 0:
+        return jsonify({"error": "amount não pode ser zero"}), 400
+
+    type_ = 'deposit' if amount > 0 else 'adjustment'
+    new_balance = apply_credit_transaction(user_id, amount, type_, description)
+    if new_balance is None:
+        return jsonify({"error": "Cliente não encontrado ou erro ao gravar"}), 404
+    return jsonify({"user_id": user_id, "balance": round(new_balance, 2)}), 201
+
+
+@app.route('/admin/credits/<int:user_id>', methods=['GET'])
+def admin_get_credit_extract(user_id):
+    """Saldo atual + histórico completo de transações de um cliente."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Cliente não encontrado"}), 404
+        cur.execute(
+            """SELECT id, type, amount, balance_after, description, tokens_input, tokens_output, created_at
+               FROM credit_transactions WHERE user_id = %s ORDER BY created_at DESC LIMIT 200""",
+            (user_id,)
+        )
+        transactions = [{
+            "id": t[0], "type": t[1], "amount": float(t[2]), "balance_after": float(t[3]),
+            "description": t[4], "tokens_input": t[5], "tokens_output": t[6],
+            "created_at": t[7].isoformat() if t[7] else None
+        } for t in cur.fetchall()]
+        conn.close()
+        return jsonify({"user_id": user_id, "balance": float(row[0]), "transactions": transactions})
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/my-credits', methods=['GET'])
+def get_my_credits():
+    """Saldo + extrato do próprio cliente, identificado pela X-Oraculo-Key —
+    mesmo padrão de /api/me e /api/my-area."""
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida"}), 401
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT balance FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Cliente não encontrado"}), 404
+        cur.execute(
+            """SELECT type, amount, balance_after, description, tokens_input, tokens_output, created_at
+               FROM credit_transactions WHERE user_id = %s ORDER BY created_at DESC LIMIT 100""",
+            (user_id,)
+        )
+        transactions = [{
+            "type": t[0], "amount": float(t[1]), "balance_after": float(t[2]),
+            "description": t[3], "tokens_input": t[4], "tokens_output": t[5],
+            "created_at": t[6].isoformat() if t[6] else None
+        } for t in cur.fetchall()]
+        conn.close()
+        return jsonify({"balance": float(row[0]), "transactions": transactions})
+    except Exception as e:
+        if conn: conn.close()
         return jsonify({"error": str(e)}), 500
 
 

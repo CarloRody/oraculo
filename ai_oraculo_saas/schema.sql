@@ -13,12 +13,33 @@ CREATE TABLE IF NOT EXISTS areas (
     owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL -- NULL = área global; preenchida = base de conhecimento privada de um cliente
 );
 
+-- 1.5. Tabela: ai_models (Cadastro de modelos de IA — cada linha é um backend
+-- OpenAI-compatible real, chamável de fato; preço em R$ por 1M tokens, no
+-- padrão OpenRouter, + markup aplicado sobre o custo pra chegar no valor
+-- cobrado do cliente)
+CREATE TABLE IF NOT EXISTS ai_models (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(120) NOT NULL, -- Nome de exibição, ex "GPT-4o mini (OpenRouter)"
+    base_url TEXT NOT NULL, -- Endpoint chat/completions compatível OpenAI
+    api_key TEXT, -- Pode ser nulo (modelo local sem auth)
+    model_name VARCHAR(120) NOT NULL, -- Valor enviado no campo "model" do body
+    temperature NUMERIC(3,2), -- NULL = usa default de config.yaml
+    max_tokens INTEGER, -- NULL = usa default de config.yaml
+    timeout_seconds INTEGER, -- NULL = usa default de config.yaml
+    price_input_per_million NUMERIC(12,4) NOT NULL DEFAULT 0, -- R$ por 1M tokens de entrada
+    price_output_per_million NUMERIC(12,4) NOT NULL DEFAULT 0, -- R$ por 1M tokens de saída
+    markup_percentage NUMERIC(6,2) NOT NULL DEFAULT 0, -- % aplicado sobre o custo acima
+    status VARCHAR(10) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- 2. Tabela: plans (Planos de assinatura reutilizáveis — Teste, Mín, Pro, etc.)
 CREATE TABLE IF NOT EXISTS plans (
     id SERIAL PRIMARY KEY,
     name VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
+    created_at TIMESTAMPTZ DEFAULT NOW(),
+    model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL -- Modelo de IA usado nas respostas de clientes deste plano (NULL = usa config.yaml global, sem cobrança de crédito)
 );
 
 -- 3. Tabela: plan_area_pricing (Cota + preço por área, por plano)
@@ -39,7 +60,8 @@ CREATE TABLE IF NOT EXISTS users (
     role VARCHAR(10) DEFAULT 'user' CHECK (role IN ('admin', 'user')),
     created_at TIMESTAMPTZ DEFAULT NOW(),
     api_key VARCHAR(64) UNIQUE, -- Chave de acesso do cliente (1 cliente = 1 chave), usada em /api/chat
-    plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL -- Plano de assinatura atual (cota/preço por área vêm daqui, vínculo ao vivo)
+    plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL, -- Plano de assinatura atual (cota/preço por área vêm daqui, vínculo ao vivo)
+    balance NUMERIC(12,4) NOT NULL DEFAULT 0 -- Saldo de créditos pré-pago em R$
 );
 
 -- 5. Tabela: documents (Unificada com links e conteúdo processado)
@@ -116,6 +138,22 @@ CREATE TABLE IF NOT EXISTS usage_logs (
     timestamp TIMESTAMPTZ DEFAULT NOW() -- Quando ocorreu o uso
 );
 
+-- 11. Tabela: credit_transactions (Ledger do sistema de créditos pré-pago —
+-- todo depósito lançado pelo admin e todo consumo de chat vira uma linha
+-- aqui; users.balance é o saldo em cache, atualizado atomicamente junto)
+CREATE TABLE IF NOT EXISTS credit_transactions (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    type VARCHAR(12) NOT NULL CHECK (type IN ('deposit', 'consumption', 'adjustment')),
+    amount NUMERIC(12,4) NOT NULL, -- Positivo = credita, negativo = debita
+    balance_after NUMERIC(12,4) NOT NULL, -- Saldo após esta transação (snapshot)
+    description TEXT,
+    session_id INTEGER REFERENCES sessions(id) ON DELETE SET NULL,
+    tokens_input INTEGER,
+    tokens_output INTEGER,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
 -- ==========================================
 -- Índices para performance e busca rápida
 -- ==========================================
@@ -130,3 +168,4 @@ CREATE INDEX idx_usage_logs_area ON usage_logs(area_id);
 CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp);
 CREATE INDEX idx_usage_logs_user_area_time ON usage_logs(user_id, area_id, timestamp);
 CREATE INDEX idx_plan_area_pricing_plan ON plan_area_pricing(plan_id);
+CREATE INDEX idx_credit_transactions_user_time ON credit_transactions(user_id, created_at DESC);

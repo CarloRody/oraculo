@@ -106,6 +106,7 @@
     <div class="tabs">
         <button class="tab-btn active" onclick="switchTab('areas')">Áreas</button>
         <button class="tab-btn" onclick="switchTab('plans')">Planos</button>
+        <button class="tab-btn" onclick="switchTab('models')">Modelos</button>
         <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
         <button class="tab-btn" onclick="switchTab('clients')">Clientes</button>
         <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
@@ -128,6 +129,16 @@
         </div>
         <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">Cota e preço por área ficam vinculados ao vivo: editar um plano já atualiza todos os clientes nele, sem precisar reatribuir nada.</p>
         <div id="plans-list" class="card-list"></div>
+    </div>
+
+    <!-- MODELOS -->
+    <div id="models-tab" class="tab-content">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:1.5rem;">
+            <h2 class="section-title" style="border:none; padding:0; margin:0;">Modelos de IA</h2>
+            <button class="btn" onclick="showModelModal()">+ Novo Modelo</button>
+        </div>
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">Cada modelo é um backend de IA real (endpoint + chave própria). O plano do cliente escolhe qual modelo usar — isso decide tanto pra qual API a pergunta vai quanto quanto é debitado do saldo do cliente por token consumido.</p>
+        <div id="models-list" class="card-list"></div>
     </div>
 
     <!-- DOCUMENTOS -->
@@ -306,6 +317,12 @@
             <label>Descrição <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
             <input type="text" class="form-input" id="planDescription" placeholder="Ex: Plano padrão para clientes novos">
         </div>
+        <div class="form-group">
+            <label>Modelo de IA <span style="font-weight:normal; color:#64748b;">(define qual API responde e quanto é debitado do saldo do cliente)</span></label>
+            <select class="form-input" id="planModelId">
+                <option value="">Nenhum (usa a configuração global, sem cobrança de crédito)</option>
+            </select>
+        </div>
         <table>
             <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th></tr></thead>
             <tbody id="plan-areas-table-body"></tbody>
@@ -313,6 +330,102 @@
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closePlanModal()">Cancelar</button>
             <button class="btn" onclick="savePlan()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Novo/Editar Modelo de IA -->
+<div class="modal-overlay" id="modelModal">
+    <div class="modal" style="max-width:640px;">
+        <h2 id="modelModalTitle">Novo Modelo</h2>
+        <input type="hidden" id="editModelId">
+        <div class="form-group">
+            <label>Nome de exibição</label>
+            <input type="text" class="form-input" id="modelName" placeholder="Ex: GPT-4o mini (OpenRouter)">
+        </div>
+        <div class="form-group">
+            <label>Base URL <span style="font-weight:normal; color:#64748b;">(endpoint chat/completions compatível OpenAI)</span></label>
+            <input type="text" class="form-input" id="modelBaseUrl" placeholder="https://openrouter.ai/api/v1/chat/completions">
+        </div>
+        <div class="form-group">
+            <label>API Key <span style="font-weight:normal; color:#64748b;">(opcional — vazio para modelo local sem autenticação)</span></label>
+            <input type="text" class="form-input" id="modelApiKey" placeholder="sk-...">
+        </div>
+        <div class="form-group">
+            <label>Nome técnico do modelo <span style="font-weight:normal; color:#64748b;">(valor enviado no campo "model" da API)</span></label>
+            <input type="text" class="form-input" id="modelModelName" placeholder="Ex: openai/gpt-4o-mini">
+        </div>
+        <div style="display:flex; gap:1rem;">
+            <div class="form-group" style="flex:1;">
+                <label>Temperatura <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
+                <input type="number" step="0.1" min="0" max="2" class="form-input" id="modelTemperature" placeholder="padrão global">
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Max tokens <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
+                <input type="number" class="form-input" id="modelMaxTokens" placeholder="padrão global">
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Timeout (s) <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
+                <input type="number" class="form-input" id="modelTimeoutSeconds" placeholder="padrão global">
+            </div>
+        </div>
+        <div style="display:flex; gap:1rem;">
+            <div class="form-group" style="flex:1;">
+                <label>R$ / 1M tokens entrada</label>
+                <input type="number" step="0.0001" min="0" class="form-input" id="modelPriceInput" placeholder="0.00">
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>R$ / 1M tokens saída</label>
+                <input type="number" step="0.0001" min="0" class="form-input" id="modelPriceOutput" placeholder="0.00">
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Markup (%)</label>
+                <input type="number" step="0.01" class="form-input" id="modelMarkup" placeholder="0">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select class="form-input" id="modelStatus">
+                <option value="active">Ativo</option>
+                <option value="inactive">Inativo</option>
+            </select>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeModelModal()">Cancelar</button>
+            <button class="btn" onclick="saveModel()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Depósito de Crédito -->
+<div class="modal-overlay" id="depositModal">
+    <div class="modal">
+        <h2>Lançar Depósito</h2>
+        <input type="hidden" id="depositUserId">
+        <p style="color:#94a3b8; font-size:0.9rem; margin-bottom:1rem;" id="depositClientLabel"></p>
+        <div class="form-group">
+            <label>Valor (R$) <span style="font-weight:normal; color:#64748b;">(negativo para ajuste/correção)</span></label>
+            <input type="number" step="0.01" class="form-input" id="depositAmount" placeholder="Ex: 50.00">
+        </div>
+        <div class="form-group">
+            <label>Descrição <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
+            <input type="text" class="form-input" id="depositDescription" placeholder="Ex: Depósito via Pix">
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeDepositModal()">Cancelar</button>
+            <button class="btn" onclick="saveDeposit()">Lançar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Extrato de Créditos -->
+<div class="modal-overlay" id="extractModal">
+    <div class="modal" style="max-width:640px;">
+        <h2>Extrato de Créditos</h2>
+        <p style="color:#94a3b8; font-size:0.9rem; margin-bottom:1rem;" id="extractClientLabel"></p>
+        <div id="extractTableBox" style="max-height:400px; overflow-y:auto;"></div>
+        <div class="modal-actions">
+            <button class="btn" onclick="closeExtractModal()">Fechar</button>
         </div>
     </div>
 </div>
@@ -666,17 +779,21 @@ async function loadClients() {
             const kbHtml = ownedArea
                 ? `<p style="color:#a78bfa; font-size:0.85rem; margin-top:0.5rem;">🔒 Base de conhecimento: ${esc(ownedArea.name)}</p>`
                 : `<button class="btn btn-sm" data-user-id="${u.id}" data-email="${esc(u.email)}" onclick="createKnowledgeBaseEl(this)">🔒 Criar base de conhecimento</button>`;
+            const balanceColor = u.balance > 0 ? '#4ade80' : '#f87171';
             return `
             <div class="card-item">
                 <h3>${u.email}</h3>
                 <p>ID: ${u.id}</p>
                 <div class="api-key-box">${u.api_key || '—'}</div>
+                <p style="margin-top:0.5rem;">Saldo: <span style="color:${balanceColor}; font-weight:600;">R$ ${Number(u.balance).toFixed(2)}</span></p>
                 <div class="form-group" style="margin-top:0.75rem; max-width:260px;">
                     <label>Plano</label>
                     <select class="form-input" onchange="changeClientPlan(${u.id}, this.value)">${planOptions(u.plan_id)}</select>
                 </div>
                 <div style="margin-top:0.5rem; display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
                     <button class="btn btn-sm" onclick="showClientEditModal(${u.id})">Editar</button>
+                    <button class="btn btn-sm" onclick="showDepositModal(${u.id}, '${esc(u.email)}')">Lançar Depósito</button>
+                    <button class="btn btn-sm" onclick="showExtractModal(${u.id}, '${esc(u.email)}')">Ver Extrato</button>
                     ${ownedArea ? '' : kbHtml}
                 </div>
                 ${ownedArea ? kbHtml : ''}
@@ -705,6 +822,63 @@ async function createKnowledgeBase(userId, email) {
         await loadAreas();
         loadClients();
     } catch(e) { alert('Erro ao criar base de conhecimento.'); }
+}
+
+function showDepositModal(userId, email) {
+    document.getElementById('depositUserId').value = userId;
+    document.getElementById('depositClientLabel').textContent = email;
+    document.getElementById('depositAmount').value = '';
+    document.getElementById('depositDescription').value = '';
+    document.getElementById('depositModal').classList.add('active');
+}
+
+function closeDepositModal() { document.getElementById('depositModal').classList.remove('active'); }
+
+async function saveDeposit() {
+    const user_id = Number(document.getElementById('depositUserId').value);
+    const amount = Number(document.getElementById('depositAmount').value);
+    const description = document.getElementById('depositDescription').value.trim() || null;
+    if (!amount) return alert('Informe um valor diferente de zero.');
+    try {
+        const res = await fetch(ADMIN_API + '/admin/credits/deposit', {
+            method: 'POST', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ user_id, amount, description })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao lançar depósito.');
+        closeDepositModal();
+        loadClients();
+    } catch(e) { alert('Erro ao lançar depósito.'); }
+}
+
+function closeExtractModal() { document.getElementById('extractModal').classList.remove('active'); }
+
+async function showExtractModal(userId, email) {
+    document.getElementById('extractClientLabel').textContent = email;
+    document.getElementById('extractTableBox').innerHTML = '<p style="color:#64748b;">Carregando...</p>';
+    document.getElementById('extractModal').classList.add('active');
+    try {
+        const res = await fetch(ADMIN_API + `/admin/credits/${userId}`);
+        const data = await res.json();
+        if (!res.ok) { document.getElementById('extractTableBox').innerHTML = `<p style="color:#ef4444;">${esc(data.error || 'Erro ao carregar extrato.')}</p>`; return; }
+        const typeLabel = { deposit: 'Depósito', consumption: 'Consumo', adjustment: 'Ajuste' };
+        const rows = (data.transactions || []).map(t => `
+            <tr>
+                <td>${t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '-'}</td>
+                <td>${typeLabel[t.type] || t.type}</td>
+                <td style="color:${t.amount >= 0 ? '#4ade80' : '#f87171'};">${t.amount >= 0 ? '+' : ''}R$ ${Number(t.amount).toFixed(2)}</td>
+                <td>R$ ${Number(t.balance_after).toFixed(2)}</td>
+                <td>${esc(t.description || '-')}</td>
+            </tr>
+        `).join('');
+        document.getElementById('extractTableBox').innerHTML = `
+            <p style="margin-bottom:0.75rem;">Saldo atual: <strong style="color:${data.balance > 0 ? '#4ade80' : '#f87171'};">R$ ${Number(data.balance).toFixed(2)}</strong></p>
+            <table>
+                <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Saldo após</th><th>Descrição</th></tr></thead>
+                <tbody>${rows || '<tr><td colspan="5" style="color:#64748b;">Nenhuma transação ainda.</td></tr>'}</tbody>
+            </table>
+        `;
+    } catch(e) { document.getElementById('extractTableBox').innerHTML = '<p style="color:#ef4444;">Erro ao carregar extrato.</p>'; }
 }
 
 async function changeClientPlan(userId, planId) {
@@ -787,6 +961,100 @@ async function saveClient() {
     } catch(e) { alert('Erro ao criar cliente.'); }
 }
 
+// ---- Modelos de IA ----
+let allModels = [];
+
+function modelStatusBadge(status) {
+    return status === 'active'
+        ? '<span class="status-badge status-indexed">ativo</span>'
+        : '<span class="status-badge status-failed">inativo</span>';
+}
+
+async function loadModels() {
+    try {
+        const res = await fetch(ADMIN_API + '/admin/models');
+        const data = await res.json();
+        allModels = data.models || [];
+        if (!allModels.length) { document.getElementById('models-list').innerHTML = '<p style="color:#64748b;">Nenhum modelo cadastrado.</p>'; return; }
+        document.getElementById('models-list').innerHTML = allModels.map(m => `
+            <div class="card-item">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+                    <h3 style="margin-bottom:0;">${esc(m.name)}</h3>
+                    ${modelStatusBadge(m.status)}
+                </div>
+                <p>${esc(m.model_name)} • ${esc(m.base_url)}</p>
+                <p style="color:#64748b; font-size:0.85rem;">R$${m.price_input_per_million}/1M entrada • R$${m.price_output_per_million}/1M saída • markup ${m.markup_percentage}%</p>
+                <div style="margin-top:0.75rem;">
+                    <button class="btn btn-sm" onclick='showModelModal(${JSON.stringify(m).replace(/'/g, "\\'")})'>Editar</button>
+                    <button class="btn btn-sm btn-danger" onclick="deactivateModel(${m.id}, '${esc(m.name)}')">Desativar</button>
+                </div>
+            </div>
+        `).join('');
+    } catch(e) { document.getElementById('models-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar modelos.</p>'; }
+}
+
+function showModelModal(model) {
+    document.getElementById('modelModalTitle').textContent = model ? 'Editar Modelo' : 'Novo Modelo';
+    document.getElementById('editModelId').value = model ? model.id : '';
+    document.getElementById('modelName').value = model ? model.name : '';
+    document.getElementById('modelBaseUrl').value = model ? model.base_url : '';
+    document.getElementById('modelApiKey').value = model ? (model.api_key || '') : '';
+    document.getElementById('modelModelName').value = model ? model.model_name : '';
+    document.getElementById('modelTemperature').value = model && model.temperature != null ? model.temperature : '';
+    document.getElementById('modelMaxTokens').value = model && model.max_tokens != null ? model.max_tokens : '';
+    document.getElementById('modelTimeoutSeconds').value = model && model.timeout_seconds != null ? model.timeout_seconds : '';
+    document.getElementById('modelPriceInput').value = model ? model.price_input_per_million : '';
+    document.getElementById('modelPriceOutput').value = model ? model.price_output_per_million : '';
+    document.getElementById('modelMarkup').value = model ? model.markup_percentage : '';
+    document.getElementById('modelStatus').value = model ? model.status : 'active';
+    document.getElementById('modelModal').classList.add('active');
+}
+
+function closeModelModal() { document.getElementById('modelModal').classList.remove('active'); }
+
+async function saveModel() {
+    const id = document.getElementById('editModelId').value;
+    const name = document.getElementById('modelName').value.trim();
+    const base_url = document.getElementById('modelBaseUrl').value.trim();
+    const model_name = document.getElementById('modelModelName').value.trim();
+    if (!name || !base_url || !model_name) return alert('Nome, Base URL e Nome técnico do modelo são obrigatórios.');
+
+    const numOrNull = (id) => { const v = document.getElementById(id).value; return v === '' ? null : Number(v); };
+    const payload = {
+        name, base_url, model_name,
+        api_key: document.getElementById('modelApiKey').value.trim() || null,
+        temperature: numOrNull('modelTemperature'),
+        max_tokens: numOrNull('modelMaxTokens'),
+        timeout_seconds: numOrNull('modelTimeoutSeconds'),
+        price_input_per_million: numOrNull('modelPriceInput') || 0,
+        price_output_per_million: numOrNull('modelPriceOutput') || 0,
+        markup_percentage: numOrNull('modelMarkup') || 0,
+        status: document.getElementById('modelStatus').value
+    };
+
+    try {
+        const res = await fetch(ADMIN_API + (id ? `/admin/models/${id}` : '/admin/models'), {
+            method: id ? 'PATCH' : 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao salvar modelo.');
+        closeModelModal();
+        loadModels();
+    } catch(e) { alert('Erro ao salvar modelo.'); }
+}
+
+async function deactivateModel(id, name) {
+    if (!confirm(`Desativar o modelo "${name}"? Planos que usam esse modelo passam a usar a configuração global até um novo modelo ser escolhido.`)) return;
+    try {
+        const res = await fetch(ADMIN_API + `/admin/models/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao desativar.');
+        loadModels();
+    } catch(e) { alert('Erro ao desativar.'); }
+}
+
 // ---- Planos ----
 let allPlans = [];
 
@@ -804,7 +1072,7 @@ async function loadPlans() {
             return `
             <div class="card-item">
                 <h3>${esc(p.name)}</h3>
-                <p>${p.description ? esc(p.description) + ' • ' : ''}${p.user_count} cliente(s)</p>
+                <p>${p.description ? esc(p.description) + ' • ' : ''}${p.user_count} cliente(s)${p.model_name ? ` • Modelo: ${esc(p.model_name)}` : ' • Sem modelo (sem cobrança de crédito)'}</p>
                 <p style="color:#64748b; font-size:0.85rem;">${areasSummary}</p>
                 <div style="margin-top:0.75rem;">
                     <button class="btn btn-sm" onclick="showPlanModal(${p.id})">Editar</button>
@@ -835,6 +1103,12 @@ function showPlanModal(planId) {
     document.getElementById('editPlanId').value = plan ? plan.id : '';
     document.getElementById('planName').value = plan ? plan.name : '';
     document.getElementById('planDescription').value = plan ? (plan.description || '') : '';
+
+    const modelSelect = document.getElementById('planModelId');
+    modelSelect.innerHTML = '<option value="">Nenhum (usa a configuração global, sem cobrança de crédito)</option>' +
+        allModels.filter(m => m.status === 'active').map(m => `<option value="${m.id}">${esc(m.name)}</option>`).join('');
+    modelSelect.value = plan && plan.model_id ? plan.model_id : '';
+
     renderPlanAreasTable(plan ? plan.areas : []);
     document.getElementById('planModal').classList.add('active');
 }
@@ -846,6 +1120,8 @@ async function savePlan() {
     const name = document.getElementById('planName').value.trim();
     if (!name) return alert('Nome é obrigatório.');
     const description = document.getElementById('planDescription').value.trim() || null;
+    const modelIdVal = document.getElementById('planModelId').value;
+    const model_id = modelIdVal ? Number(modelIdVal) : null;
 
     const areas = allAreas.map(a => {
         const quotaVal = document.getElementById(`planQuota_${a.id}`).value;
@@ -861,7 +1137,7 @@ async function savePlan() {
         const res = await fetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ name, description, areas })
+            body: JSON.stringify({ name, description, model_id, areas })
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar plano.');
@@ -900,7 +1176,7 @@ async function loadHealth() {
 }
 
 // ---- Init ----
-loadStats(); loadDocs(); loadHealth();
+loadStats(); loadDocs(); loadHealth(); loadModels();
 // loadClients() lê allAreas (marca quem já tem base de conhecimento própria),
 // então precisa esperar loadAreas() terminar antes de rodar.
 Promise.all([loadAreas(), loadPlans()]).then(loadClients);
