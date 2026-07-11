@@ -801,17 +801,19 @@ Pergunta: {message}"""
 
 @app.route('/admin/areas', methods=['GET'])
 def admin_get_areas():
-    """Lista todas as áreas com contagem de documentos. owner_user_id/owner_email
-    preenchidos = base de conhecimento privada de um cliente (não uma área global)."""
+    """Lista TODAS as áreas (qualquer status) com contagem de documentos, pro
+    admin poder gerenciar rascunho/arquivada — só as públicas (/api/areas)
+    filtram por status='active'. owner_user_id/owner_email preenchidos = base
+    de conhecimento privada de um cliente (não uma área global)."""
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "total": 0, "areas": []}), 500
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT a.id, a.name, a.slug, a.owner_user_id, u.email
+            """SELECT a.id, a.name, a.slug, a.status, a.owner_user_id, u.email
                FROM areas a LEFT JOIN users u ON u.id = a.owner_user_id
-               WHERE a.status = 'active' ORDER BY a.name"""
+               ORDER BY a.name"""
         )
         rows = cur.fetchall()
         areas = []
@@ -819,8 +821,8 @@ def admin_get_areas():
             cur.execute("SELECT count(*) FROM documents WHERE area_id = %s", (r[0],))
             doc_count = cur.fetchone()[0]
             areas.append({
-                "id": r[0], "name": r[1], "slug": r[2], "doc_count": doc_count,
-                "owner_user_id": r[3], "owner_email": r[4]
+                "id": r[0], "name": r[1], "slug": r[2], "status": r[3], "doc_count": doc_count,
+                "owner_user_id": r[4], "owner_email": r[5]
             })
         conn.close()
         return jsonify({"total": len(areas), "areas": areas})
@@ -833,27 +835,35 @@ def admin_get_areas():
 def admin_create_area():
     """Cria uma nova área temática. owner_user_id opcional (uso interno da ação
     "Criar base de conhecimento" da aba Clientes) — cria uma área privada,
-    exclusiva daquele cliente, em vez de uma área global."""
+    exclusiva daquele cliente, em vez de uma área global. status opcional
+    (default 'active'); slug opcional (default derivado do nome)."""
     data = request.get_json()
     name = data.get('name', '').strip()
     owner_user_id = data.get('owner_user_id')
+    status = data.get('status') or 'active'
+    if status not in ('active', 'draft', 'archived'):
+        return jsonify({"error": "Status inválido (use active, draft ou archived)"}), 400
     if not name:
         return jsonify({"error": "Nome é obrigatório"}), 400
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível"}), 500
     try:
-        slug = name.lower().replace(' ', '-').replace('/', '-')
+        slug = (data.get('slug') or '').strip() or name.lower().replace(' ', '-').replace('/', '-')
         vector_ref = f"area_{slug}_v1"
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO areas (name, slug, vector_ref, status, owner_user_id) VALUES (%s, %s, %s, 'active', %s) RETURNING id",
-            (name, slug, vector_ref, owner_user_id)
+            "INSERT INTO areas (name, slug, vector_ref, status, owner_user_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
+            (name, slug, vector_ref, status, owner_user_id)
         )
         area_id = cur.fetchone()[0]
         conn.commit()
         conn.close()
-        return jsonify({"id": area_id, "name": name, "slug": slug, "owner_user_id": owner_user_id}), 201
+        return jsonify({"id": area_id, "name": name, "slug": slug, "status": status, "owner_user_id": owner_user_id}), 201
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Slug '{slug}' já está em uso por outra área"}), 409
     except Exception as e:
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500
@@ -861,24 +871,39 @@ def admin_create_area():
 
 @app.route('/admin/areas/<int:area_id>', methods=['PATCH'])
 def admin_update_area(area_id):
-    """Atualiza nome de uma área."""
+    """Atualiza nome, slug, status e/ou proprietário de uma área. slug vazio =
+    re-deriva do nome; owner_user_id ausente/null = área volta a ser global."""
     data = request.get_json()
     name = data.get('name', '').strip()
     if not name:
         return jsonify({"error": "Nome é obrigatório"}), 400
+
+    status = data.get('status') or 'active'
+    if status not in ('active', 'draft', 'archived'):
+        return jsonify({"error": "Status inválido (use active, draft ou archived)"}), 400
+
+    owner_user_id = data.get('owner_user_id') or None
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível"}), 500
     try:
-        slug = name.lower().replace(' ', '-').replace('/', '-')
+        slug = (data.get('slug') or '').strip() or name.lower().replace(' ', '-').replace('/', '-')
         cur = conn.cursor()
-        cur.execute("UPDATE areas SET name = %s, slug = %s WHERE id = %s", (name, slug, area_id))
+        cur.execute(
+            "UPDATE areas SET name = %s, slug = %s, status = %s, owner_user_id = %s WHERE id = %s",
+            (name, slug, status, owner_user_id, area_id)
+        )
         conn.commit()
         if cur.rowcount == 0:
             conn.close()
             return jsonify({"error": "Área não encontrada"}), 404
         conn.close()
-        return jsonify({"id": area_id, "name": name, "slug": slug})
+        return jsonify({"id": area_id, "name": name, "slug": slug, "status": status, "owner_user_id": owner_user_id})
+    except psycopg2.errors.UniqueViolation:
+        conn.rollback()
+        conn.close()
+        return jsonify({"error": f"Slug '{slug}' já está em uso por outra área"}), 409
     except Exception as e:
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500
@@ -886,19 +911,21 @@ def admin_update_area(area_id):
 
 @app.route('/admin/areas/<int:area_id>', methods=['DELETE'])
 def admin_delete_area(area_id):
-    """Desativa uma área (soft delete)."""
+    """Arquiva uma área (soft delete). Usava status='inactive' antes, que
+    violava a CHECK constraint da coluna (só aceita active/draft/archived) —
+    todo clique em "Excluir" falhava silenciosamente com erro 500."""
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível"}), 500
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE areas SET status = 'inactive' WHERE id = %s", (area_id,))
+        cur.execute("UPDATE areas SET status = 'archived' WHERE id = %s", (area_id,))
         conn.commit()
         if cur.rowcount == 0:
             conn.close()
             return jsonify({"error": "Área não encontrada"}), 404
         conn.close()
-        return jsonify({"message": f"Área {area_id} desativada"})
+        return jsonify({"message": f"Área {area_id} arquivada"})
     except Exception as e:
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500

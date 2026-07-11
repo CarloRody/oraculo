@@ -181,6 +181,24 @@
             <label>Nome da Área</label>
             <input type="text" class="form-input" id="areaName" placeholder="Ex: Engenharia, Matemática...">
         </div>
+        <div class="form-group">
+            <label>Slug <span style="font-weight:normal; color:#64748b;">(opcional — deixe vazio para gerar a partir do nome)</span></label>
+            <input type="text" class="form-input" id="areaSlug" placeholder="Ex: engenharia">
+        </div>
+        <div class="form-group">
+            <label>Status</label>
+            <select class="form-input" id="areaStatus">
+                <option value="active">Ativa</option>
+                <option value="draft">Rascunho</option>
+                <option value="archived">Arquivada</option>
+            </select>
+        </div>
+        <div class="form-group">
+            <label>Proprietário <span style="font-weight:normal; color:#64748b;">(base de conhecimento privada de um cliente, ou global)</span></label>
+            <select class="form-input" id="areaOwner">
+                <option value="">Global (sem dono — visível conforme o plano de qualquer cliente)</option>
+            </select>
+        </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeAreaModal()">Cancelar</button>
             <button class="btn" onclick="saveArea()">Salvar</button>
@@ -335,6 +353,16 @@ async function loadStats() {
 }
 
 // ---- Áreas ----
+function areaStatusBadge(status) {
+    const map = {
+        active: { cls: 'status-indexed', label: 'ativa' },
+        draft: { cls: 'status-pending', label: 'rascunho' },
+        archived: { cls: 'status-failed', label: 'arquivada' },
+    };
+    const s = map[status] || map.active;
+    return `<span class="status-badge ${s.cls}">${s.label}</span>`;
+}
+
 async function loadAreas() {
     try {
         const res = await fetch(ADMIN_API + '/admin/areas');
@@ -345,11 +373,14 @@ async function loadAreas() {
         if (!areas.length) { document.getElementById('areas-list').innerHTML = '<p style="color:#64748b;">Nenhuma área cadastrada.</p>'; return; }
         document.getElementById('areas-list').innerHTML = areas.map(a => `
             <div class="card-item">
-                <h3>${a.name} ${a.owner_user_id ? `<span style="color:#a78bfa; font-size:0.75rem; font-weight:normal;">🔒 Privada — ${esc(a.owner_email)}</span>` : ''}</h3>
-                <p>ID: ${a.id} • Docs: ${a.doc_count || 0} • Slug: ${a.slug || '-'}</p>
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:1rem; flex-wrap:wrap;">
+                    <h3 style="margin-bottom:0;">${esc(a.name)} ${a.owner_user_id ? `<span style="color:#a78bfa; font-size:0.75rem; font-weight:normal;">🔒 Privada — ${esc(a.owner_email)}</span>` : ''}</h3>
+                    ${areaStatusBadge(a.status)}
+                </div>
+                <p>ID: ${a.id} • Docs: ${a.doc_count || 0} • Slug: ${esc(a.slug) || '-'}</p>
                 <div style="margin-top:0.75rem;">
                     <button class="btn btn-sm" onclick='showAreaModal(${JSON.stringify(a).replace(/'/g, "\\'")})'>Editar</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteArea(${a.id}, '${a.name}')">Excluir</button>
+                    <button class="btn btn-sm btn-danger" onclick="archiveArea(${a.id}, '${esc(a.name)}')">Arquivar</button>
                 </div>
             </div>
         `).join('');
@@ -357,15 +388,25 @@ async function loadAreas() {
 }
 
 function showAreaModal(area) {
+    const ownerSelect = document.getElementById('areaOwner');
+    ownerSelect.innerHTML = '<option value="">Global (sem dono — visível conforme o plano de qualquer cliente)</option>' +
+        allClients.map(c => `<option value="${c.id}">${esc(c.email)}</option>`).join('');
+
     document.getElementById('areaModal').classList.add('active');
     if (area) {
         document.getElementById('areaModalTitle').textContent = 'Editar Área';
         document.getElementById('editAreaId').value = area.id;
         document.getElementById('areaName').value = area.name;
+        document.getElementById('areaSlug').value = area.slug || '';
+        document.getElementById('areaStatus').value = area.status || 'active';
+        ownerSelect.value = area.owner_user_id || '';
     } else {
         document.getElementById('areaModalTitle').textContent = 'Nova Área';
         document.getElementById('editAreaId').value = '';
         document.getElementById('areaName').value = '';
+        document.getElementById('areaSlug').value = '';
+        document.getElementById('areaStatus').value = 'active';
+        ownerSelect.value = '';
     }
 }
 
@@ -374,21 +415,35 @@ function closeAreaModal() { document.getElementById('areaModal').classList.remov
 async function saveArea() {
     const id = document.getElementById('editAreaId').value;
     const name = document.getElementById('areaName').value.trim();
+    const slug = document.getElementById('areaSlug').value.trim();
+    const status = document.getElementById('areaStatus').value;
+    const ownerVal = document.getElementById('areaOwner').value;
     if (!name) return alert('Nome é obrigatório.');
+
+    const payload = { name, status, owner_user_id: ownerVal ? Number(ownerVal) : null };
+    if (slug) payload.slug = slug;
+
     try {
-        if (id) {
-            await fetch(ADMIN_API + `/admin/areas/${id}`, { method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
-        } else {
-            await fetch(ADMIN_API + '/admin/areas', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ name }) });
-        }
+        const res = await fetch(ADMIN_API + (id ? `/admin/areas/${id}` : '/admin/areas'), {
+            method: id ? 'PATCH' : 'POST',
+            headers: {'Content-Type':'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao salvar área.');
         closeAreaModal();
-        loadAreas(); loadStats();
+        loadAreas(); loadStats(); loadClients();
     } catch(e) { alert('Erro ao salvar área.'); }
 }
 
-async function deleteArea(id, name) {
-    if (!confirm(`Excluir a área "${name}"?`)) return;
-    try { await fetch(ADMIN_API + `/admin/areas/${id}`, { method: 'DELETE' }); loadAreas(); loadStats(); } catch(e) { alert('Erro ao excluir.'); }
+async function archiveArea(id, name) {
+    if (!confirm(`Arquivar a área "${name}"? Ela deixa de ficar disponível pros clientes (chat/plano), mas os documentos não são apagados — dá pra reativar depois editando o status de volta pra "Ativa".`)) return;
+    try {
+        const res = await fetch(ADMIN_API + `/admin/areas/${id}`, { method: 'DELETE' });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao arquivar.');
+        loadAreas(); loadStats();
+    } catch(e) { alert('Erro ao arquivar.'); }
 }
 
 // ---- Documentos ----
