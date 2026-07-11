@@ -244,7 +244,6 @@ async function filterCardsByAllowedPages() {
         const allowed = new Set(data.pages || []);
         document.querySelectorAll('.cards-grid .card').forEach(card => {
             const href = card.getAttribute('href');
-            if (href === 'admin.html') return; // nunca escondido — mesma exceção do access-guard.js
             if (href && href.endsWith('.html') && !allowed.has(href)) {
                 card.style.display = 'none';
             }
