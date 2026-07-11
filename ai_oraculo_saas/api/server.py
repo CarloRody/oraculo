@@ -2156,6 +2156,49 @@ def health_check():
     })
 
 
+@app.route('/api/allowed-pages', methods=['GET'])
+def get_allowed_pages():
+    """Lista pública (sem chave) das páginas liberadas pra clientes — usada
+    por access-guard.js em toda página e pelo index.html pra filtrar cards.
+    Sem chave de cliente salva no navegador, essa lista nem é consultada
+    (admin/uso interno tem acesso total, comportamento de sempre)."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"pages": []}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT page FROM client_allowed_pages ORDER BY page")
+        pages = [r[0] for r in cur.fetchall()]
+        conn.close()
+        return jsonify({"pages": pages})
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"pages": [], "error": str(e)}), 500
+
+
+@app.route('/admin/allowed-pages', methods=['PUT'])
+def admin_set_allowed_pages():
+    """Substitui a lista inteira de páginas liberadas pra clientes — o
+    formulário do admin sempre manda a lista completa marcada, mesmo padrão
+    de _replace_plan_area_pricing."""
+    data = request.get_json()
+    pages = data.get('pages') or []
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM client_allowed_pages")
+        for p in pages:
+            cur.execute("INSERT INTO client_allowed_pages (page) VALUES (%s) ON CONFLICT DO NOTHING", (p,))
+        conn.commit()
+        conn.close()
+        return jsonify({"pages": pages})
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
 # Serve frontend static files
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), '..', 'frontend')
 

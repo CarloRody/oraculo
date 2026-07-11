@@ -154,6 +154,13 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
+-- 12. Tabela: client_allowed_pages (Controle de acesso a páginas — lista
+-- única e global das páginas que clientes com X-Oraculo-Key podem abrir;
+-- sem chave salva no navegador = admin/uso interno, acesso total)
+CREATE TABLE IF NOT EXISTS client_allowed_pages (
+    page VARCHAR(100) PRIMARY KEY
+);
+
 -- ==========================================
 -- Índices para performance e busca rápida
 -- ==========================================

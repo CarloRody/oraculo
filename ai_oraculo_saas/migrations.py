@@ -233,6 +233,16 @@ MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_credit_transactions_user_time ON credit_transactions(user_id, created_at DESC);
     """,
+
+    # 12 — controle de acesso a páginas: lista única e global de páginas que
+    # clientes (identificados por X-Oraculo-Key) podem abrir. Sem chave de
+    # cliente salva no navegador = admin/uso interno, acesso total (sem
+    # mudança); checagem é feita no navegador por access-guard.js.
+    """
+    CREATE TABLE IF NOT EXISTS client_allowed_pages (
+        page VARCHAR(100) PRIMARY KEY
+    );
+    """,
 ]
 
 

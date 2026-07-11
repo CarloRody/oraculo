@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
+    <script src="access-guard.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Oráculo — Portal</title>
     <link rel="stylesheet" href="style.css">
@@ -219,9 +220,27 @@ function setupMaintenanceLinks() {
     document.getElementById('backupLink').href = `${window.location.protocol}//${HOST}:5004/`;
 }
 
+// Sem chave salva = admin, mostra todos os cards (comportamento de sempre).
+// Com chave salva, esconde os cards de páginas fora da lista liberada.
+async function filterCardsByAllowedPages() {
+    const key = getStoredApiKey();
+    if (!key) return;
+    try {
+        const res = await fetch(`${API}/api/allowed-pages`);
+        const data = await res.json();
+        const allowed = new Set(data.pages || []);
+        document.querySelectorAll('.cards-grid .card').forEach(card => {
+            const href = card.getAttribute('href');
+            if (href && href.endsWith('.html') && !allowed.has(href)) {
+                card.style.display = 'none';
+            }
+        });
+    } catch (err) { /* falha ao checar não esconde nada — falha aberta */ }
+}
+
 document.getElementById('year').textContent = new Date().getFullYear();
 setupMaintenanceLinks();
-document.addEventListener('DOMContentLoaded', () => { loadStatus(); refreshAccountBar(); });
+document.addEventListener('DOMContentLoaded', () => { loadStatus(); refreshAccountBar(); filterCardsByAllowedPages(); });
 </script>
 </body>
 </html>

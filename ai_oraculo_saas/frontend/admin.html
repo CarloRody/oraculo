@@ -2,6 +2,7 @@
 <html lang="pt-BR">
 <head>
     <meta charset="UTF-8">
+    <script src="access-guard.js"></script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Oráculo — Painel Admin</title>
     <style>
@@ -109,6 +110,7 @@
         <button class="tab-btn" onclick="switchTab('models')">Modelos</button>
         <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
         <button class="tab-btn" onclick="switchTab('clients')">Clientes</button>
+        <button class="tab-btn" onclick="switchTab('access')">Acesso</button>
         <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
     </div>
 
@@ -173,6 +175,15 @@
             <button class="btn" onclick="showClientModal()">+ Novo Cliente</button>
         </div>
         <div id="clients-list" class="card-list"></div>
+    </div>
+
+    <!-- ACESSO -->
+    <div id="access-tab" class="tab-content">
+        <h2 class="section-title" style="border:none; padding:0; margin-bottom:1rem;">Páginas liberadas para clientes</h2>
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">Quem não tem uma chave de cliente salva (uso interno/admin) continua com acesso a tudo. Quem tem uma chave de cliente salva só consegue abrir as páginas marcadas aqui.</p>
+        <p style="color:#fbbf24; font-size:0.85rem; margin-bottom:1.25rem;">⚠ Liberar "Análise & Relatórios" mostra dados de consumo de <strong>todos os clientes</strong>, não só do cliente logado.</p>
+        <div id="access-pages-list" class="card-list" style="gap:0.5rem;"></div>
+        <button class="btn" style="margin-top:1rem;" onclick="saveAllowedPages()">Salvar</button>
     </div>
 
     <!-- SAÚDE -->
@@ -1175,8 +1186,47 @@ async function loadHealth() {
     } catch(e) { document.getElementById('health-info').innerHTML = '<p style="color:#ef4444;">Não foi possível conectar ao admin server.</p>'; }
 }
 
+// ---- Acesso (páginas liberadas para clientes) ----
+const ALL_CLIENT_PAGES = [
+    { file: 'extract.html', label: 'Extrair Dados' },
+    { file: 'rag.html', label: 'Pesquisar RAG' },
+    { file: 'chat.html', label: 'Pesquisa & Chat' },
+    { file: 'meu-portal.html', label: 'Minha Base de Conhecimento' },
+    { file: 'admin.html', label: 'Painel Admin' },
+    { file: 'reports.html', label: 'Análise & Relatórios' },
+    { file: 'config.html', label: 'Configurações' },
+    { file: 'tree.html', label: 'Árvore de Documentos' },
+];
+
+async function loadAllowedPages() {
+    try {
+        const res = await fetch(ADMIN_API + '/api/allowed-pages');
+        const data = await res.json();
+        const allowed = new Set(data.pages || []);
+        document.getElementById('access-pages-list').innerHTML = ALL_CLIENT_PAGES.map(p => `
+            <label class="card-item" style="display:flex; align-items:center; gap:0.75rem; cursor:pointer; padding:0.85rem 1.25rem;">
+                <input type="checkbox" value="${p.file}" ${allowed.has(p.file) ? 'checked' : ''} style="width:18px; height:18px;">
+                <span>${esc(p.label)} <span style="color:#64748b; font-size:0.8rem;">(${p.file})</span></span>
+            </label>
+        `).join('');
+    } catch(e) { document.getElementById('access-pages-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar páginas liberadas.</p>'; }
+}
+
+async function saveAllowedPages() {
+    const pages = Array.from(document.querySelectorAll('#access-pages-list input[type="checkbox"]:checked')).map(el => el.value);
+    try {
+        const res = await fetch(ADMIN_API + '/admin/allowed-pages', {
+            method: 'PUT', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ pages })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao salvar.');
+        alert('Páginas liberadas atualizadas.');
+    } catch(e) { alert('Erro ao salvar.'); }
+}
+
 // ---- Init ----
-loadStats(); loadDocs(); loadHealth(); loadModels();
+loadStats(); loadDocs(); loadHealth(); loadModels(); loadAllowedPages();
 // loadClients() lê allAreas (marca quem já tem base de conhecimento própria),
 // então precisa esperar loadAreas() terminar antes de rodar.
 Promise.all([loadAreas(), loadPlans()]).then(loadClients);
