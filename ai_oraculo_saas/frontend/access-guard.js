@@ -4,6 +4,7 @@
 
     var page = location.pathname.split('/').pop() || 'index.html';
     if (page === 'index.html' || page === '') return; // portal sempre abre; os cards é que filtram
+    if (page === 'admin.html') return; // painel admin nunca é bloqueado — é o único lugar pra corrigir a lista de acesso; bloqueá-lo também poderia trancar o próprio admin pra fora sem saída
 
     fetch(location.protocol + '//' + location.host + '/api/allowed-pages')
         .then(function(r) { return r.json(); })

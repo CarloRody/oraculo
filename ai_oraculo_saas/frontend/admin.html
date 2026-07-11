@@ -181,6 +181,7 @@
     <div id="access-tab" class="tab-content">
         <h2 class="section-title" style="border:none; padding:0; margin-bottom:1rem;">Páginas liberadas para clientes</h2>
         <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">Quem não tem uma chave de cliente salva (uso interno/admin) continua com acesso a tudo. Quem tem uma chave de cliente salva só consegue abrir as páginas marcadas aqui.</p>
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">O Painel Admin não aparece na lista abaixo porque ele nunca é bloqueado — é o único lugar pra corrigir essa lista, então travá-lo poderia deixar até você mesmo sem acesso.</p>
         <p style="color:#fbbf24; font-size:0.85rem; margin-bottom:1.25rem;">⚠ Liberar "Análise & Relatórios" mostra dados de consumo de <strong>todos os clientes</strong>, não só do cliente logado.</p>
         <div id="access-pages-list" class="card-list" style="gap:0.5rem;"></div>
         <button class="btn" style="margin-top:1rem;" onclick="saveAllowedPages()">Salvar</button>
@@ -1193,7 +1194,6 @@ const ALL_CLIENT_PAGES = [
     { file: 'chat.html', label: 'Pesquisa & Chat' },
     { file: 'pesquisa-agentes.html', label: 'Pesquisa 3 Agentes' },
     { file: 'meu-portal.html', label: 'Minha Base de Conhecimento' },
-    { file: 'admin.html', label: 'Painel Admin' },
     { file: 'reports.html', label: 'Análise & Relatórios' },
     { file: 'config.html', label: 'Configurações' },
     { file: 'tree.html', label: 'Árvore de Documentos' },
