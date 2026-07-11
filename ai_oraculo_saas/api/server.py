@@ -1096,7 +1096,16 @@ Pergunta: {message}"""
         official_answer, tin1, tout1 = call_llm_agent(llm_cfg, official_system_prompt, official_user_prompt)
 
         # ---- Agente 2: Busca na Internet (SearXNG) ----
-        web_results = web_search(message)
+        # Inclui o nome da área (ex: nome do produto/módulo) na query de busca —
+        # sem isso, uma pergunta que só faz sentido dentro do contexto da área
+        # temática (ex: um termo específico de um produto) vira uma busca
+        # genérica demais. Limitado a 2 áreas pra não poluir a query quando
+        # "todas as áreas" contribuíram contexto. Só a busca ganha o nome da
+        # área — o prompt mandado pro LLM (web_user_prompt) usa a pergunta
+        # original, sem alteração.
+        area_names_for_web = [_area_name(aid) for aid in billing_area_ids[:2]]
+        web_query = f"{' '.join(area_names_for_web)} {message}".strip() if area_names_for_web else message
+        web_results = web_search(web_query)
         web_context_lines = [f"[{i+1}] {r['title']} ({r['url']})\n{r['content']}" for i, r in enumerate(web_results)]
         web_context_text = "\n\n".join(web_context_lines) if web_context_lines else "Nenhum resultado de busca encontrado."
         web_system_prompt = (
