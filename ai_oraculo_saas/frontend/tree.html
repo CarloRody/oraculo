@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oráculo — Árvore de Documentos</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .btn { background: #60a5fa; color: #0a1628; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; margin-right: 0.5rem; }
+        .btn-danger { background: #ef4444; color: white; }
+        .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+        .actions-bar { display: flex; align-items: center; gap: 1rem; flex-wrap: wrap; margin-bottom: 1.5rem; position: sticky; top: 0; background: #0a1628; padding: 0.75rem 0; z-index: 5; border-bottom: 1px solid #1a2744; }
+        .actions-bar .count { color: #94a3b8; font-size: 0.85rem; }
+
+        .area-section { margin-bottom: 1.25rem; border: 1px solid #334155; border-radius: 8px; overflow: hidden; }
+        .area-header { display: flex; align-items: center; gap: 0.6rem; padding: 0.85rem 1rem; background: #1e293b; cursor: pointer; user-select: none; }
+        .area-header:hover { background: #24324a; }
+        .area-header .chevron { color: #64748b; transition: transform 0.15s; font-size: 0.8rem; }
+        .area-header.collapsed .chevron { transform: rotate(-90deg); }
+        .area-header h3 { color: #f8fafc; font-size: 1.05rem; margin: 0; }
+        .area-header .area-count { color: #64748b; font-size: 0.85rem; }
+        .area-body { padding: 0.5rem 1rem 1rem; }
+        .area-body.collapsed { display: none; }
+
+        .tree-node { }
+        .node-row { display: flex; align-items: center; gap: 0.5rem; padding: 0.4rem 0.4rem; border-radius: 6px; }
+        .node-row:hover { background: #1a2540; }
+        .node-row .chevron { width: 1.1rem; text-align: center; color: #64748b; cursor: pointer; font-size: 0.75rem; flex-shrink: 0; transition: transform 0.15s; }
+        .node-row .chevron.collapsed { transform: rotate(-90deg); }
+        .node-row .chevron.spacer { cursor: default; visibility: hidden; }
+        .node-row input[type="checkbox"] { width: auto; flex-shrink: 0; }
+        .node-row .node-name { color: #e2e8f0; font-size: 0.92rem; }
+        .node-row .node-meta { color: #64748b; font-size: 0.78rem; white-space: nowrap; }
+        .node-children { margin-left: 1.4rem; border-left: 1px dashed #334155; padding-left: 0.6rem; }
+        .node-children.collapsed { display: none; }
+
+        .empty-text, .error-text { padding: 1.5rem; text-align: center; }
+
+        @media (max-width: 640px) {
+            .node-row .node-meta { display: none; }
+        }
+    </style>
+</head>
+<body>
+
+    <a href="index.html" class="back-link">&larr; Voltar ao Portal</a>
+
+    <div class="header">
+        <h1 class="gradient">&#127795; Árvore de Documentos</h1>
+        <p>Estrutura pai/filho dos documentos, organizada por área</p>
+    </div>
+
+    <div class="container wide">
+        <div class="actions-bar">
+            <button class="btn btn-danger" id="deleteSelectedBtn" onclick="deleteSelected()" disabled>Apagar selecionados</button>
+            <button class="btn" onclick="loadTree()">Recarregar</button>
+            <span class="count" id="selectionCount"></span>
+        </div>
+
+        <div id="treeContainer"><p class="loading-text">Carregando...</p></div>
+    </div>
+
+    <div class="footer">Oráculo &copy; <span id="year"></span></div>
+
+<script>
+const API = window.location.protocol + '//' + window.location.host;
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+
+function statusBadge(status) {
+    const s = status || 'pending';
+    const labels = { pending: 'pendente', processing: 'processando', indexed: 'indexado', failed: 'falhou' };
+    return `<span class="status-badge status-${s}">${labels[s] || s}</span>`;
+}
+
+let allDocs = [];
+let childrenByParentId = {};
+let docsById = {};
+let selectedIds = new Set();
+
+async function loadTree() {
+    selectedIds.clear();
+    updateActionsBar();
+    document.getElementById('treeContainer').innerHTML = '<p class="loading-text">Carregando...</p>';
+    try {
+        const res = await fetch(API + '/admin/documents');
+        const data = await res.json();
+        allDocs = data.documents || [];
+        buildIndexes();
+        renderTree();
+    } catch (e) {
+        document.getElementById('treeContainer').innerHTML = '<p class="error-text">Erro ao carregar documentos.</p>';
+    }
+}
+
+function buildIndexes() {
+    childrenByParentId = {};
+    docsById = {};
+    for (const d of allDocs) {
+        docsById[d.id] = d;
+        const key = d.parent_doc_id || 0;
+        (childrenByParentId[key] = childrenByParentId[key] || []).push(d);
+    }
+}
+
+function renderTree() {
+    const roots = allDocs.filter(d => !d.parent_doc_id);
+    if (!roots.length) {
+        document.getElementById('treeContainer').innerHTML = '<p class="empty-text">Nenhum documento encontrado.</p>';
+        return;
+    }
+
+    const byArea = {};
+    for (const d of roots) {
+        const area = d.area_name || 'Sem área';
+        (byArea[area] = byArea[area] || []).push(d);
+    }
+
+    const areaNames = Object.keys(byArea).sort((a, b) => a.localeCompare(b, 'pt-BR'));
+    document.getElementById('treeContainer').innerHTML = areaNames.map(areaName => {
+        const areaRoots = byArea[areaName];
+        const areaId = 'area_' + areaName.replace(/[^a-zA-Z0-9]/g, '_');
+        return `
+            <div class="area-section">
+                <div class="area-header" id="${areaId}_header" onclick="toggleArea('${areaId}')">
+                    <span class="chevron">&#9660;</span>
+                    <h3>${esc(areaName)}</h3>
+                    <span class="area-count">(${areaRoots.length} raiz${areaRoots.length !== 1 ? 'es' : ''})</span>
+                </div>
+                <div class="area-body" id="${areaId}_body">
+                    ${areaRoots.map(d => renderNode(d, 0)).join('')}
+                </div>
+            </div>
+        `;
+    }).join('');
+}
+
+function toggleArea(areaId) {
+    document.getElementById(areaId + '_header').classList.toggle('collapsed');
+    document.getElementById(areaId + '_body').classList.toggle('collapsed');
+}
+
+function renderNode(doc, depth) {
+    const children = childrenByParentId[doc.id] || [];
+    const hasChildren = children.length > 0;
+    const nodeId = 'node_' + doc.id;
+    // Nós com filhos vêm recolhidos por padrão pra árvore não abrir gigante.
+    const childrenHtml = hasChildren
+        ? `<div class="node-children collapsed" id="${nodeId}_children">${children.map(c => renderNode(c, depth + 1)).join('')}</div>`
+        : '';
+
+    return `
+        <div class="tree-node">
+            <div class="node-row">
+                <span class="chevron${hasChildren ? ' collapsed' : ' spacer'}" id="${nodeId}_chevron" ${hasChildren ? `onclick="toggleNode(${doc.id})"` : ''}>&#9660;</span>
+                <input type="checkbox" id="${nodeId}_cb" onchange="toggleSelect(${doc.id}, this.checked)">
+                <span class="node-name">${esc(doc.name)}</span>
+                ${statusBadge(doc.processing_status)}
+                <span class="node-meta">${doc.chunk_count || 0} chunks${hasChildren ? ` • ${children.length} filho(s)` : ''}</span>
+            </div>
+            ${childrenHtml}
+        </div>
+    `;
+}
+
+function toggleNode(id) {
+    document.getElementById('node_' + id + '_chevron').classList.toggle('collapsed');
+    document.getElementById('node_' + id + '_children').classList.toggle('collapsed');
+}
+
+function toggleSelect(id, checked) {
+    if (checked) selectedIds.add(id); else selectedIds.delete(id);
+    updateActionsBar();
+}
+
+function updateActionsBar() {
+    const btn = document.getElementById('deleteSelectedBtn');
+    const countEl = document.getElementById('selectionCount');
+    btn.disabled = selectedIds.size === 0;
+    countEl.textContent = selectedIds.size ? `${selectedIds.size} nó(s) marcado(s)` : '';
+}
+
+// Coleta o próprio nó + todos os descendentes (DFS), pra qualquer nó marcado.
+function collectSubtree(id, acc) {
+    acc.add(id);
+    const children = childrenByParentId[id] || [];
+    for (const c of children) collectSubtree(c.id, acc);
+}
+
+async function deleteSelected() {
+    const toDelete = new Set();
+    for (const id of selectedIds) collectSubtree(id, toDelete);
+
+    const total = toDelete.size;
+    if (!total) return;
+    const ok = confirm(`Isso vai apagar ${total} documento(s) (os nós marcados e toda a subárvore abaixo deles). Confirmar?`);
+    if (!ok) return;
+
+    const btn = document.getElementById('deleteSelectedBtn');
+    btn.disabled = true;
+    const ids = Array.from(toDelete);
+    let done = 0;
+    for (const id of ids) {
+        btn.textContent = `Apagando ${done + 1} de ${total}...`;
+        try {
+            await fetch(API + `/admin/documents/${id}`, { method: 'DELETE' });
+        } catch (e) {
+            // segue tentando os próximos mesmo se um falhar
+        }
+        done++;
+    }
+    btn.textContent = 'Apagar selecionados';
+    await loadTree();
+}
+
+document.getElementById('year').textContent = new Date().getFullYear();
+loadTree();
+</script>
+</body>
+</html>
