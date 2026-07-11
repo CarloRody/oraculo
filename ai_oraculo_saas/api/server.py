@@ -752,6 +752,111 @@ def log_area_usage(user_id, session_id, area_id, tokens_input, tokens_output):
         print(f"ERRO ao gravar usage_logs: {e}")
 
 
+def build_rag_context(context_chunks, requested_area_ids):
+    """A partir dos chunks retornados por search_similar, monta o texto de
+    contexto (agrupado por área, com cabeçalho por seção — evita o modelo
+    misturar regras de domínios diferentes) e a lista de fontes pra exibição.
+    Usado tanto por /api/chat quanto por /api/agent-research. Devolve
+    (full_context_text, context_sources, chunk_counts_by_area, billing_area_ids)."""
+    chunk_counts_by_area = {}
+    for chunk in context_chunks:
+        aid = chunk["area_id"]
+        chunk_counts_by_area[aid] = chunk_counts_by_area.get(aid, 0) + 1
+    billing_area_ids = list(chunk_counts_by_area.keys()) or (requested_area_ids or [])
+
+    conn = get_db_connection()
+    doc_names = {}
+    area_names = {}
+    if conn and context_chunks:
+        cur = conn.cursor()
+        doc_ids = list(set(r["doc_id"] for r in context_chunks))
+        if doc_ids:
+            placeholders = ",".join(["%s"] * len(doc_ids))
+            cur.execute(f"SELECT id, name FROM documents WHERE id IN ({placeholders})", doc_ids)
+            doc_names = {row[0]: row[1] for row in cur.fetchall()}
+        for aid in chunk_counts_by_area:
+            area_names[aid] = _area_name(aid)
+    if conn:
+        conn.close()
+
+    context_sources = []
+    chunks_by_area = {}
+    for chunk in context_chunks:
+        chunks_by_area.setdefault(chunk["area_id"], []).append(chunk)
+
+    context_sections = []
+    for aid, chunks in chunks_by_area.items():
+        section_lines = [f"=== Contexto: {area_names.get(aid, f'Área #{aid}')} ==="]
+        for chunk in chunks:
+            similarity = round(1.0 - chunk["distance"], 4)
+            context_sources.append({
+                "source": doc_names.get(chunk["doc_id"], f"Doc #{chunk['doc_id']}"),
+                "area_id": aid,
+                "area_name": area_names.get(aid, f"Área #{aid}"),
+                "text": chunk["content_chunk"][:600],
+                "similarity": similarity,
+                "chunk_index": chunk["chunk_index"]
+            })
+            section_lines.append(chunk["content_chunk"])
+        context_sections.append("\n\n".join(section_lines))
+
+    full_context_text = "\n\n".join(context_sections)
+    return full_context_text, context_sources, chunk_counts_by_area, billing_area_ids
+
+
+def call_llm_agent(llm_cfg, system_prompt, user_prompt):
+    """Chama o LLM (base_url/model/parâmetros do llm_cfg resolvido pra esse
+    cliente/plano) e devolve (texto, tokens_input, tokens_output). Usa o
+    'usage' do gateway (exato) quando disponível, senão estima via tiktoken
+    (count_tokens). Compartilhado por /api/chat e /api/agent-research."""
+    llm_headers = {"Authorization": f"Bearer {llm_cfg['api_key']}"} if llm_cfg.get("api_key") else {}
+    llm_response = _http_requests.post(
+        llm_cfg["base_url"],
+        json={
+            "model": llm_cfg["model"],
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "temperature": llm_cfg["temperature"],
+            "max_tokens": llm_cfg["max_tokens"]
+        },
+        headers=llm_headers,
+        timeout=llm_cfg["timeout_seconds"]
+    )
+    llm_response.raise_for_status()
+    llm_data = llm_response.json()
+    text = llm_data["choices"][0]["message"]["content"]
+
+    usage = llm_data.get("usage") or {}
+    tokens_input = usage.get("prompt_tokens")
+    tokens_output = usage.get("completion_tokens")
+    if tokens_input is None or tokens_output is None:
+        tokens_input = count_tokens(system_prompt + user_prompt)
+        tokens_output = count_tokens(text)
+    return text, tokens_input, tokens_output
+
+
+def web_search(query, max_results=6):
+    """Consulta o SearXNG local (container Docker, só acessível em
+    localhost — evita expor publicamente e evita CORS) e devolve resultados
+    (title, url, content). Nunca levanta — lista vazia em qualquer falha
+    (SearXNG fora do ar, timeout, etc.)."""
+    try:
+        resp = _http_requests.get(
+            "http://127.0.0.1:8888/search",
+            params={"q": query, "format": "json"},
+            timeout=15
+        )
+        resp.raise_for_status()
+        results = resp.json().get("results", [])[:max_results]
+        return [{"title": r.get("title", ""), "url": r.get("url", ""),
+                  "content": (r.get("content") or "")[:800]} for r in results]
+    except Exception as e:
+        print(f"ERRO web_search: {e}")
+        return []
+
+
 def split_tokens_by_area(area_ids, chunk_counts_by_area, tokens_input, tokens_output):
     """Rateia tokens_input/tokens_output entre as áreas, proporcional a quantos
     chunks cada área contribuiu para o contexto. Sem chunks em nenhuma área
@@ -815,7 +920,7 @@ def chat():
             return jsonify({
                 "error": "Seus créditos acabaram.",
                 "credit_status": {
-                    "balance": round(current_balance, 2),
+                    "balance": round(current_balance, 4),
                     "depleted": True,
                     "recent": get_recent_consumption(user_id)
                 }
@@ -825,15 +930,7 @@ def chat():
         # Busca chunks relevantes via RAG (uma ou várias áreas autorizadas —
         # já garantido não-vazio pelo retorno 403 acima)
         context_chunks = search_similar(message, area_ids=authorized_area_ids, top_k=50)
-
-        # Áreas que de fato contribuíram trechos para o contexto — é isso que
-        # define a cota/billing, não o que foi pedido (uma área pedida sem
-        # nenhum trecho relevante não deve ser cobrada nem checada).
-        chunk_counts_by_area = {}
-        for chunk in context_chunks:
-            aid = chunk["area_id"]
-            chunk_counts_by_area[aid] = chunk_counts_by_area.get(aid, 0) + 1
-        billing_area_ids = list(chunk_counts_by_area.keys()) or (requested_area_ids or [])
+        full_context_text, context_sources, chunk_counts_by_area, billing_area_ids = build_rag_context(context_chunks, requested_area_ids)
 
         # Checagem de cota mensal, antes de gastar uma chamada de LLM
         quota_warning = None
@@ -849,52 +946,6 @@ def chat():
                 }), 429
             elif QUOTA_ENFORCEMENT == "warn":
                 quota_warning = f"Uso de tokens acima do limite mensal contratado para: {', '.join(over_quota_names)}."
-
-        # Enrich com nomes de documentos e áreas
-        conn = get_db_connection()
-        doc_names = {}
-        area_names = {}
-        if conn and context_chunks:
-            cur = conn.cursor()
-            doc_ids = list(set(r["doc_id"] for r in context_chunks))
-            if doc_ids:
-                placeholders = ",".join(["%s"] * len(doc_ids))
-                cur.execute(
-                    f"SELECT id, name FROM documents WHERE id IN ({placeholders})",
-                    doc_ids
-                )
-                doc_names = {row[0]: row[1] for row in cur.fetchall()}
-            for aid in chunk_counts_by_area:
-                area_names[aid] = _area_name(aid)
-
-        context_sources = []
-        # Agrupa o contexto por área, com um cabeçalho por seção — ajuda o
-        # modelo a não misturar regras de domínios diferentes numa pergunta
-        # que cruza áreas (ex: layout técnico de XML + legislação fiscal).
-        chunks_by_area = {}
-        for chunk in context_chunks:
-            chunks_by_area.setdefault(chunk["area_id"], []).append(chunk)
-
-        context_sections = []
-        for aid, chunks in chunks_by_area.items():
-            section_lines = [f"=== Contexto: {area_names.get(aid, f'Área #{aid}')} ==="]
-            for chunk in chunks:
-                similarity = round(1.0 - chunk["distance"], 4)
-                context_sources.append({
-                    "source": doc_names.get(chunk["doc_id"], f"Doc #{chunk['doc_id']}"),
-                    "area_id": aid,
-                    "area_name": area_names.get(aid, f"Área #{aid}"),
-                    "text": chunk["content_chunk"][:600],
-                    "similarity": similarity,
-                    "chunk_index": chunk["chunk_index"]
-                })
-                section_lines.append(chunk["content_chunk"])
-            context_sections.append("\n\n".join(section_lines))
-
-        if conn:
-            conn.close()
-
-        full_context_text = "\n\n".join(context_sections)
 
         # Monta prompt com contexto RAG
         system_prompt = (
@@ -918,33 +969,7 @@ Pergunta: {message}"""
         # Chama LLM — base_url/model/parâmetros vêm do modelo do plano do
         # cliente (llm_cfg, roteamento real) ou do LLM_CONFIG global se o
         # cliente não tiver plano/modelo associado.
-        llm_headers = {"Authorization": f"Bearer {llm_cfg['api_key']}"} if llm_cfg.get("api_key") else {}
-        llm_response = _http_requests.post(
-            llm_cfg["base_url"],
-            json={
-                "model": llm_cfg["model"],
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_prompt}
-                ],
-                "temperature": llm_cfg["temperature"],
-                "max_tokens": llm_cfg["max_tokens"]
-            },
-            headers=llm_headers,
-            timeout=llm_cfg["timeout_seconds"]
-        )
-        llm_response.raise_for_status()
-        llm_data = llm_response.json()
-        response_text = llm_data["choices"][0]["message"]["content"]
-
-        # Contagem de tokens: usa o "usage" do gateway (exato) se disponível,
-        # senão estima via tiktoken (aproximado — ver count_tokens)
-        usage = llm_data.get("usage") or {}
-        tokens_input = usage.get("prompt_tokens")
-        tokens_output = usage.get("completion_tokens")
-        if tokens_input is None or tokens_output is None:
-            tokens_input = count_tokens(system_prompt + user_prompt)
-            tokens_output = count_tokens(response_text)
+        response_text, tokens_input, tokens_output = call_llm_agent(llm_cfg, system_prompt, user_prompt)
 
         session_id = log_chat_message(user_id, billing_area_ids, message, response_text, tokens_input, tokens_output)
         if billing_area_ids:
@@ -993,6 +1018,160 @@ Pergunta: {message}"""
             "area_ids": requested_area_ids,
             "error": str(e)
         })
+
+
+@app.route('/api/agent-research', methods=['POST'])
+def agent_research():
+    """Pesquisa com 3 agentes: o primeiro responde só com a documentação
+    oficial (RAG, mesma trava de áreas do /api/chat), o segundo pesquisa a
+    pergunta na internet (SearXNG local) e responde com o que encontrar, e o
+    terceiro compara as duas respostas e produz a resposta final — a
+    documentação oficial é a fonte de verdade principal, sempre prevalece em
+    caso de conflito com a internet."""
+    data = request.get_json()
+    message = data.get('message', '')
+    requested_area_ids = resolve_area_ids(data)
+    user_id = resolve_user_from_request()
+
+    if not message:
+        return jsonify({"error": "Campo 'message' é obrigatório"}), 400
+
+    authorized_area_ids, had_unauthorized_request = resolve_authorized_area_ids(requested_area_ids, user_id)
+    if not authorized_area_ids:
+        msg = ("Nenhuma das áreas pedidas está disponível pra essa chave de acesso."
+               if had_unauthorized_request else
+               "Nenhuma área disponível no seu plano de acesso.")
+        return jsonify({"error": msg}), 403
+
+    llm_cfg = resolve_llm_config_for_user(user_id)
+    if llm_cfg["price_input_per_million"] is not None:
+        current_balance = get_user_balance(user_id)
+        if current_balance is not None and current_balance <= 0:
+            return jsonify({
+                "error": "Seus créditos acabaram.",
+                "credit_status": {
+                    "balance": round(current_balance, 4),
+                    "depleted": True,
+                    "recent": get_recent_consumption(user_id)
+                }
+            }), 402
+
+    try:
+        # ---- Agente 1: Documentação Oficial (RAG) ----
+        context_chunks = search_similar(message, area_ids=authorized_area_ids, top_k=50)
+        full_context_text, official_sources, chunk_counts_by_area, billing_area_ids = build_rag_context(context_chunks, requested_area_ids)
+
+        quota_warning = None
+        over_quota_names = []
+        for aid in billing_area_ids:
+            quota_status = get_quota_status(user_id, aid)
+            if quota_status and quota_status["quota"] is not None and quota_status["used"] >= quota_status["quota"]:
+                over_quota_names.append(_area_name(aid))
+        if over_quota_names:
+            if QUOTA_ENFORCEMENT == "block":
+                return jsonify({
+                    "error": f"Limite mensal de tokens excedido para: {', '.join(over_quota_names)}."
+                }), 429
+            elif QUOTA_ENFORCEMENT == "warn":
+                quota_warning = f"Uso de tokens acima do limite mensal contratado para: {', '.join(over_quota_names)}."
+
+        official_system_prompt = (
+            "Você é um assistente que responde exclusivamente com base na documentação "
+            "oficial fornecida abaixo. Se a documentação não cobrir algum aspecto da "
+            "pergunta, diga isso explicitamente — não complete com conhecimento geral. "
+            "Responda em português de forma clara e objetiva."
+        )
+        official_user_prompt = f"""Contexto da documentação oficial:
+{'=' * 60}
+{full_context_text if full_context_text else '(nenhum trecho relevante encontrado na documentação)'}
+{'=' * 60}
+
+Pergunta: {message}"""
+        official_answer, tin1, tout1 = call_llm_agent(llm_cfg, official_system_prompt, official_user_prompt)
+
+        # ---- Agente 2: Busca na Internet (SearXNG) ----
+        web_results = web_search(message)
+        web_context_lines = [f"[{i+1}] {r['title']} ({r['url']})\n{r['content']}" for i, r in enumerate(web_results)]
+        web_context_text = "\n\n".join(web_context_lines) if web_context_lines else "Nenhum resultado de busca encontrado."
+        web_system_prompt = (
+            "Você é um assistente que responde com base em resultados de busca na "
+            "internet fornecidos abaixo. Cite as fontes relevantes pelo número entre "
+            "colchetes (ex: [1]). Se os resultados não forem suficientes pra responder, "
+            "diga isso explicitamente. Responda em português de forma clara e objetiva."
+        )
+        web_user_prompt = f"""Resultados de busca:
+{'=' * 60}
+{web_context_text}
+{'=' * 60}
+
+Pergunta: {message}"""
+        web_answer, tin2, tout2 = call_llm_agent(llm_cfg, web_system_prompt, web_user_prompt)
+        web_sources = [{"title": r["title"], "url": r["url"]} for r in web_results]
+
+        # ---- Agente 3: Comparador ----
+        cmp_system_prompt = (
+            "Você é um agente comparador. Você recebe a mesma pergunta respondida por "
+            "duas fontes: (1) documentação oficial da empresa — é a fonte de verdade "
+            "principal, sempre prevalece em caso de conflito; (2) busca na internet — é "
+            "uma fonte complementar, útil pra contextualizar ou preencher lacunas que a "
+            "documentação não cobre. Compare as duas respostas, resolva divergências "
+            "priorizando SEMPRE a documentação oficial, e produza uma resposta final "
+            "única, clara e completa. Se houver alguma divergência relevante entre as "
+            "duas fontes, aponte isso explicitamente na resposta. Responda em português."
+        )
+        cmp_user_prompt = f"""Pergunta original: {message}
+
+Resposta da documentação oficial:
+{official_answer}
+
+Resposta da busca na internet:
+{web_answer}
+
+Produza a resposta final."""
+        final_answer, tin3, tout3 = call_llm_agent(llm_cfg, cmp_system_prompt, cmp_user_prompt)
+
+        # ---- Log de uso: total das 3 chamadas, mesmo padrão do /api/chat ----
+        tokens_input_total = tin1 + tin2 + tin3
+        tokens_output_total = tout1 + tout2 + tout3
+        session_id = log_chat_message(user_id, billing_area_ids, message, final_answer, tokens_input_total, tokens_output_total)
+        if billing_area_ids:
+            for aid, area_input, area_output in split_tokens_by_area(billing_area_ids, chunk_counts_by_area, tokens_input_total, tokens_output_total):
+                log_area_usage(user_id, session_id, aid, area_input, area_output)
+        else:
+            log_area_usage(user_id, session_id, None, tokens_input_total, tokens_output_total)
+
+        # ---- Débito de crédito, consolidado numa única transação ----
+        credit_status = None
+        consumption_value = compute_consumption_value(llm_cfg, tokens_input_total, tokens_output_total)
+        if consumption_value is not None:
+            new_balance = apply_credit_transaction(
+                user_id, -consumption_value, 'consumption',
+                'Pesquisa 3 agentes', session_id=session_id,
+                tokens_input=tokens_input_total, tokens_output=tokens_output_total
+            )
+            if new_balance is not None:
+                credit_status = {"balance": round(new_balance, 4), "depleted": new_balance <= 0}
+                if credit_status["depleted"]:
+                    credit_status["recent"] = get_recent_consumption(user_id)
+
+        result = {
+            "final_answer": final_answer,
+            "official_answer": official_answer,
+            "official_sources": official_sources,
+            "web_answer": web_answer,
+            "web_sources": web_sources,
+            "area_ids": billing_area_ids,
+            "message": message
+        }
+        if quota_warning:
+            result["quota_warning"] = quota_warning
+        if credit_status:
+            result["credit_status"] = credit_status
+        return jsonify(result)
+
+    except Exception as e:
+        print(f"ERRO agent_research: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 # ---- Admin endpoints ----
