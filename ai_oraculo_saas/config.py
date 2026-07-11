@@ -18,6 +18,14 @@ def load_config():
         return yaml.safe_load(f)
 
 
+def save_config(data):
+    """Grava `data` em config.yaml, substituindo o conteúdo inteiro do arquivo.
+    Não atualiza o CONFIG já carregado neste processo — os serviços precisam
+    ser reiniciados para aplicar (ver /admin/config/restart)."""
+    with open(CONFIG_PATH, "w") as f:
+        yaml.safe_dump(data, f, sort_keys=False, allow_unicode=True, default_flow_style=False)
+
+
 CONFIG = load_config()
 
 # Drop null values (password/port) so psycopg2 falls back to its defaults —

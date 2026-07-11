@@ -3,6 +3,8 @@ import psycopg2
 import json
 import os
 import secrets
+import subprocess
+import copy
 from datetime import date
 import requests as _http_requests
 from flask_cors import CORS
@@ -12,7 +14,7 @@ import sys, os as _os_module
 sys.path.insert(0, _os_module.path.join(_os_module.path.dirname(__file__), '..'))
 from rag_engine import process_document, search_similar, get_model, extract_pdf_text
 from migrations import migrate_if_needed
-from config import CONFIG, DB_CONFIG
+from config import CONFIG, DB_CONFIG, save_config
 
 app = Flask(__name__)
 CORS(app)  # Permite que o frontend acesse de qualquer origem local
@@ -1353,9 +1355,8 @@ def admin_quota_status_route():
 
 @app.route('/admin/config', methods=['GET'])
 def admin_get_config():
-    """Configuração atual (somente leitura) — nunca devolve segredos de verdade,
-    só se estão configurados ou não. Editar exige mexer em config.yaml na raiz
-    do monorepo e reiniciar os serviços."""
+    """Configuração atual para exibição — nunca devolve segredos de verdade,
+    só se estão configurados ou não (edição é feita via POST /admin/config)."""
     llm = CONFIG["llm"]
     db = CONFIG["database"]
     return jsonify({
@@ -1380,6 +1381,79 @@ def admin_get_config():
         "monitor_agent": CONFIG.get("monitor_agent", {}),
         "backup_manager": CONFIG.get("backup_manager", {}),
     })
+
+
+@app.route('/admin/config', methods=['POST'])
+def admin_save_config():
+    """Grava alterações em config.yaml. Segredos (api_key/password) só são
+    sobrescritos quando vêm preenchidos no payload — campo ausente ou vazio
+    mantém o valor atual. Não aplica sozinho: os serviços rodando neste
+    processo já carregaram o config.yaml antigo, é preciso reiniciar
+    (POST /admin/config/restart) pra valer."""
+    payload = request.get_json(silent=True) or {}
+    new_config = copy.deepcopy(CONFIG)
+
+    llm_in = payload.get("llm") or {}
+    llm = new_config.setdefault("llm", {})
+    for field in ("provider", "base_url", "model"):
+        if field in llm_in:
+            llm[field] = llm_in[field] or None
+    if "temperature" in llm_in and llm_in["temperature"] not in (None, ""):
+        llm["temperature"] = float(llm_in["temperature"])
+    for field in ("max_tokens", "timeout_seconds"):
+        if field in llm_in and llm_in[field] not in (None, ""):
+            llm[field] = int(llm_in[field])
+    if "api_key" in llm_in:
+        llm["api_key"] = llm_in["api_key"] or None
+
+    db_in = payload.get("database") or {}
+    db = new_config.setdefault("database", {})
+    for field in ("host", "dbname", "user"):
+        if field in db_in:
+            db[field] = db_in[field] or None
+    if "port" in db_in and db_in["port"] not in (None, ""):
+        db["port"] = int(db_in["port"])
+    if "password" in db_in:
+        db["password"] = db_in["password"] or None
+
+    tutor_in = payload.get("tutor") or {}
+    if "quota_enforcement" in tutor_in:
+        new_config.setdefault("tutor", {})["quota_enforcement"] = tutor_in["quota_enforcement"]
+
+    monitor_in = payload.get("monitor_agent") or {}
+    if monitor_in:
+        monitor = new_config.setdefault("monitor_agent", {})
+        if "fetch_timeout" in monitor_in and monitor_in["fetch_timeout"] not in (None, ""):
+            monitor["fetch_timeout"] = int(monitor_in["fetch_timeout"])
+        if "default_cron" in monitor_in:
+            monitor["default_cron"] = monitor_in["default_cron"]
+
+    backup_in = payload.get("backup_manager") or {}
+    if "backup_dir" in backup_in:
+        new_config.setdefault("backup_manager", {})["backup_dir"] = backup_in["backup_dir"]
+
+    try:
+        save_config(new_config)
+    except Exception as e:
+        return jsonify({"error": f"Falha ao gravar config.yaml: {e}"}), 500
+
+    return jsonify({"success": True, "message": "Configuração salva em config.yaml. Reinicie os serviços para aplicar."})
+
+
+@app.route('/admin/config/restart', methods=['POST'])
+def admin_restart_services():
+    """Reinicia os 3 serviços pra aplicar o config.yaml salvo. Roda em segundo
+    plano com um pequeno atraso porque este processo (ai-tutor-api) está entre
+    os que serão reiniciados — sem o atraso, a resposta HTTP não chegaria a
+    sair antes do processo morrer."""
+    try:
+        subprocess.Popen(
+            ["bash", "-c", "sleep 1 && systemctl restart ai-tutor-api monitor-agent backup-manager"],
+            start_new_session=True
+        )
+    except Exception as e:
+        return jsonify({"error": f"Falha ao reiniciar serviços: {e}"}), 500
+    return jsonify({"success": True, "message": "Reiniciando serviços..."})
 
 
 @app.route('/api/upload', methods=['POST'])
