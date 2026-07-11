@@ -1,0 +1,214 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oráculo — Configurações</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .card-item { background: #1e293b; border-radius: 8px; padding: 1.5rem; border: 1px solid #334155; margin-bottom: 1.5rem; }
+        .card-item h3 { color: #f8fafc; margin-bottom: 1rem; }
+        .btn { background: #60a5fa; color: #0a1628; border: none; padding: 0.6rem 1.2rem; border-radius: 6px; cursor: pointer; font-size: 0.9rem; font-weight: 600; margin-right: 0.5rem; }
+        .btn-danger { background: #ef4444; color: white; }
+        .actions-row { display: flex; gap: 1rem; flex-wrap: wrap; margin-top: 1rem; }
+        @media (max-width: 640px) { .card-item { padding: 1rem; } }
+    </style>
+</head>
+<body>
+
+    <a href="index.html" class="back-link">&larr; Voltar ao Portal</a>
+
+    <div class="header">
+        <h1 class="gradient">&#128279; Configurações</h1>
+        <p>Provedor de LLM, banco de dados e demais parâmetros do Oráculo</p>
+    </div>
+
+    <div class="container">
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1.5rem;">
+            Alterações são gravadas em <code>config.yaml</code> na raiz do projeto no servidor. Elas só passam a valer depois de reiniciar os serviços — use os botões abaixo.
+        </p>
+
+        <div class="card-item">
+            <h3>Provedor LLM</h3>
+            <div class="form-group"><label>Provedor</label><input type="text" id="cfgLlmProvider" placeholder="Ex: LM Studio"></div>
+            <div class="form-group"><label>URL base</label><input type="text" id="cfgLlmBaseUrl" placeholder="http://.../v1/chat/completions"></div>
+            <div class="form-group"><label>Modelo</label><input type="text" id="cfgLlmModel" placeholder="auto"></div>
+            <div class="form-group">
+                <label><input type="checkbox" id="cfgLlmApiKeyChange" onchange="document.getElementById('cfgLlmApiKey').disabled = !this.checked" style="width:auto; display:inline-block; vertical-align:middle;"> Alterar token de acesso <span id="cfgLlmApiKeyBadge" style="font-weight:normal;"></span></label>
+                <input type="password" id="cfgLlmApiKey" placeholder="Novo token (deixe vazio para remover)" disabled>
+            </div>
+            <div class="form-group"><label>Temperatura</label><input type="number" step="0.1" id="cfgLlmTemperature"></div>
+            <div class="form-group"><label>Max tokens</label><input type="number" id="cfgLlmMaxTokens"></div>
+            <div class="form-group"><label>Timeout (segundos)</label><input type="number" id="cfgLlmTimeout"></div>
+        </div>
+
+        <div class="card-item">
+            <h3>Banco de Dados</h3>
+            <div class="form-group"><label>Host</label><input type="text" id="cfgDbHost"></div>
+            <div class="form-group"><label>Banco</label><input type="text" id="cfgDbName"></div>
+            <div class="form-group"><label>Usuário</label><input type="text" id="cfgDbUser"></div>
+            <div class="form-group">
+                <label><input type="checkbox" id="cfgDbPasswordChange" onchange="document.getElementById('cfgDbPassword').disabled = !this.checked" style="width:auto; display:inline-block; vertical-align:middle;"> Alterar senha <span id="cfgDbPasswordBadge" style="font-weight:normal;"></span></label>
+                <input type="password" id="cfgDbPassword" placeholder="Nova senha (deixe vazio para voltar a null)" disabled>
+            </div>
+            <p style="color:#64748b; font-size:0.8rem;">Hoje a conexão usa socket Unix (sem senha). Preencher aqui só deixa o valor pronto no arquivo — não ativa autenticação por senha no Postgres sozinho.</p>
+        </div>
+
+        <div class="card-item">
+            <h3>Oráculo (Tutor)</h3>
+            <div class="form-group">
+                <label>Enforcement de cota</label>
+                <select id="cfgTutorQuota">
+                    <option value="warn">warn — avisa mas não bloqueia</option>
+                    <option value="block">block — bloqueia ao estourar a cota</option>
+                    <option value="off">off — sem controle de cota</option>
+                </select>
+            </div>
+        </div>
+
+        <div class="card-item">
+            <h3>Monitor Agent</h3>
+            <div class="form-group"><label>Timeout de busca (segundos)</label><input type="number" id="cfgMonitorFetchTimeout"></div>
+            <div class="form-group"><label>Cron padrão</label><input type="text" id="cfgMonitorCron" placeholder="0 6 * * 0"></div>
+        </div>
+
+        <div class="card-item">
+            <h3>Backup Manager</h3>
+            <div class="form-group"><label>Diretório de backup</label><input type="text" id="cfgBackupDir"></div>
+        </div>
+
+        <div class="actions-row">
+            <button class="btn" onclick="saveConfig(false)">Salvar</button>
+            <button class="btn" onclick="saveConfig(true)">Salvar e reiniciar serviços</button>
+            <button class="btn btn-danger" onclick="restartServices()">Reiniciar serviços agora</button>
+        </div>
+        <p id="config-save-status" style="margin-top:1rem; font-size:0.9rem;"></p>
+    </div>
+
+    <div class="footer">Oráculo &copy; <span id="year"></span></div>
+
+<script>
+const API = window.location.protocol + '//' + window.location.host;
+
+function configuredBadge(isSet) {
+    return isSet
+        ? '<span style="color:#4ade80;">configurado</span>'
+        : '<span style="color:#64748b;">não configurado</span>';
+}
+
+async function loadConfig() {
+    try {
+        const res = await fetch(API + '/admin/config');
+        const data = await res.json();
+        const llm = data.llm || {};
+        const db = data.database || {};
+        const monitor = data.monitor_agent || {};
+        const backup = data.backup_manager || {};
+
+        document.getElementById('cfgLlmProvider').value = llm.provider || '';
+        document.getElementById('cfgLlmBaseUrl').value = llm.base_url || '';
+        document.getElementById('cfgLlmModel').value = llm.model || '';
+        document.getElementById('cfgLlmApiKeyBadge').innerHTML = configuredBadge(llm.api_key_configured);
+        document.getElementById('cfgLlmApiKeyChange').checked = false;
+        document.getElementById('cfgLlmApiKey').value = '';
+        document.getElementById('cfgLlmApiKey').disabled = true;
+        document.getElementById('cfgLlmTemperature').value = llm.temperature ?? '';
+        document.getElementById('cfgLlmMaxTokens').value = llm.max_tokens ?? '';
+        document.getElementById('cfgLlmTimeout').value = llm.timeout_seconds ?? '';
+
+        document.getElementById('cfgDbHost').value = db.host || '';
+        document.getElementById('cfgDbName').value = db.dbname || '';
+        document.getElementById('cfgDbUser').value = db.user || '';
+        document.getElementById('cfgDbPasswordBadge').innerHTML = configuredBadge(db.password_configured);
+        document.getElementById('cfgDbPasswordChange').checked = false;
+        document.getElementById('cfgDbPassword').value = '';
+        document.getElementById('cfgDbPassword').disabled = true;
+
+        document.getElementById('cfgTutorQuota').value = data.tutor?.quota_enforcement || 'warn';
+
+        document.getElementById('cfgMonitorFetchTimeout').value = monitor.fetch_timeout ?? '';
+        document.getElementById('cfgMonitorCron').value = monitor.default_cron || '';
+
+        document.getElementById('cfgBackupDir').value = backup.backup_dir || '';
+
+        document.getElementById('config-save-status').textContent = '';
+    } catch(e) {
+        document.getElementById('config-save-status').textContent = 'Não foi possível carregar as configurações.';
+        document.getElementById('config-save-status').style.color = '#ef4444';
+    }
+}
+
+async function saveConfig(andRestart) {
+    const statusEl = document.getElementById('config-save-status');
+    const payload = {
+        llm: {
+            provider: document.getElementById('cfgLlmProvider').value,
+            base_url: document.getElementById('cfgLlmBaseUrl').value,
+            model: document.getElementById('cfgLlmModel').value,
+            temperature: document.getElementById('cfgLlmTemperature').value,
+            max_tokens: document.getElementById('cfgLlmMaxTokens').value,
+            timeout_seconds: document.getElementById('cfgLlmTimeout').value,
+        },
+        database: {
+            host: document.getElementById('cfgDbHost').value,
+            dbname: document.getElementById('cfgDbName').value,
+            user: document.getElementById('cfgDbUser').value,
+        },
+        tutor: { quota_enforcement: document.getElementById('cfgTutorQuota').value },
+        monitor_agent: {
+            fetch_timeout: document.getElementById('cfgMonitorFetchTimeout').value,
+            default_cron: document.getElementById('cfgMonitorCron').value,
+        },
+        backup_manager: { backup_dir: document.getElementById('cfgBackupDir').value },
+    };
+    if (document.getElementById('cfgLlmApiKeyChange').checked) {
+        payload.llm.api_key = document.getElementById('cfgLlmApiKey').value;
+    }
+    if (document.getElementById('cfgDbPasswordChange').checked) {
+        payload.database.password = document.getElementById('cfgDbPassword').value;
+    }
+
+    statusEl.style.color = '#94a3b8';
+    statusEl.textContent = 'Salvando...';
+    try {
+        const res = await fetch(API + '/admin/config', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) throw new Error(data.error || 'Erro ao salvar');
+        statusEl.style.color = '#4ade80';
+        statusEl.textContent = data.message;
+        if (andRestart) {
+            await restartServices();
+        } else {
+            loadConfig();
+        }
+    } catch(e) {
+        statusEl.style.color = '#ef4444';
+        statusEl.textContent = 'Erro ao salvar: ' + e.message;
+    }
+}
+
+async function restartServices() {
+    const statusEl = document.getElementById('config-save-status');
+    statusEl.style.color = '#facc15';
+    statusEl.textContent = 'Reiniciando serviços... aguarde alguns segundos.';
+    try {
+        await fetch(API + '/admin/config/restart', { method: 'POST' });
+    } catch(e) {
+        // Esperado: este servidor está entre os que reiniciam, a conexão pode cair.
+    }
+    setTimeout(() => {
+        statusEl.style.color = '#4ade80';
+        statusEl.textContent = 'Serviços reiniciados. Recarregando configuração...';
+        loadConfig();
+    }, 4000);
+}
+
+document.getElementById('year').textContent = new Date().getFullYear();
+loadConfig();
+</script>
+</body>
+</html>
