@@ -172,7 +172,7 @@ function updateBalanceBar(balance) {
     if (balance == null) { bar.style.display = 'none'; return; }
     bar.style.display = 'block';
     const low = balance <= 0;
-    bar.innerHTML = `Saldo de créditos: <span class="balance-value${low ? ' low' : ''}">R$ ${Number(balance).toFixed(2)}</span>`;
+    bar.innerHTML = `Saldo de créditos: <span class="balance-value${low ? ' low' : ''}">R$ ${Number(balance).toFixed(4)}</span>`;
 }
 
 async function refreshBalance() {
@@ -193,12 +193,12 @@ function renderCreditBanner(creditStatus) {
         <tr>
             <td>${r.date ? new Date(r.date).toLocaleString('pt-BR') : '-'}</td>
             <td>${(r.tokens_input || 0) + (r.tokens_output || 0)} tokens</td>
-            <td>R$ ${Number(r.amount).toFixed(2)}</td>
+            <td>R$ ${Number(r.amount).toFixed(4)}</td>
         </tr>
     `).join('');
     banner.innerHTML = `
         <h4>⚠ Seus créditos acabaram</h4>
-        <p>Saldo atual: <strong>R$ ${Number(creditStatus.balance).toFixed(2)}</strong></p>
+        <p>Saldo atual: <strong>R$ ${Number(creditStatus.balance).toFixed(4)}</strong></p>
         ${rows ? `<table><thead><tr><th>Data</th><th>Tokens</th><th>Valor</th></tr></thead><tbody>${rows}</tbody></table>` : ''}
         <p style="margin-top:0.5rem; color:#94a3b8; font-size:0.85rem;">Fale com o administrador para recarregar seu saldo.</p>
     `;

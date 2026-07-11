@@ -785,7 +785,7 @@ async function loadClients() {
                 <h3>${u.email}</h3>
                 <p>ID: ${u.id}</p>
                 <div class="api-key-box">${u.api_key || '—'}</div>
-                <p style="margin-top:0.5rem;">Saldo: <span style="color:${balanceColor}; font-weight:600;">R$ ${Number(u.balance).toFixed(2)}</span></p>
+                <p style="margin-top:0.5rem;">Saldo: <span style="color:${balanceColor}; font-weight:600;">R$ ${Number(u.balance).toFixed(4)}</span></p>
                 <div class="form-group" style="margin-top:0.75rem; max-width:260px;">
                     <label>Plano</label>
                     <select class="form-input" onchange="changeClientPlan(${u.id}, this.value)">${planOptions(u.plan_id)}</select>
@@ -866,13 +866,13 @@ async function showExtractModal(userId, email) {
             <tr>
                 <td>${t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '-'}</td>
                 <td>${typeLabel[t.type] || t.type}</td>
-                <td style="color:${t.amount >= 0 ? '#4ade80' : '#f87171'};">${t.amount >= 0 ? '+' : ''}R$ ${Number(t.amount).toFixed(2)}</td>
-                <td>R$ ${Number(t.balance_after).toFixed(2)}</td>
+                <td style="color:${t.amount >= 0 ? '#4ade80' : '#f87171'};">${t.amount >= 0 ? '+' : ''}R$ ${Number(t.amount).toFixed(4)}</td>
+                <td>R$ ${Number(t.balance_after).toFixed(4)}</td>
                 <td>${esc(t.description || '-')}</td>
             </tr>
         `).join('');
         document.getElementById('extractTableBox').innerHTML = `
-            <p style="margin-bottom:0.75rem;">Saldo atual: <strong style="color:${data.balance > 0 ? '#4ade80' : '#f87171'};">R$ ${Number(data.balance).toFixed(2)}</strong></p>
+            <p style="margin-bottom:0.75rem;">Saldo atual: <strong style="color:${data.balance > 0 ? '#4ade80' : '#f87171'};">R$ ${Number(data.balance).toFixed(4)}</strong></p>
             <table>
                 <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Saldo após</th><th>Descrição</th></tr></thead>
                 <tbody>${rows || '<tr><td colspan="5" style="color:#64748b;">Nenhuma transação ainda.</td></tr>'}</tbody>

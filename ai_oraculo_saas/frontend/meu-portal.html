@@ -147,7 +147,7 @@ async function loadMyCredits() {
         document.getElementById('creditsSection').style.display = 'block';
         const low = data.balance <= 0;
         document.getElementById('creditsBalanceBox').innerHTML =
-            `<p class="credits-balance ${low ? 'low' : 'ok'}">R$ ${Number(data.balance).toFixed(2)}</p>
+            `<p class="credits-balance ${low ? 'low' : 'ok'}">R$ ${Number(data.balance).toFixed(4)}</p>
              <p style="color:#64748b; font-size:0.85rem;">${low ? 'Saldo esgotado — fale com o administrador para recarregar.' : 'Saldo disponível'}</p>`;
 
         const typeLabel = { deposit: 'Depósito', consumption: 'Consumo', adjustment: 'Ajuste' };
@@ -160,7 +160,7 @@ async function loadMyCredits() {
             <tr>
                 <td>${t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '-'}</td>
                 <td>${typeLabel[t.type] || t.type}</td>
-                <td style="color:${t.amount >= 0 ? '#4ade80' : '#f87171'};">${t.amount >= 0 ? '+' : ''}R$ ${Number(t.amount).toFixed(2)}</td>
+                <td style="color:${t.amount >= 0 ? '#4ade80' : '#f87171'};">${t.amount >= 0 ? '+' : ''}R$ ${Number(t.amount).toFixed(4)}</td>
                 <td>${t.description ? esc(t.description) : '-'}</td>
             </tr>
         `).join('');

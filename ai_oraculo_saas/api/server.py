@@ -966,7 +966,10 @@ Pergunta: {message}"""
                 tokens_input=tokens_input, tokens_output=tokens_output
             )
             if new_balance is not None:
-                credit_status = {"balance": round(new_balance, 2), "depleted": new_balance <= 0}
+                # 4 casas decimais, não 2 — com preço por 1M tokens, o custo de
+                # uma única mensagem costuma ser fração de centavo; arredondar
+                # pra 2 casas escondia a dedução real (saldo parecia "não mudar").
+                credit_status = {"balance": round(new_balance, 4), "depleted": new_balance <= 0}
                 if credit_status["depleted"]:
                     credit_status["recent"] = get_recent_consumption(user_id)
 
@@ -1742,7 +1745,7 @@ def admin_deposit_credit():
     new_balance = apply_credit_transaction(user_id, amount, type_, description)
     if new_balance is None:
         return jsonify({"error": "Cliente não encontrado ou erro ao gravar"}), 404
-    return jsonify({"user_id": user_id, "balance": round(new_balance, 2)}), 201
+    return jsonify({"user_id": user_id, "balance": round(new_balance, 4)}), 201
 
 
 @app.route('/admin/credits/<int:user_id>', methods=['GET'])
