@@ -9,7 +9,8 @@ CREATE TABLE IF NOT EXISTS areas (
     name VARCHAR(100) NOT NULL,
     slug VARCHAR(50) UNIQUE NOT NULL,
     vector_ref TEXT NOT NULL, -- Nome do índice no ChromaDB/Qdrant (ex: 'area_engenharia_v1')
-    status VARCHAR(10) DEFAULT 'draft' CHECK (status IN ('active', 'draft', 'archived'))
+    status VARCHAR(10) DEFAULT 'draft' CHECK (status IN ('active', 'draft', 'archived')),
+    owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL -- NULL = área global; preenchida = base de conhecimento privada de um cliente
 );
 
 -- 2. Tabela: plans (Planos de assinatura reutilizáveis — Teste, Mín, Pro, etc.)

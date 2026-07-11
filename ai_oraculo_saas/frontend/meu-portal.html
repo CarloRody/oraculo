@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Oráculo — Minha Base de Conhecimento</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .doc-list { margin-top: 1.5rem; }
+        .doc-item { background: #1e293b; border-radius: 8px; padding: 1rem; margin-bottom: 0.85rem; display: flex; justify-content: space-between; align-items: center; gap: 1rem; flex-wrap: wrap; border: 1px solid #334155; }
+        .doc-info { color: #e2e8f0; font-size: 0.95rem; }
+        .doc-meta { color: #64748b; font-size: 0.8rem; margin-top: 0.35rem; display: flex; gap: 0.6rem; align-items: center; flex-wrap: wrap; }
+    </style>
+</head>
+<body>
+
+    <div class="header">
+        <h1 class="gradient">Minha Base de Conhecimento</h1>
+        <p id="areaSubtitle">Carregando...</p>
+    </div>
+
+    <div id="notProvisioned" class="content-area" style="display:none;">
+        <p class="banner-error">Sua base de conhecimento ainda não foi liberada. Fale com o administrador do Oráculo.</p>
+    </div>
+
+    <div id="portalContent" style="display:none;">
+        <!-- Tabs -->
+        <div class="tabs">
+            <div class="tab active" data-tab="link" onclick="showTab('link', this)">&#127760; Link Externo</div>
+            <div class="tab" data-tab="file" onclick="showTab('file', this)">&#128193; Arquivo Local</div>
+        </div>
+
+        <div class="content-area">
+            <form id="linkForm">
+                <h3 style="color: #60a5fa; margin-bottom: 1.5rem;">Adicionar conteúdo via link externo</h3>
+                <div class="form-group">
+                    <label for="linkUrl">URL do documento:</label>
+                    <input type="text" id="linkUrl" placeholder="https://exemplo.com/docs/pagina.html" required>
+                </div>
+                <div class="form-group">
+                    <label for="linkName">Nome do documento <span style="font-weight:normal; color:#64748b;">(opcional)</span>:</label>
+                    <input type="text" id="linkName" placeholder="Ex: Manual do produto">
+                </div>
+                <div class="form-group">
+                    <label for="linkFetchMode">Tipo de extração:</label>
+                    <select id="linkFetchMode">
+                        <option value="http">HTTP simples (padrão — rápido)</option>
+                        <option value="js_browser">Navegador com JS (páginas que só carregam conteúdo via JavaScript)</option>
+                    </select>
+                </div>
+                <button type="submit" class="btn-primary">&#128640; Adicionar</button>
+            </form>
+
+            <form id="fileForm" style="display:none">
+                <h3 style="color: #60a5fa; margin-bottom: 1.5rem;">Adicionar arquivo do computador</h3>
+                <div class="form-group">
+                    <label for="fileInput">Arquivo (PDF ou TXT):</label>
+                    <input type="file" id="fileInput" accept=".pdf,.txt">
+                </div>
+                <button type="submit" class="btn-primary">&#128640; Adicionar</button>
+            </form>
+        </div>
+
+        <div class="content-area">
+            <h3 style="color: #a78bfa; margin-bottom: 0.5rem;">Meus documentos</h3>
+            <div class="doc-list" id="doc-list"><p class="loading-text">Carregando...</p></div>
+        </div>
+    </div>
+
+    <div class="footer">Oráculo &copy; <span id="year"></span></div>
+
+<script>
+const API = window.location.protocol + '//' + window.location.host;
+let myArea = null;
+
+function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
+
+function getApiKey() {
+    let key = localStorage.getItem('oraculo_api_key');
+    if (!key) {
+        key = prompt('Chave de acesso (fornecida pelo administrador):');
+        if (key) localStorage.setItem('oraculo_api_key', key.trim());
+    }
+    return key || '';
+}
+
+function statusBadge(status) {
+    const s = status || 'pending';
+    const labels = { pending: 'pendente', processing: 'processando', indexed: 'indexado', failed: 'falhou' };
+    return `<span class="status-badge status-${s}">${labels[s] || s}</span>`;
+}
+
+function fetchModeLabel(mode) {
+    return mode === 'js_browser'
+        ? '<span style="color:#a78bfa;">Navegador com JS</span>'
+        : '<span>HTTP simples</span>';
+}
+
+async function loadMyArea() {
+    const key = getApiKey();
+    if (!key) {
+        document.getElementById('areaSubtitle').textContent = 'Chave de acesso necessária.';
+        return;
+    }
+    try {
+        const res = await fetch(`${API}/api/my-area`, { headers: { 'X-Oraculo-Key': key } });
+        if (res.status === 401) {
+            localStorage.removeItem('oraculo_api_key');
+            document.getElementById('areaSubtitle').textContent = 'Chave de acesso inválida.';
+            return;
+        }
+        const data = await res.json();
+        myArea = data.area;
+        if (!myArea) {
+            document.getElementById('areaSubtitle').textContent = 'Nenhuma base de conhecimento vinculada a esta chave.';
+            document.getElementById('notProvisioned').style.display = 'block';
+            return;
+        }
+        document.getElementById('areaSubtitle').textContent = myArea.name;
+        document.getElementById('portalContent').style.display = 'block';
+        loadDocuments();
+    } catch (err) {
+        document.getElementById('areaSubtitle').textContent = 'Erro ao conectar à API.';
+    }
+}
+
+async function loadDocuments() {
+    try {
+        const res = await fetch(`${API}/api/documents?area_id=${myArea.id}&limit=50`);
+        const data = await res.json();
+        const documents = data.documents || [];
+        const listEl = document.getElementById('doc-list');
+        if (documents.length === 0) {
+            listEl.innerHTML = '<p class="empty-text">Nenhum documento adicionado ainda.</p>';
+            return;
+        }
+        listEl.innerHTML = documents.map(doc => {
+            const icon = doc.type === 'link' ? '&#127760;' : '&#128193;';
+            return `
+                <div class="doc-item">
+                    <div>
+                        <span class="doc-info">${icon} ${esc(doc.name)}</span>
+                        <div class="doc-meta">
+                            <span>${doc.type === 'link' ? 'Link externo' : 'Arquivo local'}</span>
+                            ${doc.type === 'link' ? `<span>• ${fetchModeLabel(doc.fetch_mode)}</span>` : ''}
+                            ${statusBadge(doc.processing_status)}
+                            <span>${doc.chunk_count || 0} chunks</span>
+                        </div>
+                    </div>
+                </div>`;
+        }).join('');
+    } catch (err) {
+        document.getElementById('doc-list').innerHTML = '<p class="banner-error">Erro ao carregar documentos.</p>';
+    }
+}
+
+function showTab(tabType, el) {
+    document.getElementById('linkForm').style.display = tabType === 'link' ? 'block' : 'none';
+    document.getElementById('fileForm').style.display = tabType === 'file' ? 'block' : 'none';
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+}
+
+document.getElementById('linkForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const url = document.getElementById('linkUrl').value;
+    const name = document.getElementById('linkName').value.trim();
+    const fetchMode = document.getElementById('linkFetchMode').value;
+    const btn = e.target.querySelector('.btn-primary');
+    const originalText = btn.textContent;
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Processando...';
+    try {
+        const res = await fetch(`${API}/api/documents`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'X-Oraculo-Key': getApiKey() },
+            body: JSON.stringify({
+                area_id: myArea.id, url, is_external_link: true,
+                name: name || new URL(url).hostname,
+                fetch_mode: fetchMode
+            })
+        });
+        const data = await res.json();
+        if (data.error) {
+            alert('Erro: ' + data.error);
+        } else {
+            document.getElementById('linkUrl').value = '';
+            document.getElementById('linkName').value = '';
+            loadDocuments();
+            alert('Documento adicionado com sucesso!');
+        }
+    } catch (err) {
+        alert('Erro ao conectar com a API.');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+});
+
+document.getElementById('fileForm').addEventListener('submit', async function(e) {
+    e.preventDefault();
+    const fileInput = document.getElementById('fileInput');
+    if (fileInput.files.length === 0) { alert('Selecione um arquivo primeiro.'); return; }
+
+    const file = fileInput.files[0];
+    const btn = e.target.querySelector('.btn-primary');
+    const originalText = btn.textContent;
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('area_id', myArea.id);
+    formData.append('name', file.name);
+
+    btn.disabled = true;
+    btn.textContent = '⏳ Processando...';
+    try {
+        const res = await fetch(`${API}/api/upload`, {
+            method: 'POST',
+            headers: { 'X-Oraculo-Key': getApiKey() },
+            body: formData
+        });
+        const data = await res.json();
+        if (data.error) {
+            alert('Erro: ' + data.error);
+        } else {
+            loadDocuments();
+            fileInput.value = '';
+            alert(`✅ Arquivo "${file.name}" processado com sucesso!`);
+        }
+    } catch (err) {
+        alert('Erro ao conectar com a API.');
+    } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    }
+});
+
+document.getElementById('year').textContent = new Date().getFullYear();
+loadMyArea();
+</script>
+</body>
+</html>

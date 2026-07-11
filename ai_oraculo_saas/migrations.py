@@ -187,6 +187,14 @@ MIGRATIONS = [
 
     CREATE INDEX IF NOT EXISTS idx_plan_area_pricing_plan ON plan_area_pricing(plan_id);
     """,
+
+    # 10 — owner_user_id on areas: bases de conhecimento privadas por cliente.
+    # NULL = área global/compartilhada (comportamento de sempre); preenchida =
+    # área exclusiva daquele cliente (ver /api/my-area e meu-portal.html).
+    """
+    ALTER TABLE areas ADD COLUMN IF NOT EXISTS owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL;
+    CREATE INDEX IF NOT EXISTS idx_areas_owner ON areas(owner_user_id);
+    """,
 ]
 
 

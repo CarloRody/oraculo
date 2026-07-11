@@ -32,14 +32,23 @@ def get_db_connection():
 
 @app.route('/api/areas', methods=['GET'])
 def get_areas():
-    """Retorna todas as áreas ativas do banco."""
+    """Retorna as áreas ativas visíveis pra quem está perguntando: áreas
+    globais (owner_user_id NULL) sempre aparecem; uma área privada só aparece
+    pro próprio dono, identificado pela X-Oraculo-Key. Sem chave = só globais."""
+    user_id = resolve_user_from_request()
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Não foi possível conectar ao banco de dados"}), 500
 
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name, slug FROM areas WHERE status = 'active' ORDER BY name")
+        if user_id:
+            cur.execute(
+                "SELECT id, name, slug FROM areas WHERE status = 'active' AND (owner_user_id IS NULL OR owner_user_id = %s) ORDER BY name",
+                (user_id,)
+            )
+        else:
+            cur.execute("SELECT id, name, slug FROM areas WHERE status = 'active' AND owner_user_id IS NULL ORDER BY name")
         rows = cur.fetchall()
         areas = [{"id": r[0], "name": r[1], "slug": r[2]} for r in rows]
 
@@ -49,6 +58,37 @@ def get_areas():
     except Exception as e:
         if conn:
             conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/api/my-area', methods=['GET'])
+def get_my_area():
+    """Base de conhecimento privada de quem está chamando, identificado pela
+    X-Oraculo-Key — usado por meu-portal.html pra saber onde o cliente pode
+    subir conteúdo. area=null quando o admin ainda não criou uma pra ele."""
+    api_key = request.headers.get('X-Oraculo-Key')
+    if not api_key:
+        return jsonify({"error": "Chave de acesso é obrigatória"}), 401
+
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida"}), 401
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, name, slug FROM areas WHERE owner_user_id = %s AND status = 'active'",
+            (user_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        area = {"id": row[0], "name": row[1], "slug": row[2]} if row else None
+        return jsonify({"area": area})
+    except Exception as e:
+        if conn: conn.close()
         return jsonify({"error": str(e)}), 500
 
 
@@ -112,6 +152,10 @@ def create_document():
     is_external = data.get('is_external_link', False)
     content_text = data.get('content_text', '')  # Texto direto (para uploads de arquivo)
     fetch_mode = data.get('fetch_mode') or 'http'
+
+    auth_error = authorize_client_area_write(area_id)
+    if auth_error:
+        return auth_error
 
     conn = get_db_connection()
     if not conn:
@@ -350,6 +394,86 @@ def resolve_area_ids(data):
     return [int(area_id)] if area_id else None
 
 
+def resolve_authorized_area_ids(requested_area_ids, user_id):
+    """Restringe requested_area_ids às áreas que essa chave pode ver: áreas
+    globais (owner_user_id NULL) sempre entram; uma área privada só entra se
+    owner_user_id == user_id. requested_area_ids=None ("todas as áreas") vira
+    explicitamente a lista de áreas autorizadas — nunca deixa "todas" incluir
+    a área privada de outro cliente por omissão.
+
+    Retorna (area_ids_autorizados, houve_pedido_negado). houve_pedido_negado
+    só é True quando area_ids específicos foram pedidos e pelo menos um foi
+    recusado — usado pelo chamador pra devolver 403 se a lista ficar vazia."""
+    conn = get_db_connection()
+    if not conn:
+        return [], bool(requested_area_ids)
+    try:
+        cur = conn.cursor()
+        if requested_area_ids:
+            placeholders = ",".join(["%s"] * len(requested_area_ids))
+            cur.execute(
+                f"SELECT id FROM areas WHERE id IN ({placeholders}) AND (owner_user_id IS NULL OR owner_user_id = %s)",
+                requested_area_ids + [user_id]
+            )
+        else:
+            cur.execute(
+                "SELECT id FROM areas WHERE status = 'active' AND (owner_user_id IS NULL OR owner_user_id = %s)",
+                (user_id,)
+            )
+        authorized = [r[0] for r in cur.fetchall()]
+        conn.close()
+        had_unauthorized = bool(requested_area_ids) and len(authorized) < len(requested_area_ids)
+        return authorized, had_unauthorized
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO resolve_authorized_area_ids: {e}")
+        return [], bool(requested_area_ids)
+
+
+def authorize_client_area_write(area_id):
+    """Trava de escrita pro upload self-service do cliente (meu-portal.html).
+
+    Se a requisição vier SEM X-Oraculo-Key, é uso interno (extract.html/admin
+    na rede local) — não restringe nada, comportamento de sempre. Se vier COM
+    a chave, é contexto de cliente: só libera escrever se `area_id` for
+    exatamente a base de conhecimento privada daquele cliente (chave inválida
+    também é rejeitada — nunca tratamos "chave que não bateu" como "sem
+    chave", senão uma chave errada acabaria com mais acesso que uma certa).
+
+    Retorna None se autorizado, ou uma tupla (response, status) pronta pra
+    devolver direto se não for.
+    """
+    api_key = request.headers.get('X-Oraculo-Key')
+    if not api_key:
+        return None
+
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida"}), 401
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM areas WHERE owner_user_id = %s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+    try:
+        area_id_int = int(area_id) if area_id else None
+    except (TypeError, ValueError):
+        area_id_int = None
+
+    if not row or area_id_int != row[0]:
+        return jsonify({"error": "Você só pode adicionar conteúdo na sua própria base de conhecimento"}), 403
+
+    return None
+
+
 def get_quota_status(user_id, area_id):
     """Cota mensal, uso do mês corrente e preço configurado para um cliente+área,
     resolvidos através do plano de assinatura atual do cliente (vínculo ao vivo —
@@ -503,9 +627,17 @@ def chat():
     if not message:
         return jsonify({"error": "Campo 'message' é obrigatório"}), 400
 
+    # Restringe às áreas que essa chave pode ver — sem isso, uma área privada
+    # de outro cliente poderia vazar tanto por ID explícito quanto por
+    # omissão (area_ids vazio = "todas as áreas", que sem esse filtro
+    # incluiria literalmente todas, inclusive as privadas de terceiros).
+    authorized_area_ids, had_unauthorized_request = resolve_authorized_area_ids(requested_area_ids, user_id)
+    if had_unauthorized_request and not authorized_area_ids:
+        return jsonify({"error": "Nenhuma das áreas pedidas está disponível pra essa chave de acesso."}), 403
+
     try:
-        # Busca chunks relevantes via RAG (uma ou várias áreas, ou todas se None)
-        context_chunks = search_similar(message, area_ids=requested_area_ids, top_k=50)
+        # Busca chunks relevantes via RAG (uma ou várias áreas autorizadas)
+        context_chunks = search_similar(message, area_ids=authorized_area_ids, top_k=50) if authorized_area_ids else []
 
         # Áreas que de fato contribuíram trechos para o contexto — é isso que
         # define a cota/billing, não o que foi pedido (uma área pedida sem
@@ -658,19 +790,27 @@ Pergunta: {message}"""
 
 @app.route('/admin/areas', methods=['GET'])
 def admin_get_areas():
-    """Lista todas as áreas com contagem de documentos."""
+    """Lista todas as áreas com contagem de documentos. owner_user_id/owner_email
+    preenchidos = base de conhecimento privada de um cliente (não uma área global)."""
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "total": 0, "areas": []}), 500
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, name, slug FROM areas WHERE status = 'active' ORDER BY name")
+        cur.execute(
+            """SELECT a.id, a.name, a.slug, a.owner_user_id, u.email
+               FROM areas a LEFT JOIN users u ON u.id = a.owner_user_id
+               WHERE a.status = 'active' ORDER BY a.name"""
+        )
         rows = cur.fetchall()
         areas = []
         for r in rows:
             cur.execute("SELECT count(*) FROM documents WHERE area_id = %s", (r[0],))
             doc_count = cur.fetchone()[0]
-            areas.append({"id": r[0], "name": r[1], "slug": r[2], "doc_count": doc_count})
+            areas.append({
+                "id": r[0], "name": r[1], "slug": r[2], "doc_count": doc_count,
+                "owner_user_id": r[3], "owner_email": r[4]
+            })
         conn.close()
         return jsonify({"total": len(areas), "areas": areas})
     except Exception as e:
@@ -680,9 +820,12 @@ def admin_get_areas():
 
 @app.route('/admin/areas', methods=['POST'])
 def admin_create_area():
-    """Cria uma nova área temática."""
+    """Cria uma nova área temática. owner_user_id opcional (uso interno da ação
+    "Criar base de conhecimento" da aba Clientes) — cria uma área privada,
+    exclusiva daquele cliente, em vez de uma área global."""
     data = request.get_json()
     name = data.get('name', '').strip()
+    owner_user_id = data.get('owner_user_id')
     if not name:
         return jsonify({"error": "Nome é obrigatório"}), 400
     conn = get_db_connection()
@@ -693,13 +836,13 @@ def admin_create_area():
         vector_ref = f"area_{slug}_v1"
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO areas (name, slug, vector_ref, status) VALUES (%s, %s, %s, 'active') RETURNING id",
-            (name, slug, vector_ref)
+            "INSERT INTO areas (name, slug, vector_ref, status, owner_user_id) VALUES (%s, %s, %s, 'active', %s) RETURNING id",
+            (name, slug, vector_ref, owner_user_id)
         )
         area_id = cur.fetchone()[0]
         conn.commit()
         conn.close()
-        return jsonify({"id": area_id, "name": name, "slug": slug}), 201
+        return jsonify({"id": area_id, "name": name, "slug": slug, "owner_user_id": owner_user_id}), 201
     except Exception as e:
         if conn: conn.close()
         return jsonify({"error": str(e)}), 500
@@ -1468,7 +1611,11 @@ def upload_file():
     
     if not area_id or not file.filename:
         return jsonify({"error": "area_id e arquivo são obrigatórios"}), 400
-    
+
+    auth_error = authorize_client_area_write(area_id)
+    if auth_error:
+        return auth_error
+
     # Lê bytes do arquivo
     file_bytes = file.read()
     ext = os.path.splitext(file.filename)[1].lower()
