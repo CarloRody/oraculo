@@ -837,11 +837,13 @@ def call_llm_agent(llm_cfg, system_prompt, user_prompt):
     return text, tokens_input, tokens_output
 
 
-def web_search(query, max_results=6):
+def web_search(query, max_results=8):
     """Consulta o SearXNG local (container Docker, só acessível em
     localhost — evita expor publicamente e evita CORS) e devolve resultados
     (title, url, content). Nunca levanta — lista vazia em qualquer falha
-    (SearXNG fora do ar, timeout, etc.)."""
+    (SearXNG fora do ar, timeout, etc.). max_results=8 (era 6) e corte de
+    1200 caracteres por resultado (era 800) — mais material pro agente de
+    internet sintetizar uma resposta desenvolvida, não só um resumo raso."""
     try:
         resp = _http_requests.get(
             "http://127.0.0.1:8888/search",
@@ -851,7 +853,7 @@ def web_search(query, max_results=6):
         resp.raise_for_status()
         results = resp.json().get("results", [])[:max_results]
         return [{"title": r.get("title", ""), "url": r.get("url", ""),
-                  "content": (r.get("content") or "")[:800]} for r in results]
+                  "content": (r.get("content") or "")[:1200]} for r in results]
     except Exception as e:
         print(f"ERRO web_search: {e}")
         return []
@@ -1079,7 +1081,9 @@ def agent_research():
             "Você é um assistente que responde exclusivamente com base na documentação "
             "oficial fornecida abaixo. Se a documentação não cobrir algum aspecto da "
             "pergunta, diga isso explicitamente — não complete com conhecimento geral. "
-            "Responda em português de forma clara e objetiva."
+            "Desenvolva a resposta com detalhes relevantes do contexto (explicações, "
+            "exemplos, exceções, passos) sempre que a documentação tiver material pra "
+            "isso — não seja desnecessariamente breve. Responda em português."
         )
         official_user_prompt = f"""Contexto da documentação oficial:
 {'=' * 60}
@@ -1097,7 +1101,9 @@ Pergunta: {message}"""
             "Você é um assistente que responde com base em resultados de busca na "
             "internet fornecidos abaixo. Cite as fontes relevantes pelo número entre "
             "colchetes (ex: [1]). Se os resultados não forem suficientes pra responder, "
-            "diga isso explicitamente. Responda em português de forma clara e objetiva."
+            "diga isso explicitamente. Combine as informações dos vários resultados numa "
+            "resposta desenvolvida e completa — não seja desnecessariamente breve. "
+            "Responda em português."
         )
         web_user_prompt = f"""Resultados de busca:
 {'=' * 60}
@@ -1116,8 +1122,10 @@ Pergunta: {message}"""
             "uma fonte complementar, útil pra contextualizar ou preencher lacunas que a "
             "documentação não cobre. Compare as duas respostas, resolva divergências "
             "priorizando SEMPRE a documentação oficial, e produza uma resposta final "
-            "única, clara e completa. Se houver alguma divergência relevante entre as "
-            "duas fontes, aponte isso explicitamente na resposta. Responda em português."
+            "única e completa — desenvolva os pontos relevantes das duas fontes em vez "
+            "de resumir demais, mantendo tudo que for útil pra responder a pergunta com "
+            "profundidade. Se houver alguma divergência relevante entre as duas fontes, "
+            "aponte isso explicitamente na resposta. Responda em português."
         )
         cmp_user_prompt = f"""Pergunta original: {message}
 
