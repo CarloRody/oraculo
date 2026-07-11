@@ -79,9 +79,10 @@ def extract_links(url: str, timeout: int = 60) -> list[dict]:
 
             page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
             html = str(page.content())
+            final_url = page.url
             browser.close()
 
-        links = _parse_links_shared(html)
+        links = _parse_links_shared(html, base_url=final_url)
 
     except Exception as e:
         print(f"Link extraction error for {url}: {e}")
@@ -106,12 +107,13 @@ def fetch_page(url: str, timeout: int = 60) -> Optional[dict]:
 
             page.goto(url, timeout=timeout * 1000, wait_until="domcontentloaded")
             html = str(page.content())
+            final_url = page.url
             browser.close()
 
         return {
             "title": _extract_title_shared(html),
             "text": _extract_text_shared(html),
-            "links": _parse_links_shared(html),
+            "links": _parse_links_shared(html, base_url=final_url),
         }
     except Exception as e:
         print(f"fetch_page (js_browser) error for {url}: {e}")

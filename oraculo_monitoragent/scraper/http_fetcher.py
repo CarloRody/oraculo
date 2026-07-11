@@ -57,7 +57,7 @@ def fetch_page(url: str, timeout: int = 30) -> Optional[dict]:
         return {
             "title": _extract_title_shared(html),
             "text": _extract_text_shared(html),
-            "links": _parse_links_shared(html),
+            "links": _parse_links_shared(html, base_url=res.url),
         }
     except Exception as e:
         print(f"fetch_page (http) error for {url}: {e}")

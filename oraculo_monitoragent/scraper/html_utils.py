@@ -6,6 +6,7 @@ so the two fetch modes produce text/links/title the same way from raw HTML.
 
 import re
 from typing import Optional
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 
@@ -31,8 +32,15 @@ def extract_title(html_str: str) -> Optional[str]:
     return None
 
 
-def parse_links(html_str: str) -> list[dict]:
-    """Extract meaningful links from HTML. Returns list of dicts with keys: name, url, type (pdf/html/txt)."""
+def parse_links(html_str: str, base_url: Optional[str] = None) -> list[dict]:
+    """Extract meaningful links from HTML. Returns list of dicts with keys: name, url, type (pdf/html/txt).
+
+    Most real pages (this one included — see the TDN/Confluence crawl-tree
+    bug) link internally with relative hrefs (`/pages/x`, `pagina.html`),
+    not full `https://...` URLs. Without `base_url` those get dropped
+    entirely, so a page with 200 links could report back only a handful of
+    stray absolute ones. When given, relative hrefs are resolved against it.
+    """
     links = []
     seen_urls = set()
 
@@ -44,8 +52,22 @@ def parse_links(html_str: str) -> list[dict]:
         if not raw_url:
             continue
 
-        # Skip relative / internal / javascript URLs
+        # Skip in-page anchors and non-navigable schemes up front.
+        if raw_url.startswith(("#", "javascript:", "mailto:", "tel:")):
+            continue
+
         if not raw_url.startswith(("http://", "https://")):
+            if not base_url:
+                continue
+            raw_url = urljoin(base_url, raw_url)
+
+        if not raw_url.startswith(("http://", "https://")):
+            continue
+
+        # Drop the fragment (#section) so #-only variants of the same page
+        # don't get treated as distinct links.
+        raw_url = raw_url.split("#", 1)[0]
+        if not raw_url:
             continue
 
         if raw_url in seen_urls:
