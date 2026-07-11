@@ -21,9 +21,12 @@
     var key = urlKey || localStorage.getItem(KEY_STORAGE);
     if (!key) return; // sem chave de cliente = admin, acesso total (comportamento de sempre)
 
-    fetch(location.protocol + '//' + location.hostname + ':5001/api/allowed-pages')
+    // Acesso é por cliente (não mais uma lista global igual pra todo mundo) —
+    // manda a chave pra API resolver as páginas liberadas DESSE cliente.
+    fetch(location.protocol + '//' + location.hostname + ':5001/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            if (!data.restricted) return; // sem restrição configurada pra esse cliente = acesso total
             var allowed = data.pages || [];
             if (allowed.indexOf('backup') === -1) {
                 alert('Você não tem acesso a esta ferramenta.');

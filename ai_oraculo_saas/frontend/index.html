@@ -234,13 +234,16 @@ function setupMaintenanceLinks() {
 }
 
 // Sem chave salva = admin, mostra todos os cards (comportamento de sempre).
-// Com chave salva, esconde os cards de páginas fora da lista liberada.
+// Com chave salva, esconde os cards de páginas fora da lista liberada DESSE
+// cliente — cada cliente tem sua própria lista (configurada no admin, aba
+// Clientes > Acessos), não mais uma lista global igual pra todo mundo.
 async function filterCardsByAllowedPages() {
     const key = getStoredApiKey();
     if (!key) return;
     try {
-        const res = await fetch(`${API}/api/allowed-pages`);
+        const res = await fetch(`${API}/api/allowed-pages`, { headers: { 'X-Oraculo-Key': key } });
         const data = await res.json();
+        if (!data.restricted) return; // sem restrição configurada pra esse cliente = acesso total
         const allowed = new Set(data.pages || []);
         document.querySelectorAll('.cards-grid .card').forEach(card => {
             const href = card.getAttribute('href');

@@ -9,9 +9,15 @@
     // (botão "Sair" no index.html, ou localStorage.removeItem('oraculo_api_key')
     // no console) pra voltar a ser tratado como admin, acesso total.
 
-    fetch(location.protocol + '//' + location.host + '/api/allowed-pages')
+    // Acesso é por cliente (não mais uma lista global igual pra todo mundo) —
+    // manda a chave pra API resolver as páginas liberadas DESSE cliente.
+    fetch(location.protocol + '//' + location.host + '/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            // restricted=false = esse cliente ainda não tem nenhuma restrição
+            // configurada no admin — acesso total, mesma filosofia de "sem
+            // configuração explícita não bloqueia" do resto do sistema.
+            if (!data.restricted) return;
             var allowed = data.pages || [];
             if (allowed.indexOf(page) === -1) {
                 alert('Você não tem acesso a esta página.');

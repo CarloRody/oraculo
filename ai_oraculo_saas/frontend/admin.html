@@ -110,7 +110,6 @@
         <button class="tab-btn" onclick="switchTab('models')">Modelos</button>
         <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
         <button class="tab-btn" onclick="switchTab('clients')">Clientes</button>
-        <button class="tab-btn" onclick="switchTab('access')">Acesso</button>
         <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
     </div>
 
@@ -175,16 +174,6 @@
             <button class="btn" onclick="showClientModal()">+ Novo Cliente</button>
         </div>
         <div id="clients-list" class="card-list"></div>
-    </div>
-
-    <!-- ACESSO -->
-    <div id="access-tab" class="tab-content">
-        <h2 class="section-title" style="border:none; padding:0; margin-bottom:1rem;">Páginas liberadas para clientes</h2>
-        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">Quem não tem uma chave de cliente salva (uso interno/admin) continua com acesso a tudo. Quem tem uma chave de cliente salva só consegue abrir as páginas marcadas aqui.</p>
-        <p style="color:#fbbf24; font-size:0.85rem; margin-bottom:1rem;">⚠ O Painel Admin agora também pode ser restringido. Se você mesmo ficar sem acesso (porque tem uma chave de cliente salva neste navegador), clique em "Sair" no Portal ou limpe a chave salva — isso volta a te tratar como admin, acesso total, na hora.</p>
-        <p style="color:#fbbf24; font-size:0.85rem; margin-bottom:1.25rem;">⚠ Liberar "Análise & Relatórios" mostra dados de consumo de <strong>todos os clientes</strong>, não só do cliente logado.</p>
-        <div id="access-pages-list" class="card-list" style="gap:0.5rem;"></div>
-        <button class="btn" style="margin-top:1rem;" onclick="saveAllowedPages()">Salvar</button>
     </div>
 
     <!-- SAÚDE -->
@@ -312,6 +301,21 @@
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeClientEditModal()">Cancelar</button>
             <button class="btn" onclick="saveClientEdit()">Salvar</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Acessos do Cliente (páginas liberadas — por cliente) -->
+<div class="modal-overlay" id="clientAccessModal">
+    <div class="modal">
+        <h2>Acessos — <span id="accessClientLabel"></span></h2>
+        <input type="hidden" id="accessClientId">
+        <p style="color:#fbbf24; font-size:0.85rem; margin-bottom:1rem;">⚠ O Painel Admin também pode ser restringido. Se você mesmo ficar sem acesso (porque tem uma chave de cliente salva neste navegador), clique em "Sair" no Portal ou limpe a chave salva — isso volta a te tratar como admin, acesso total, na hora.</p>
+        <p style="color:#fbbf24; font-size:0.85rem; margin-bottom:1.25rem;">⚠ Liberar "Análise & Relatórios" mostra dados de consumo de <strong>todos os clientes</strong>, não só deste.</p>
+        <div id="access-pages-list-modal" class="card-list" style="gap:0.5rem;"></div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeClientAccessModal()">Cancelar</button>
+            <button class="btn" onclick="saveClientAccess()">Salvar</button>
         </div>
     </div>
 </div>
@@ -810,6 +814,7 @@ async function loadClients() {
                     <button class="btn btn-sm" onclick="showClientEditModal(${u.id})">Editar</button>
                     <button class="btn btn-sm" onclick="showDepositModal(${u.id}, '${esc(u.email)}')">Lançar Depósito</button>
                     <button class="btn btn-sm" onclick="showExtractModal(${u.id}, '${esc(u.email)}')">Ver Extrato</button>
+                    <button class="btn btn-sm" onclick="showClientAccessModal(${u.id})">Acessos${u.access_restricted ? ' 🔒' : ''}</button>
                     ${ownedArea ? '' : kbHtml}
                 </div>
                 ${ownedArea ? kbHtml : ''}
@@ -1193,7 +1198,7 @@ async function loadHealth() {
     } catch(e) { document.getElementById('health-info').innerHTML = '<p style="color:#ef4444;">Não foi possível conectar ao admin server.</p>'; }
 }
 
-// ---- Acesso (páginas liberadas para clientes) ----
+// ---- Acesso (páginas liberadas — por cliente, botão "Acessos" na aba Clientes) ----
 const ALL_CLIENT_PAGES = [
     { file: 'extract.html', label: 'Extrair Dados' },
     { file: 'rag.html', label: 'Pesquisar RAG' },
@@ -1208,35 +1213,49 @@ const ALL_CLIENT_PAGES = [
     { file: 'backup', label: 'Backup Manager (porta 5004)' },
 ];
 
-async function loadAllowedPages() {
+async function showClientAccessModal(userId) {
+    const client = allClients.find(u => u.id === userId);
+    if (!client) return;
+    document.getElementById('accessClientId').value = userId;
+    document.getElementById('accessClientLabel').textContent = client.email;
+    document.getElementById('access-pages-list-modal').innerHTML = '<p style="color:#64748b;">Carregando...</p>';
+    document.getElementById('clientAccessModal').classList.add('active');
     try {
-        const res = await fetch(ADMIN_API + '/api/allowed-pages');
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}/allowed-pages`);
         const data = await res.json();
+        if (!res.ok) { document.getElementById('access-pages-list-modal').innerHTML = `<p style="color:#ef4444;">${esc(data.error || 'Erro ao carregar.')}</p>`; return; }
         const allowed = new Set(data.pages || []);
-        document.getElementById('access-pages-list').innerHTML = ALL_CLIENT_PAGES.map(p => `
+        const notice = data.restricted
+            ? ''
+            : '<p style="color:#4ade80; font-size:0.85rem; margin-bottom:0.75rem;">Este cliente ainda não tem restrição configurada — tem acesso total. Marque as páginas liberadas e clique em Salvar para restringir (desmarcar tudo bloqueia todas as páginas).</p>';
+        document.getElementById('access-pages-list-modal').innerHTML = notice + ALL_CLIENT_PAGES.map(p => `
             <label class="card-item" style="display:flex; align-items:center; gap:0.75rem; cursor:pointer; padding:0.85rem 1.25rem;">
                 <input type="checkbox" value="${p.file}" ${allowed.has(p.file) ? 'checked' : ''} style="width:18px; height:18px;">
                 <span>${esc(p.label)} <span style="color:#64748b; font-size:0.8rem;">(${p.file})</span></span>
             </label>
         `).join('');
-    } catch(e) { document.getElementById('access-pages-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar páginas liberadas.</p>'; }
+    } catch(e) { document.getElementById('access-pages-list-modal').innerHTML = '<p style="color:#ef4444;">Erro ao carregar páginas liberadas.</p>'; }
 }
 
-async function saveAllowedPages() {
-    const pages = Array.from(document.querySelectorAll('#access-pages-list input[type="checkbox"]:checked')).map(el => el.value);
+function closeClientAccessModal() { document.getElementById('clientAccessModal').classList.remove('active'); }
+
+async function saveClientAccess() {
+    const userId = document.getElementById('accessClientId').value;
+    const pages = Array.from(document.querySelectorAll('#access-pages-list-modal input[type="checkbox"]:checked')).map(el => el.value);
     try {
-        const res = await fetch(ADMIN_API + '/admin/allowed-pages', {
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}/allowed-pages`, {
             method: 'PUT', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ pages })
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar.');
-        alert('Páginas liberadas atualizadas.');
+        closeClientAccessModal();
+        loadClients();
     } catch(e) { alert('Erro ao salvar.'); }
 }
 
 // ---- Init ----
-loadStats(); loadDocs(); loadHealth(); loadModels(); loadAllowedPages();
+loadStats(); loadDocs(); loadHealth(); loadModels();
 // loadClients() lê allAreas (marca quem já tem base de conhecimento própria),
 // então precisa esperar loadAreas() terminar antes de rodar.
 Promise.all([loadAreas(), loadPlans()]).then(loadClients);

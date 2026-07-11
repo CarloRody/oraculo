@@ -1560,7 +1560,7 @@ def admin_list_users():
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT u.id, u.email, u.api_key, u.created_at, u.plan_id, p.name, u.balance
+            """SELECT u.id, u.email, u.api_key, u.created_at, u.plan_id, p.name, u.balance, u.access_restricted
                FROM users u LEFT JOIN plans p ON p.id = u.plan_id
                ORDER BY u.email"""
         )
@@ -1572,7 +1572,8 @@ def admin_list_users():
                 "api_key": r[2],
                 "created_at": r[3].isoformat() if r[3] else None,
                 "plan_id": r[4], "plan_name": r[5],
-                "balance": float(r[6])
+                "balance": float(r[6]),
+                "access_restricted": bool(r[7])
             })
         conn.close()
         return jsonify({"total": len(users), "users": users})
@@ -2392,29 +2393,65 @@ def health_check():
 
 @app.route('/api/allowed-pages', methods=['GET'])
 def get_allowed_pages():
-    """Lista pública (sem chave) das páginas liberadas pra clientes — usada
-    por access-guard.js em toda página e pelo index.html pra filtrar cards.
-    Sem chave de cliente salva no navegador, essa lista nem é consultada
-    (admin/uso interno tem acesso total, comportamento de sempre)."""
+    """Páginas liberadas para O CLIENTE identificado por X-Oraculo-Key — cada
+    cliente tem sua própria lista (configurada em
+    /admin/users/<id>/allowed-pages), não mais uma lista global igual pra
+    todo mundo. Usada por access-guard.js em toda página e pelo index.html
+    pra filtrar cards. Sem chave de cliente salva no navegador, ou cliente
+    que ainda não teve nenhuma restrição configurada (access_restricted
+    false) = acesso total, sem checagem (comportamento de sempre)."""
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"pages": [], "restricted": False})
     conn = get_db_connection()
     if not conn:
-        return jsonify({"pages": []}), 500
+        return jsonify({"pages": [], "restricted": False}), 500
     try:
         cur = conn.cursor()
-        cur.execute("SELECT page FROM client_allowed_pages ORDER BY page")
+        cur.execute("SELECT access_restricted FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        restricted = bool(row[0]) if row else False
+        cur.execute("SELECT page FROM client_allowed_pages WHERE user_id = %s ORDER BY page", (user_id,))
         pages = [r[0] for r in cur.fetchall()]
         conn.close()
-        return jsonify({"pages": pages})
+        return jsonify({"pages": pages, "restricted": restricted})
     except Exception as e:
         if conn: conn.close()
-        return jsonify({"pages": [], "error": str(e)}), 500
+        return jsonify({"pages": [], "restricted": False, "error": str(e)}), 500
 
 
-@app.route('/admin/allowed-pages', methods=['PUT'])
-def admin_set_allowed_pages():
-    """Substitui a lista inteira de páginas liberadas pra clientes — o
-    formulário do admin sempre manda a lista completa marcada, mesmo padrão
-    de _replace_plan_area_pricing."""
+@app.route('/admin/users/<int:user_id>/allowed-pages', methods=['GET'])
+def admin_get_user_allowed_pages(user_id):
+    """Páginas liberadas configuradas para UM cliente específico — usada pelo
+    modal "Acessos" na aba Clientes do admin. restricted=false quer dizer que
+    esse cliente ainda não tem nenhuma restrição salva (acesso total)."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT access_restricted FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Cliente não encontrado"}), 404
+        cur.execute("SELECT page FROM client_allowed_pages WHERE user_id = %s ORDER BY page", (user_id,))
+        pages = [r[0] for r in cur.fetchall()]
+        conn.close()
+        return jsonify({"pages": pages, "restricted": bool(row[0])})
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/users/<int:user_id>/allowed-pages', methods=['PUT'])
+def admin_set_user_allowed_pages(user_id):
+    """Substitui a lista de páginas liberadas de UM cliente e marca
+    access_restricted=true nele — a partir daqui esse cliente só enxerga o
+    que estiver marcado. Desmarcar tudo e salvar bloqueia o cliente de TODAS
+    as páginas, de propósito: é diferente de nunca ter configurado nada
+    (access_restricted continua false pra qualquer cliente que o admin nunca
+    tenha salvo aqui, e nesse caso o acesso continua total)."""
     data = request.get_json()
     pages = data.get('pages') or []
     conn = get_db_connection()
@@ -2422,12 +2459,16 @@ def admin_set_allowed_pages():
         return jsonify({"error": "Banco indisponível"}), 500
     try:
         cur = conn.cursor()
-        cur.execute("DELETE FROM client_allowed_pages")
+        cur.execute("UPDATE users SET access_restricted = TRUE WHERE id = %s", (user_id,))
+        if cur.rowcount == 0:
+            conn.close()
+            return jsonify({"error": "Cliente não encontrado"}), 404
+        cur.execute("DELETE FROM client_allowed_pages WHERE user_id = %s", (user_id,))
         for p in pages:
-            cur.execute("INSERT INTO client_allowed_pages (page) VALUES (%s) ON CONFLICT DO NOTHING", (p,))
+            cur.execute("INSERT INTO client_allowed_pages (user_id, page) VALUES (%s, %s) ON CONFLICT DO NOTHING", (user_id, p))
         conn.commit()
         conn.close()
-        return jsonify({"pages": pages})
+        return jsonify({"pages": pages, "restricted": True})
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         return jsonify({"error": str(e)}), 500

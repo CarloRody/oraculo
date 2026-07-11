@@ -62,7 +62,8 @@ CREATE TABLE IF NOT EXISTS users (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     api_key VARCHAR(64) UNIQUE, -- Chave de acesso do cliente (1 cliente = 1 chave), usada em /api/chat
     plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL, -- Plano de assinatura atual (cota/preço por área vêm daqui, vínculo ao vivo)
-    balance NUMERIC(12,4) NOT NULL DEFAULT 0 -- Saldo de créditos pré-pago em R$
+    balance NUMERIC(12,4) NOT NULL DEFAULT 0, -- Saldo de créditos pré-pago em R$
+    access_restricted BOOLEAN NOT NULL DEFAULT FALSE -- false = sem restrição de páginas configurada ainda (acesso total); true = só as páginas em client_allowed_pages
 );
 
 -- 5. Tabela: documents (Unificada com links e conteúdo processado)
@@ -155,11 +156,14 @@ CREATE TABLE IF NOT EXISTS credit_transactions (
     created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
--- 12. Tabela: client_allowed_pages (Controle de acesso a páginas — lista
--- única e global das páginas que clientes com X-Oraculo-Key podem abrir;
--- sem chave salva no navegador = admin/uso interno, acesso total)
+-- 12. Tabela: client_allowed_pages (Controle de acesso a páginas, por
+-- cliente — cada user_id tem sua própria lista; só é aplicada quando
+-- users.access_restricted = true para aquele cliente. Sem chave salva no
+-- navegador = admin/uso interno, acesso total, sempre)
 CREATE TABLE IF NOT EXISTS client_allowed_pages (
-    page VARCHAR(100) PRIMARY KEY
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    page VARCHAR(100) NOT NULL,
+    PRIMARY KEY (user_id, page)
 );
 
 -- ==========================================
@@ -177,3 +181,4 @@ CREATE INDEX idx_usage_logs_timestamp ON usage_logs(timestamp);
 CREATE INDEX idx_usage_logs_user_area_time ON usage_logs(user_id, area_id, timestamp);
 CREATE INDEX idx_plan_area_pricing_plan ON plan_area_pricing(plan_id);
 CREATE INDEX idx_credit_transactions_user_time ON credit_transactions(user_id, created_at DESC);
+CREATE INDEX idx_client_allowed_pages_user ON client_allowed_pages(user_id);

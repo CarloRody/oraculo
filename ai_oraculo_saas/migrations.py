@@ -251,6 +251,49 @@ MIGRATIONS = [
     """
     ALTER TABLE ai_models ADD COLUMN IF NOT EXISTS pro_high_multiplier NUMERIC(5,2) NOT NULL DEFAULT 1.00;
     """,
+
+    # 14 — controle de acesso por CLIENTE, não mais uma lista global aplicada
+    # a todo mundo com chave (inclusive o próprio dono da conta, quando ele
+    # usa a própria chave de cliente). access_restricted=false (padrão pra
+    # clientes novos) = sem restrição configurada ainda, acesso total; true =
+    # só as páginas marcadas em client_allowed_pages pra aquele user_id.
+    # Diferente do resto das migrações deste arquivo, esta reestrutura dados
+    # existentes de propósito (pedido explícito) — o backfill abaixo replica
+    # a lista global que existia pra cada cliente já cadastrado, preservando
+    # o acesso que cada um já tinha até aqui.
+    """
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS access_restricted BOOLEAN NOT NULL DEFAULT FALSE;
+
+    ALTER TABLE client_allowed_pages ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id) ON DELETE CASCADE;
+
+    DO $$
+    BEGIN
+        IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'client_allowed_pages_pkey') THEN
+            ALTER TABLE client_allowed_pages DROP CONSTRAINT client_allowed_pages_pkey;
+        END IF;
+    END $$;
+
+    INSERT INTO client_allowed_pages (user_id, page)
+    SELECT u.id, cap.page
+    FROM users u
+    CROSS JOIN (SELECT page FROM client_allowed_pages WHERE user_id IS NULL) cap;
+
+    UPDATE users SET access_restricted = TRUE
+    WHERE EXISTS (SELECT 1 FROM client_allowed_pages WHERE user_id IS NULL);
+
+    DELETE FROM client_allowed_pages WHERE user_id IS NULL;
+
+    ALTER TABLE client_allowed_pages ALTER COLUMN user_id SET NOT NULL;
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'client_allowed_pages_user_page_pkey') THEN
+            ALTER TABLE client_allowed_pages ADD CONSTRAINT client_allowed_pages_user_page_pkey PRIMARY KEY (user_id, page);
+        END IF;
+    END $$;
+
+    CREATE INDEX IF NOT EXISTS idx_client_allowed_pages_user ON client_allowed_pages(user_id);
+    """,
 ]
 
 
