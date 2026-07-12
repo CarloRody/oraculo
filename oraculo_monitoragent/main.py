@@ -76,7 +76,9 @@ STATIC_DIR = Path(__file__).parent / "public"
 def serve_frontend():
     index_path = STATIC_DIR / "index.html"
     if index_path.exists():
-        return FileResponse(str(index_path))
+        # no-cache — sem isso o navegador pode servir uma cópia velha do
+        # dashboard sem revalidar com o servidor depois de um deploy novo.
+        return FileResponse(str(index_path), headers={"Cache-Control": "no-cache"})
     return {"message": "Frontend not found. Create public/index.html"}
 
 if STATIC_DIR.exists():

@@ -216,7 +216,7 @@ input:focus,select:focus{outline:none;border-color:#e94560}
   </div>
 </div>
 <div id="crawlStatus" style="color:#9fb3d9;font-size:.85rem;margin-bottom:10px"></div>
-<div id="crawlContainer"><p style="color:#888">Clique em "🌳 Árvore" numa URL monitorada pra começar. Cada página que você aprovar vira um documento próprio no Oráculo, ligado ao documento da página que o originou.</p></div>
+<div id="crawlContainer"><p style="color:#888">Clique em "🌳 Árvore" numa URL monitorada pra começar. Cada página que você aprovar vira um documento próprio no Oráculo, ligado ao documento da página que o originou. Durante a árvore, marque "Monitorar esta página" nos nós que quiser reconferir automaticamente depois (👁 Adicionar ao Monitoramento) — sem isso, os documentos criados pela árvore não entram no scan automático.</p></div>
 </div>
 
 </div>
@@ -557,7 +557,7 @@ async function crawlCancel() {
   try {
     const r = await api(`/crawl/${currentCrawl.crawl_id}/cancel`, { method: 'POST' });
     showToast(`Árvore cancelada — ${r.documents_deleted} documento(s) removido(s).`);
-    document.getElementById('crawlContainer').innerHTML = '<p style="color:#888">Clique em "🌳 Árvore" numa URL monitorada pra começar.</p>';
+    document.getElementById('crawlContainer').innerHTML = '<p style="color:#888">Clique em "🌳 Árvore" numa URL monitorada pra começar. Durante a árvore, marque "Monitorar esta página" nos nós que quiser reconferir automaticamente depois.</p>';
     document.getElementById('crawlStatus').textContent = '';
     document.getElementById('crawlHeaderActions').style.display = 'none';
     currentCrawl = null;
