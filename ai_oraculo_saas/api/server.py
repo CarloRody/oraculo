@@ -1632,7 +1632,16 @@ def admin_update_document(doc_id):
     Trocar a URL ou o método de busca limpa o content_text existente (a menos
     que um novo content_text já venha junto no mesmo request), forçando uma
     nova extração da URL da próxima vez que 'Reprocessar RAG' for chamado —
-    sem isso, o pipeline reaproveitaria o texto extraído com o método antigo."""
+    sem isso, o pipeline reaproveitaria o texto extraído com o método antigo.
+
+    Trocar a área CASCATEIA pra subárvore inteira (o documento + todos os
+    descendentes via parent_doc_id) — sem isso, os filhos ficavam pra trás
+    na área antiga: continuavam aparecendo aninhados na árvore (que usa
+    parent_doc_id, não area_id, pro desenho), mas a busca/RAG, que filtra
+    por area_id de verdade, não os encontrava mais na área nova. Os outros
+    campos (nome/URL/status/etc) continuam exclusivos do documento editado —
+    só a área, que é o que define onde o conteúdo aparece pra busca,
+    cascateia."""
     data = request.get_json()
     conn = get_db_connection()
     if not conn:
@@ -1645,6 +1654,15 @@ def admin_update_document(doc_id):
             conn.close()
             return jsonify({"error": "Documento não encontrado"}), 404
         current_url, current_fetch_mode = row[0], row[1] or "http"
+
+        area_id_given = 'area_id' in data and bool(data.get('area_id'))
+        new_area_id = None
+        if area_id_given:
+            new_area_id = data.get('area_id')
+            cur.execute("SELECT id FROM areas WHERE id = %s AND status = 'active'", (new_area_id,))
+            if not cur.fetchone():
+                conn.close()
+                return jsonify({"error": "Área não encontrada ou inativa"}), 404
 
         fields = {}
         if 'name' in data:
@@ -1659,13 +1677,6 @@ def admin_update_document(doc_id):
             fields['status'] = data.get('status')
         if 'fetch_mode' in data and data.get('fetch_mode'):
             fields['fetch_mode'] = data.get('fetch_mode')
-        if 'area_id' in data and data.get('area_id'):
-            new_area_id = data.get('area_id')
-            cur.execute("SELECT id FROM areas WHERE id = %s AND status = 'active'", (new_area_id,))
-            if not cur.fetchone():
-                conn.close()
-                return jsonify({"error": "Área não encontrada ou inativa"}), 404
-            fields['area_id'] = new_area_id
 
         if 'content_text' in data:
             fields['content_text'] = data.get('content_text') or None
@@ -1676,19 +1687,33 @@ def admin_update_document(doc_id):
                 fields['content_text'] = None
                 fields['processing_status'] = 'pending'
 
-        if not fields:
+        if not fields and not area_id_given:
             conn.close()
             return jsonify({"error": "Nada para atualizar"}), 400
 
-        set_clause = ", ".join(f"{k} = %s" for k in fields)
-        cur.execute(f"UPDATE documents SET {set_clause} WHERE id = %s", list(fields.values()) + [doc_id])
+        if fields:
+            set_clause = ", ".join(f"{k} = %s" for k in fields)
+            cur.execute(f"UPDATE documents SET {set_clause} WHERE id = %s", list(fields.values()) + [doc_id])
 
-        if 'area_id' in fields:
-            cur.execute("UPDATE document_chunks SET area_id = %s WHERE doc_id = %s", (fields['area_id'], doc_id))
+        moved_count = 1
+        if area_id_given:
+            cur.execute(
+                """WITH RECURSIVE subtree AS (
+                       SELECT id FROM documents WHERE id = %s
+                       UNION ALL
+                       SELECT d.id FROM documents d JOIN subtree s ON d.parent_doc_id = s.id
+                   )
+                   SELECT id FROM subtree""",
+                (doc_id,)
+            )
+            subtree_ids = [r[0] for r in cur.fetchall()]
+            cur.execute("UPDATE documents SET area_id = %s WHERE id = ANY(%s)", (new_area_id, subtree_ids))
+            cur.execute("UPDATE document_chunks SET area_id = %s WHERE doc_id = ANY(%s)", (new_area_id, subtree_ids))
+            moved_count = len(subtree_ids)
 
         conn.commit()
         conn.close()
-        return jsonify({"message": f"Documento {doc_id} atualizado"})
+        return jsonify({"message": f"Documento {doc_id} atualizado", "moved_count": moved_count})
     except Exception as e:
         if conn: conn.rollback(); conn.close()
         return jsonify({"error": str(e)}), 500

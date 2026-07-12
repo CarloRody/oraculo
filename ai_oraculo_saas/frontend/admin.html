@@ -224,6 +224,7 @@
         <h2>Editar Documento</h2>
         <input type="hidden" id="editDocId">
         <input type="hidden" id="editDocOriginalContent">
+        <input type="hidden" id="editDocOriginalAreaId">
         <div class="form-group">
             <label>Nome</label>
             <input type="text" class="form-input" id="docEditName">
@@ -735,6 +736,7 @@ async function showDocEditModal(docId) {
         const select = document.getElementById('docEditArea');
         select.innerHTML = allAreas.map(a => `<option value="${a.id}">${a.name}</option>`).join('');
         select.value = doc.area_id;
+        document.getElementById('editDocOriginalAreaId').value = doc.area_id;
 
         document.getElementById('docEditModal').classList.add('active');
     } catch(e) { alert('Erro ao carregar documento.'); }
@@ -763,6 +765,9 @@ async function saveDocEdit() {
     const originalContent = document.getElementById('editDocOriginalContent').value;
     if (newContent !== originalContent) payload.content_text = newContent;
 
+    const originalAreaId = Number(document.getElementById('editDocOriginalAreaId').value);
+    const areaChanged = payload.area_id !== originalAreaId;
+
     try {
         const res = await fetch(ADMIN_API + `/admin/documents/${id}`, {
             method: 'PATCH',
@@ -772,6 +777,11 @@ async function saveDocEdit() {
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar documento.');
         closeDocEditModal();
+        // moved_count > 1 = a troca de área cascateou pra filhos na árvore
+        // (parent_doc_id) — avisa quantos documentos foram junto.
+        if (areaChanged && data.moved_count > 1) {
+            alert(`Documento e mais ${data.moved_count - 1} filho(s) na árvore movidos pra nova área.`);
+        }
         loadDocs(); loadStats(); loadAreas();
     } catch(e) { alert('Erro ao salvar documento.'); }
 }
