@@ -32,6 +32,19 @@ def extract_title(html_str: str) -> Optional[str]:
     return None
 
 
+def classify_link_type(url: str) -> str:
+    """Classify a URL by file extension. Returns 'pdf' | 'txt' | 'html'.
+    Shared by parse_links() and unified_fetcher.py so the direct-file
+    detection (is the monitored URL itself a pdf/txt?) uses the exact same
+    extension rules as link classification, instead of duplicating them."""
+    lower_url = url.lower()
+    if lower_url.endswith(".pdf"):
+        return "pdf"
+    if lower_url.endswith((".txt", ".csv", ".xml")):
+        return "txt"
+    return "html"
+
+
 def parse_links(html_str: str, base_url: Optional[str] = None) -> list[dict]:
     """Extract meaningful links from HTML. Returns list of dicts with keys: name, url, type (pdf/html/txt).
 
@@ -82,13 +95,7 @@ def parse_links(html_str: str, base_url: Optional[str] = None) -> list[dict]:
         else:
             clean_name = clean_name[:100]
 
-        lower_url = raw_url.lower()
-        if lower_url.endswith(".pdf"):
-            link_type = "pdf"
-        elif lower_url.endswith((".txt", ".csv", ".xml")):
-            link_type = "txt"
-        else:
-            link_type = "html"
+        link_type = classify_link_type(raw_url)
 
         links.append({
             "name": clean_name,

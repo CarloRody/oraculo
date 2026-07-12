@@ -8,17 +8,26 @@ Supports two fetch modes:
 import time
 from typing import Optional
 
-from scraper.http_fetcher import fetch_text as _fetch_http
+from scraper.unified_fetcher import fetch_unified_content
 from monitor.hasher import content_hash, compare
+from config import MONITOR_CONFIG
+
+_ATTACHMENTS_CFG = MONITOR_CONFIG.get("attachments", {})
 
 
 def _fetch_content(url: str, fetch_mode: str = "http", timeout: int = 60) -> Optional[str]:
-    """Fetch content using the appropriate method based on fetch_mode."""
-    if fetch_mode == "js_browser":
-        from scraper.js_renderer import fetch_text as _fetch_js
-        return _fetch_js(url, timeout=timeout)
-    else:
-        return _fetch_http(url, timeout=timeout)
+    """Fetch content using the appropriate method based on fetch_mode, unified
+    with any same-domain PDF/TXT attachments the page links to (see
+    scraper/unified_fetcher.py) — so a change to an attached PDF is also
+    detected, not just changes to the index page's own HTML text."""
+    return fetch_unified_content(
+        url,
+        fetch_mode=fetch_mode,
+        timeout=timeout,
+        max_attachments=_ATTACHMENTS_CFG.get("max_per_page", 15),
+        max_attachment_bytes=_ATTACHMENTS_CFG.get("max_bytes", 15_000_000),
+        attachment_timeout=_ATTACHMENTS_CFG.get("fetch_timeout", 15),
+    )
 
 
 def scan_url(url_data: dict) -> dict:

@@ -251,10 +251,13 @@ def delete_url(url_id: int):
 from monitor.scanner import scan_url as _scan_single, scan_all as _scan_all
 
 
-def _process_rag_for_change(result: dict, url_data: dict):
-    """When a URL changed, save content to Tutor DB and run RAG pipeline.
+def _process_rag_for_change(result: dict, url_data: dict, scan_id: int | None = None):
+    """When a URL changed, save content to Tutor DB and run RAG pipeline —
+    or, if a document already exists for this URL, queue the new content as
+    a pending version instead of overwriting it (see document_versions;
+    admin must review+apply via POST /versions/{id}/apply).
 
-    Returns a dict with rag processing results (or empty on skip/failure).
+    Returns a dict with rag/version processing results (or empty on skip/failure).
     """
     text = result.get("_text")
     if not text:
@@ -276,8 +279,16 @@ def _process_rag_for_change(result: dict, url_data: dict):
         # documento já existente.
         existing_doc_id = rw.find_existing_document(area_id, url)
         if existing_doc_id:
-            rag_result = rw.reprocess_existing(existing_doc_id, text)
-            return {"rag_ok": True, "doc_id": existing_doc_id, **rag_result}
+            version_id = rw.create_pending_version(
+                document_id=existing_doc_id,
+                url_id=url_data.get("id"),
+                scan_id=scan_id,
+                content_text=text,
+                content_hash=result.get("content_hash"),
+            )
+            if not version_id:
+                return {"rag_ok": False, "error": "Failed to create pending version"}
+            return {"version_pending": True, "version_id": version_id, "doc_id": existing_doc_id}
 
         doc_id = rw.create_document_in_tutor(
             name=f"{name} — {url}",
@@ -293,8 +304,6 @@ def _process_rag_for_change(result: dict, url_data: dict):
     except Exception as e:
         print(f"RAG processing error for URL {url_data.get('id')}: {e}")
         return {"rag_ok": False, "error": str(e)}
-
-    return {}
 
 
 def persist_scan(result: dict, url_data: dict | None = None):
@@ -312,7 +321,7 @@ def persist_scan(result: dict, url_data: dict | None = None):
             """INSERT INTO monitor_scans
                (url_id, content_hash, status, change_type, docs_created,
                 docs_updated, duration_seconds, error_message)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (
                 url_id,
                 clean["content_hash"],
@@ -324,7 +333,11 @@ def persist_scan(result: dict, url_data: dict | None = None):
                 clean.get("error_message"),
             ),
         )
-        # Update URL's hash and last_fetched_at if not error
+        scan_id = cur.fetchone()[0]
+        # Update URL's hash and last_fetched_at if not error — done
+        # immediately regardless of whether the change ends up applied or
+        # rejected, so unreviewed content isn't re-flagged as "changed"
+        # again on every subsequent scan.
         if clean["status"] != "error":
             cur.execute(
                 "UPDATE monitor_urls SET last_content_hash = %s, last_fetched_at = NOW() WHERE id = %s",
@@ -334,26 +347,31 @@ def persist_scan(result: dict, url_data: dict | None = None):
     finally:
         conn.close()
 
-    # RAG: if content changed and we have text + context, index it
+    clean["scan_id"] = scan_id
+
+    # RAG: if content changed and we have text + context, index it (or queue
+    # a pending version for review — see _process_rag_for_change)
     rag_info = {}
     if clean["status"] in ("new", "changed") and text_for_rag and url_data:
-        rag_info = _process_rag_for_change(result, url_data)
-        # Update scan record with actual RAG results
-        if rag_info.get("rag_ok"):
+        rag_info = _process_rag_for_change(result, url_data, scan_id)
+        # Update scan record with actual RAG/version results
+        if rag_info.get("rag_ok") or rag_info.get("version_pending"):
             conn2 = get_db()
             try:
                 cur2 = conn2.cursor()
-                scan_id = clean.get("id")  # not available yet; update by url_id+hash instead
-                cur2.execute(
-                    """UPDATE monitor_scans SET docs_created = %s, docs_updated = %s,
-                       error_message = CASE WHEN status = 'new' THEN 'rag_indexed'
-                                           ELSE 'rag_reindexed' END
-                    WHERE url_id = %s AND content_hash = %s AND id = (
-                        SELECT max(id) FROM monitor_scans WHERE url_id = %s AND content_hash = %s
-                    )""",
-                    (rag_info.get("chunks_created", 0), rag_info.get("saved_count", 0),
-                     url_id, clean["content_hash"], url_id, clean["content_hash"]),
-                )
+                if rag_info.get("version_pending"):
+                    cur2.execute(
+                        "UPDATE monitor_scans SET docs_updated = 1, error_message = 'version_pending' WHERE id = %s",
+                        (scan_id,),
+                    )
+                else:
+                    cur2.execute(
+                        """UPDATE monitor_scans SET docs_created = %s, docs_updated = %s,
+                           error_message = CASE WHEN status = 'new' THEN 'rag_indexed'
+                                               ELSE 'rag_reindexed' END
+                        WHERE id = %s""",
+                        (rag_info.get("chunks_created", 0), rag_info.get("saved_count", 0), scan_id),
+                    )
                 conn2.commit()
             finally:
                 conn2.close()
@@ -926,6 +944,10 @@ def dashboard_data():
         )
         areas = [dict(r) for r in cur.fetchall()]
 
+        # Mudanças pendentes de revisão — alimenta o badge do painel
+        cur.execute("SELECT count(*) AS n FROM document_versions WHERE status = 'pending'")
+        pending_versions_count = cur.fetchone()["n"]
+
     finally:
         conn.close()
 
@@ -935,7 +957,174 @@ def dashboard_data():
         "extracted_links": links,
         "tutor_stats": {"documents": tutor_docs, "chunks": tutor_chunks},
         "areas": areas,
+        "pending_versions_count": pending_versions_count,
     }
+
+
+# ---------------------------------------------------------------------------
+# Routes — Document Versions (revisão de mudanças detectadas)
+#
+# Quando um scan detecta que um documento já existente mudou, o conteúdo
+# novo vira uma versão 'pending' aqui (ver _process_rag_for_change) em vez
+# de sobrescrever na hora. O admin revisa o diff contra o conteúdo atual e
+# decide aplicar ou rejeitar.
+# ---------------------------------------------------------------------------
+
+@app.get("/versions")
+def list_versions(status: str | None = None, document_id: int | None = None, limit: int = 100):
+    """Lista versões (sem content_text inteiro — pode ser um PDF grande,
+    mantém o payload leve). Usado tanto pelo painel de pendências
+    (?status=pending) quanto pelo histórico por documento (?document_id=)."""
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        clauses = []
+        params: list = []
+        if status:
+            clauses.append("dv.status = %s")
+            params.append(status)
+        if document_id:
+            clauses.append("dv.document_id = %s")
+            params.append(document_id)
+        where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        params.append(limit)
+        cur.execute(
+            f"""SELECT dv.id, dv.document_id, dv.url_id, dv.scan_id, dv.content_hash, dv.status,
+                       dv.detected_at, dv.reviewed_at, length(dv.content_text) AS content_length,
+                       d.name AS document_name, d.url AS document_url,
+                       u.name AS monitor_url_name
+                FROM document_versions dv
+                JOIN documents d ON d.id = dv.document_id
+                LEFT JOIN monitor_urls u ON u.id = dv.url_id
+                {where}
+                ORDER BY dv.detected_at DESC LIMIT %s""",
+            params,
+        )
+        rows = [dict(r) for r in cur.fetchall()]
+        for r in rows:
+            for field in ("detected_at", "reviewed_at"):
+                if r.get(field):
+                    r[field] = str(r[field])
+        return {"versions": rows, "total": len(rows)}
+    finally:
+        conn.close()
+
+
+@app.get("/versions/{version_id}/diff")
+def version_diff(version_id: int):
+    """Diff por palavra entre a versão e o conteúdo atual (última versão
+    aprovada) do documento. O texto extraído (HTML ou PDF) já vem sem
+    quebras de linha — normalizado em espaço único por extract_text()/
+    extract_pdf_text() — então diff por linha trataria o documento inteiro
+    como uma única linha; diff por palavra (SequenceMatcher sobre tokens)
+    é o que realmente produz segmentos úteis pra colorir na tela."""
+    import difflib
+
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """SELECT dv.*, d.name AS document_name, d.content_text AS live_content_text
+               FROM document_versions dv JOIN documents d ON d.id = dv.document_id
+               WHERE dv.id = %s""",
+            (version_id,),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        raise HTTPException(404, "Version not found")
+
+    live_tokens = (row["live_content_text"] or "").split()
+    version_tokens = (row["content_text"] or "").split()
+    # autojunk=False: o heurístico padrão do SequenceMatcher assume código-fonte
+    # (penaliza tokens muito repetidos), o que distorce diffs de texto em
+    # linguagem natural com palavras comuns repetidas várias vezes.
+    sm = difflib.SequenceMatcher(None, live_tokens, version_tokens, autojunk=False)
+
+    segments = []
+    for tag, i1, i2, j1, j2 in sm.get_opcodes():
+        if tag == "equal":
+            segments.append({"op": "equal", "text": " ".join(live_tokens[i1:i2])})
+        else:
+            if i1 != i2:
+                segments.append({"op": "delete", "text": " ".join(live_tokens[i1:i2])})
+            if j1 != j2:
+                segments.append({"op": "insert", "text": " ".join(version_tokens[j1:j2])})
+
+    return {
+        "version_id": version_id,
+        "document_id": row["document_id"],
+        "document_name": row["document_name"],
+        "status": row["status"],
+        "detected_at": str(row["detected_at"]) if row["detected_at"] else None,
+        "diff": segments,
+        "live_length": len(row["live_content_text"] or ""),
+        "version_length": len(row["content_text"] or ""),
+    }
+
+
+@app.post("/versions/{version_id}/apply")
+def apply_version(version_id: int):
+    """Aplica a versão pendente: sobrescreve documents.content_text e
+    reprocessa via rag_wrapper.reprocess_existing() — a mesma função que já
+    fazia essa sobrescrita direto antes desta feature existir, reaproveitada
+    aqui em vez de duplicada."""
+    import rag_wrapper as rw
+
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT * FROM document_versions WHERE id = %s", (version_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+
+    if not row:
+        raise HTTPException(404, "Version not found")
+    if row["status"] != "pending":
+        raise HTTPException(409, f"Version already '{row['status']}'")
+
+    rag_result = rw.reprocess_existing(row["document_id"], row["content_text"])
+
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE document_versions SET status='applied', reviewed_at=NOW() WHERE id=%s",
+            (version_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {"applied": True, "document_id": row["document_id"], **rag_result}
+
+
+@app.post("/versions/{version_id}/reject")
+def reject_version(version_id: int):
+    """Rejeita a versão pendente — documents.content_text nunca é tocado
+    aqui (só apply_version escreve nele)."""
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """UPDATE document_versions SET status='rejected', reviewed_at=NOW()
+               WHERE id=%s AND status='pending' RETURNING *""",
+            (version_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            cur.execute("SELECT status FROM document_versions WHERE id=%s", (version_id,))
+            existing = cur.fetchone()
+            if not existing:
+                raise HTTPException(404, "Version not found")
+            raise HTTPException(409, f"Version already '{existing['status']}'")
+        conn.commit()
+        return {"rejected": True, "document_id": row["document_id"]}
+    finally:
+        conn.close()
 
 
 # ---------------------------------------------------------------------------

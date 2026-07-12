@@ -33,6 +33,10 @@ monitor_agent:
     reload: false
   fetch_timeout: 30
   default_cron: "0 6 * * 0"
+  attachments:
+    max_per_page: 15        # máx. de PDFs/TXTs baixados por página monitorada
+    max_bytes: 15000000     # ~15MB por anexo, protege a placa de 3.8GB
+    fetch_timeout: 15        # segundos, por anexo
 
 backup_manager:
   backup_dir: /root/backup

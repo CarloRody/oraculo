@@ -127,6 +127,30 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_monitor_crawl_pages_crawl ON monitor_crawl_pages(crawl_id);
     CREATE INDEX IF NOT EXISTS idx_monitor_crawl_pages_parent ON monitor_crawl_pages(parent_page_id);
     """,
+
+    # 7 — document_versions: quando um scan detecta que um documento já
+    # indexado mudou, o conteúdo novo vira uma versão 'pending' aqui em vez
+    # de sobrescrever documents.content_text na hora — só uma aprovação
+    # manual (POST /versions/{id}/apply) aplica de fato. documents.content_text
+    # sempre reflete a última versão aprovada, então o diff é sempre contra
+    # ela, sem precisar guardar um snapshot "anterior" separado.
+    """
+    CREATE TABLE IF NOT EXISTS document_versions (
+        id SERIAL PRIMARY KEY,
+        document_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+        url_id INTEGER REFERENCES monitor_urls(id) ON DELETE SET NULL,
+        scan_id INTEGER REFERENCES monitor_scans(id) ON DELETE SET NULL,
+        content_text TEXT NOT NULL,
+        content_hash TEXT NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'applied', 'rejected', 'superseded')),
+        detected_at TIMESTAMPTZ DEFAULT NOW(),
+        reviewed_at TIMESTAMPTZ
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_document_versions_document_id ON document_versions(document_id);
+    CREATE INDEX IF NOT EXISTS idx_document_versions_status ON document_versions(status);
+    """,
 ]
 
 

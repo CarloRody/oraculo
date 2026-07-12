@@ -220,3 +220,33 @@ def reprocess_existing(doc_id, new_content_text):
         return {"ok": False, "error": "Failed to update document"}
     result = process_document(doc_id)
     return {"doc_id": doc_id, **result}
+
+
+def create_pending_version(document_id, url_id, scan_id, content_text, content_hash):
+    """Grava o conteúdo novo detectado numa mudança como uma versão 'pending'
+    em vez de sobrescrever o documento na hora — só POST /versions/{id}/apply
+    (main.py) de fato chama reprocess_existing(). Qualquer versão pending
+    anterior do mesmo documento vira 'superseded': só a candidata mais
+    recente é relevante pra revisão, comparar contra uma versão velha não
+    ajuda em nada. Nunca levanta — quem chama trata None como falha."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE document_versions SET status='superseded' WHERE document_id=%s AND status='pending'",
+            (document_id,),
+        )
+        cur.execute(
+            """INSERT INTO document_versions (document_id, url_id, scan_id, content_text, content_hash, status)
+               VALUES (%s, %s, %s, %s, %s, 'pending') RETURNING id""",
+            (document_id, url_id, scan_id, content_text, content_hash),
+        )
+        version_id = cur.fetchone()[0]
+        conn.commit()
+        return version_id
+    except Exception as e:
+        conn.rollback()
+        print(f"Error creating pending version for document {document_id}: {e}")
+        return None
+    finally:
+        conn.close()

@@ -136,6 +136,28 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 .toast{background:#16213e;border-left:4px solid #00b894;color:#fff;padding:12px 16px;border-radius:6px;box-shadow:0 4px 12px rgba(0,0,0,.4);font-size:.85rem;max-width:360px;animation:slidein .2s ease-out;pointer-events:auto}
 .toast.err{border-left-color:#e94560}
 @keyframes slidein{from{transform:translateX(20px);opacity:0}to{transform:translateX(0);opacity:1}}
+
+/* ---------- Pending versions ---------- */
+.stat-card.pending-alert .num{color:#fdcb6e}
+.pending-card{background:#1a2540;border:1px solid #5a4a2d;border-radius:8px;padding:12px 14px;margin-bottom:10px;display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.pending-card-info{font-size:.85rem;color:#e0e0e0}
+.pending-card-info b{color:#fff}
+.pending-card-meta{font-size:.75rem;color:#9fb3d9;margin-top:3px}
+.pending-card-actions{display:flex;gap:8px;flex-wrap:wrap}
+.btn-apply{background:#1f4a37;color:#00b894}.btn-apply:hover{background:#00b894;color:#0a1f18}
+
+/* ---------- Diff modal ---------- */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(10,10,20,.75);z-index:2000;align-items:center;justify-content:center;padding:20px}
+.modal-overlay.show{display:flex}
+.modal-box{background:#16213e;border-radius:10px;border:1px solid #0f3460;max-width:800px;width:100%;max-height:82vh;display:flex;flex-direction:column}
+.modal-box-header{display:flex;align-items:center;justify-content:space-between;padding:16px 20px;border-bottom:1px solid #253552}
+.modal-box-header h3{font-size:1rem;color:#fff}
+.modal-box-close{background:none;border:none;color:#9fb3d9;font-size:1.2rem;cursor:pointer;line-height:1}
+.modal-box-close:hover{color:#fff}
+.modal-box-body{padding:18px 20px;overflow-y:auto;font-size:.88rem;line-height:1.7;word-break:break-word}
+.diff-insert{background:#1f4a37;color:#7fe0b8;text-decoration:none}
+.diff-delete{background:#4a1f27;color:#ff9b9b;text-decoration:line-through}
+.modal-box-footer{display:flex;gap:10px;justify-content:flex-end;padding:14px 20px;border-top:1px solid #253552}
 </style>
 </head>
 <body>
@@ -161,6 +183,13 @@ input:focus,select:focus{outline:none;border-color:#e94560}
   <div class="stat-card"><div class="num" id="sScans">-</div><div class="label">Scans Realizados</div></div>
   <div class="stat-card"><div class="num" id="sDocs">-</div><div class="label">Docs Tutor RAG</div></div>
   <div class="stat-card"><div class="num" id="sChunks">-</div><div class="label">Chunks Indexados</div></div>
+  <div class="stat-card" id="sPendingCard"><div class="num" id="sPending">-</div><div class="label">🕓 Alterações Pendentes</div></div>
+</div>
+
+<!-- Pending version review -->
+<div class="card" id="pendingVersionsCard" style="display:none">
+<div class="card-header"><h2>🕓 Mudanças Pendentes de Revisão</h2></div>
+<div id="pendingVersionsList"></div>
 </div>
 
 <!-- Add URL -->
@@ -223,6 +252,17 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 
 <div class="toast-container" id="toastContainer"></div>
 
+<div class="modal-overlay" id="diffModalOverlay">
+  <div class="modal-box">
+    <div class="modal-box-header">
+      <h3 id="diffModalTitle">Diff</h3>
+      <button class="modal-box-close" onclick="closeDiffModal()">✕</button>
+    </div>
+    <div class="modal-box-body" id="diffModalBody"></div>
+    <div class="modal-box-footer" id="diffModalFooter"></div>
+  </div>
+</div>
+
 <script>
 const BASE = window.location.origin;
 let refreshInterval;
@@ -268,7 +308,7 @@ function showError(msg) {
 
 async function refresh() {
   try {
-    const [d, stats] = await Promise.all([api('/dashboard'), api('/stats')]);
+    const [d, stats, pendingData] = await Promise.all([api('/dashboard'), api('/stats'), api('/versions?status=pending')]);
 
     showError(null);
 
@@ -277,6 +317,10 @@ async function refresh() {
     document.getElementById('sScans').textContent = stats.scans_performed;
     document.getElementById('sDocs').textContent = d.tutor_stats.documents;
     document.getElementById('sChunks').textContent = d.tutor_stats.chunks;
+    document.getElementById('sPending').textContent = d.pending_versions_count || 0;
+    document.getElementById('sPendingCard').classList.toggle('pending-alert', (d.pending_versions_count || 0) > 0);
+
+    renderPendingVersions(pendingData.versions || []);
 
     // Areas dropdown + lookup map
     areasCache = (d.areas || []);
@@ -360,6 +404,79 @@ function renderLinks(links) {
 function toggleLinks(id) { const el=document.getElementById(id); el.classList.toggle('open'); }
 function esc(s) { return s?String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'):''; }
 function shortUrl(u) { try { const x=new URL(u); return x.hostname+(x.pathname||''); } catch(e) { return u.substring(0,60)+'...'; } }
+
+// ---------- Pending version review ----------
+function renderPendingVersions(versions) {
+  const card = document.getElementById('pendingVersionsCard');
+  const list = document.getElementById('pendingVersionsList');
+  if (!versions.length) { card.style.display = 'none'; list.innerHTML = ''; return; }
+  card.style.display = 'block';
+  list.innerHTML = versions.map(v => `
+    <div class="pending-card">
+      <div class="pending-card-info">
+        <b>${esc(v.document_name)}</b>
+        <div class="pending-card-meta">${esc(v.document_url || v.monitor_url_name || '')} • detectado em ${tsFmt(v.detected_at)} • ${v.content_length} caracteres</div>
+      </div>
+      <div class="pending-card-actions">
+        <button class="btn btn-auto" onclick="openDiffModal(${v.id})">👁 Ver Diff</button>
+        <button class="btn btn-apply" onclick="applyVersion(${v.id}, this)">✔ Aplicar</button>
+        <button class="btn btn-del" onclick="rejectVersion(${v.id}, this)">✖ Rejeitar</button>
+      </div>
+    </div>
+  `).join('');
+}
+
+function renderDiffSegments(segments) {
+  return segments.map(seg => {
+    const text = esc(seg.text);
+    if (seg.op === 'insert') return `<span class="diff-insert">${text}</span>`;
+    if (seg.op === 'delete') return `<span class="diff-delete">${text}</span>`;
+    return `<span>${text}</span>`;
+  }).join(' ');
+}
+
+async function openDiffModal(versionId) {
+  const overlay = document.getElementById('diffModalOverlay');
+  const body = document.getElementById('diffModalBody');
+  const footer = document.getElementById('diffModalFooter');
+  document.getElementById('diffModalTitle').textContent = 'Carregando diff...';
+  body.innerHTML = '';
+  footer.innerHTML = '';
+  overlay.classList.add('show');
+  try {
+    const d = await api('/versions/'+versionId+'/diff');
+    document.getElementById('diffModalTitle').textContent = 'Diff — ' + d.document_name;
+    body.innerHTML = renderDiffSegments(d.diff);
+    footer.innerHTML = `
+      <button class="btn btn-del" onclick="rejectVersion(${versionId}, this, true)">✖ Rejeitar</button>
+      <button class="btn btn-apply" onclick="applyVersion(${versionId}, this, true)">✔ Aplicar</button>
+    `;
+  } catch(e) {
+    document.getElementById('diffModalTitle').textContent = 'Erro';
+    body.innerHTML = 'Não foi possível carregar o diff: ' + esc(e.message);
+  }
+}
+
+function closeDiffModal() { document.getElementById('diffModalOverlay').classList.remove('show'); }
+
+async function applyVersion(versionId, btn, fromModal) {
+  try {
+    const r = await withButtonLoading(btn, '...', () => api('/versions/'+versionId+'/apply', {method:'POST'}));
+    showToast(`Versão aplicada — documento reprocessado (${r.saved_count||0} chunks).`);
+    if (fromModal) closeDiffModal();
+    refresh();
+  } catch(e) { showToast('Erro ao aplicar versão: '+e.message, true); }
+}
+
+async function rejectVersion(versionId, btn, fromModal) {
+  if (!confirm('Rejeitar esta versão? O documento continua com o conteúdo atual — a mudança detectada é descartada.')) return;
+  try {
+    await withButtonLoading(btn, '...', () => api('/versions/'+versionId+'/reject', {method:'POST'}));
+    showToast('Versão rejeitada.');
+    if (fromModal) closeDiffModal();
+    refresh();
+  } catch(e) { showToast('Erro ao rejeitar versão: '+e.message, true); }
+}
 
 async function addUrl() {
   const err = document.getElementById('addError');
