@@ -799,9 +799,10 @@ async function loadClients() {
                 ? `<p style="color:#a78bfa; font-size:0.85rem; margin-top:0.5rem;">🔒 Base de conhecimento: ${esc(ownedArea.name)}</p>`
                 : `<button class="btn btn-sm" data-user-id="${u.id}" data-email="${esc(u.email)}" onclick="createKnowledgeBaseEl(this)">🔒 Criar base de conhecimento</button>`;
             const balanceColor = u.balance > 0 ? '#4ade80' : '#f87171';
+            const isInactive = u.status === 'inactive';
             return `
             <div class="card-item">
-                <h3>${u.email}</h3>
+                <h3>${u.email}${isInactive ? ' <span style="color:#f87171; font-size:0.8rem; font-weight:600;">● Desativado</span>' : ''}</h3>
                 <p>ID: ${u.id}</p>
                 <div class="api-key-box">${u.api_key || '—'}</div>
                 <p style="margin-top:0.5rem;">Saldo: <span style="color:${balanceColor}; font-weight:600;">R$ ${Number(u.balance).toFixed(4)}</span></p>
@@ -814,6 +815,7 @@ async function loadClients() {
                     <button class="btn btn-sm" onclick="showDepositModal(${u.id}, '${esc(u.email)}')">Lançar Depósito</button>
                     <button class="btn btn-sm" onclick="showExtractModal(${u.id}, '${esc(u.email)}')">Ver Extrato</button>
                     <button class="btn btn-sm" onclick="showClientAccessModal(${u.id})">Acessos${u.access_restricted ? ' 🔒' : ''}</button>
+                    <button class="btn btn-sm ${isInactive ? '' : 'btn-danger'}" onclick="toggleClientStatus(${u.id}, '${u.status}')">${isInactive ? 'Ativar' : 'Desativar'}</button>
                     ${ownedArea ? '' : kbHtml}
                 </div>
                 ${ownedArea ? kbHtml : ''}
@@ -911,6 +913,21 @@ async function changeClientPlan(userId, planId) {
         if (!res.ok) return alert(data.error || 'Erro ao trocar plano.');
         loadClients();
     } catch(e) { alert('Erro ao trocar plano.'); }
+}
+
+async function toggleClientStatus(userId, currentStatus) {
+    const newStatus = currentStatus === 'inactive' ? 'active' : 'inactive';
+    const verb = newStatus === 'inactive' ? 'desativar' : 'reativar';
+    if (!confirm(`Confirma ${verb} este cliente? ${newStatus === 'inactive' ? 'Ele fica bloqueado nas pesquisas e na navegação até você reativar.' : ''}`)) return;
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}`, {
+            method: 'PATCH', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ status: newStatus })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao atualizar status.');
+        loadClients();
+    } catch(e) { alert('Erro ao atualizar status.'); }
 }
 
 function showClientEditModal(userId) {

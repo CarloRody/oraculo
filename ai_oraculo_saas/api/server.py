@@ -664,6 +664,25 @@ def get_user_balance(user_id):
         return None
 
 
+def get_user_status(user_id):
+    """'active'/'inactive' do cliente, ou None se não encontrado/erro. Cliente
+    inativo é bloqueado nas APIs de pesquisa e na navegação, desligado na mão
+    pelo admin (independente de saldo/plano/modelo)."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT status FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        conn.close()
+        return row[0] if row else None
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO get_user_status: {e}")
+        return None
+
+
 def get_recent_consumption(user_id, limit=5):
     """Últimos consumos do cliente, pro extrato mostrado quando o saldo zera."""
     conn = get_db_connection()
@@ -903,6 +922,11 @@ def chat():
     requested_area_ids = resolve_area_ids(data)
     user_id = resolve_user_from_request()
 
+    # Conta desativada na mão pelo admin (independente de saldo/plano/modelo)
+    # — bloqueio mais fundamental, checado antes de tudo mais.
+    if user_id and get_user_status(user_id) == 'inactive':
+        return jsonify({"error": "Sua conta está desativada. Entre em contato com o administrador."}), 403
+
     if not message:
         return jsonify({"error": "Campo 'message' é obrigatório"}), 400
 
@@ -1049,6 +1073,11 @@ def agent_research():
     message = data.get('message', '')
     requested_area_ids = resolve_area_ids(data)
     user_id = resolve_user_from_request()
+
+    # Conta desativada na mão pelo admin (independente de saldo/plano/modelo)
+    # — bloqueio mais fundamental, checado antes de tudo mais.
+    if user_id and get_user_status(user_id) == 'inactive':
+        return jsonify({"error": "Sua conta está desativada. Entre em contato com o administrador."}), 403
 
     if not message:
         return jsonify({"error": "Campo 'message' é obrigatório"}), 400
@@ -1560,7 +1589,7 @@ def admin_list_users():
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT u.id, u.email, u.api_key, u.created_at, u.plan_id, p.name, u.balance, u.access_restricted
+            """SELECT u.id, u.email, u.api_key, u.created_at, u.plan_id, p.name, u.balance, u.access_restricted, u.status
                FROM users u LEFT JOIN plans p ON p.id = u.plan_id
                ORDER BY u.email"""
         )
@@ -1573,7 +1602,8 @@ def admin_list_users():
                 "created_at": r[3].isoformat() if r[3] else None,
                 "plan_id": r[4], "plan_name": r[5],
                 "balance": float(r[6]),
-                "access_restricted": bool(r[7])
+                "access_restricted": bool(r[7]),
+                "status": r[8]
             })
         conn.close()
         return jsonify({"total": len(users), "users": users})
@@ -1614,17 +1644,21 @@ def admin_create_user():
 
 @app.route('/admin/users/<int:user_id>', methods=['PATCH'])
 def admin_update_user(user_id):
-    """Atualiza o email, o plano e/ou a chave de acesso de um cliente —
-    regenera aleatoriamente (regenerate_key) ou define um valor customizado
-    (api_key). Trocar a chave invalida a antiga na hora — qualquer
-    integração usando a chave anterior para de funcionar."""
+    """Atualiza o email, o plano, o status e/ou a chave de acesso de um
+    cliente — regenera aleatoriamente (regenerate_key) ou define um valor
+    customizado (api_key). Trocar a chave invalida a antiga na hora —
+    qualquer integração usando a chave anterior para de funcionar."""
     data = request.get_json()
     email = (data.get('email') or '').strip() or None
     regenerate_key = bool(data.get('regenerate_key'))
     custom_api_key = (data.get('api_key') or '').strip() or None
     plan_id_given = 'plan_id' in data
     plan_id = data.get('plan_id') if plan_id_given else None
-    if not email and not regenerate_key and not custom_api_key and not plan_id_given:
+    status_given = 'status' in data
+    status = data.get('status') if status_given else None
+    if status_given and status not in ('active', 'inactive'):
+        return jsonify({"error": "Status inválido — use 'active' ou 'inactive'"}), 400
+    if not email and not regenerate_key and not custom_api_key and not plan_id_given and not status_given:
         return jsonify({"error": "Nada para atualizar"}), 400
 
     conn = get_db_connection()
@@ -1642,6 +1676,8 @@ def admin_update_user(user_id):
             fields['api_key'] = custom_api_key
         if plan_id_given:
             fields['plan_id'] = plan_id
+        if status_given:
+            fields['status'] = status
 
         set_clause = ", ".join(f"{k} = %s" for k in fields)
         cur.execute(f"UPDATE users SET {set_clause} WHERE id = %s", list(fields.values()) + [user_id])
@@ -1652,13 +1688,13 @@ def admin_update_user(user_id):
 
         conn.commit()
         cur.execute(
-            """SELECT u.id, u.email, u.api_key, u.plan_id, p.name
+            """SELECT u.id, u.email, u.api_key, u.plan_id, p.name, u.status
                FROM users u LEFT JOIN plans p ON p.id = u.plan_id WHERE u.id = %s""",
             (user_id,)
         )
         row = cur.fetchone()
         conn.close()
-        return jsonify({"id": row[0], "email": row[1], "api_key": row[2], "plan_id": row[3], "plan_name": row[4]})
+        return jsonify({"id": row[0], "email": row[1], "api_key": row[2], "plan_id": row[3], "plan_name": row[4], "status": row[5]})
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         conn.close()
@@ -2399,25 +2435,32 @@ def get_allowed_pages():
     todo mundo. Usada por access-guard.js em toda página e pelo index.html
     pra filtrar cards. Sem chave de cliente salva no navegador, ou cliente
     que ainda não teve nenhuma restrição configurada (access_restricted
-    false) = acesso total, sem checagem (comportamento de sempre)."""
+    false) = acesso total, sem checagem (comportamento de sempre). Cliente
+    desativado (status='inactive') vira restricted=true com pages=[] na
+    prática — bloqueia toda página — mais o campo "active" explícito pro
+    front mostrar uma mensagem diferente do "sem acesso a esta página"."""
     user_id = resolve_user_from_request()
     if not user_id:
-        return jsonify({"pages": [], "restricted": False})
+        return jsonify({"pages": [], "restricted": False, "active": True})
     conn = get_db_connection()
     if not conn:
-        return jsonify({"pages": [], "restricted": False}), 500
+        return jsonify({"pages": [], "restricted": False, "active": True}), 500
     try:
         cur = conn.cursor()
-        cur.execute("SELECT access_restricted FROM users WHERE id = %s", (user_id,))
+        cur.execute("SELECT access_restricted, status FROM users WHERE id = %s", (user_id,))
         row = cur.fetchone()
         restricted = bool(row[0]) if row else False
+        active = (row[1] != 'inactive') if row else True
+        if not active:
+            conn.close()
+            return jsonify({"pages": [], "restricted": True, "active": False})
         cur.execute("SELECT page FROM client_allowed_pages WHERE user_id = %s ORDER BY page", (user_id,))
         pages = [r[0] for r in cur.fetchall()]
         conn.close()
-        return jsonify({"pages": pages, "restricted": restricted})
+        return jsonify({"pages": pages, "restricted": restricted, "active": True})
     except Exception as e:
         if conn: conn.close()
-        return jsonify({"pages": [], "restricted": False, "error": str(e)}), 500
+        return jsonify({"pages": [], "restricted": False, "active": True, "error": str(e)}), 500
 
 
 @app.route('/admin/users/<int:user_id>/allowed-pages', methods=['GET'])

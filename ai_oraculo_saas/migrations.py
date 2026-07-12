@@ -294,6 +294,21 @@ MIGRATIONS = [
 
     CREATE INDEX IF NOT EXISTS idx_client_allowed_pages_user ON client_allowed_pages(user_id);
     """,
+
+    # 15 — desativação manual de cliente, independente de saldo/plano/modelo.
+    # 'active' (padrão) = comportamento de sempre; 'inactive' = bloqueia as
+    # APIs de pesquisa (/api/chat, /api/agent-research) e a navegação em
+    # qualquer página, ligado/desligado pelo admin na aba Clientes.
+    """
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS status VARCHAR(10) NOT NULL DEFAULT 'active';
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'users_status_check') THEN
+            ALTER TABLE users ADD CONSTRAINT users_status_check CHECK (status IN ('active', 'inactive'));
+        END IF;
+    END $$;
+    """,
 ]
 
 

@@ -14,6 +14,14 @@
     fetch(location.protocol + '//' + location.host + '/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
         .then(function(r) { return r.json(); })
         .then(function(data) {
+            // active=false = conta desativada na mão pelo admin — mensagem
+            // diferente do "sem acesso a esta página" (não é sobre permissão
+            // granular, é a conta inteira desligada).
+            if (data.active === false) {
+                alert('Sua conta está desativada. Entre em contato com o administrador.');
+                location.href = 'index.html';
+                return;
+            }
             // restricted=false = esse cliente ainda não tem nenhuma restrição
             // configurada no admin — acesso total, mesma filosofia de "sem
             // configuração explícita não bloqueia" do resto do sistema.

@@ -47,6 +47,10 @@
             </span>
         </div>
 
+        <div id="deactivatedBanner" style="display:none; background:#450a0a; border:1px solid #f87171; border-radius:8px; padding:0.85rem 1.25rem; margin-bottom:1rem; color:#fca5a5;">
+            ⚠ Sua conta está desativada. Entre em contato com o administrador.
+        </div>
+
         <!-- Status -->
         <div class="status-bar">
             <div class="status-item">
@@ -243,6 +247,11 @@ async function filterCardsByAllowedPages() {
     try {
         const res = await fetch(`${API}/api/allowed-pages`, { headers: { 'X-Oraculo-Key': key } });
         const data = await res.json();
+        if (data.active === false) {
+            document.getElementById('deactivatedBanner').style.display = 'block';
+            document.querySelectorAll('.cards-grid .card').forEach(card => card.style.display = 'none');
+            return;
+        }
         if (!data.restricted) return; // sem restrição configurada pra esse cliente = acesso total
         const allowed = new Set(data.pages || []);
         document.querySelectorAll('.cards-grid .card').forEach(card => {

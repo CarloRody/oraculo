@@ -63,7 +63,8 @@ CREATE TABLE IF NOT EXISTS users (
     api_key VARCHAR(64) UNIQUE, -- Chave de acesso do cliente (1 cliente = 1 chave), usada em /api/chat
     plan_id INTEGER REFERENCES plans(id) ON DELETE SET NULL, -- Plano de assinatura atual (cota/preço por área vêm daqui, vínculo ao vivo)
     balance NUMERIC(12,4) NOT NULL DEFAULT 0, -- Saldo de créditos pré-pago em R$
-    access_restricted BOOLEAN NOT NULL DEFAULT FALSE -- false = sem restrição de páginas configurada ainda (acesso total); true = só as páginas em client_allowed_pages
+    access_restricted BOOLEAN NOT NULL DEFAULT FALSE, -- false = sem restrição de páginas configurada ainda (acesso total); true = só as páginas em client_allowed_pages
+    status VARCHAR(10) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'inactive')) -- inactive = bloqueia pesquisa e navegação, desativado manualmente pelo admin
 );
 
 -- 5. Tabela: documents (Unificada com links e conteúdo processado)
