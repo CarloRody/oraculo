@@ -1,5 +1,6 @@
 """Monitor Agent API — FastAPI application (port :5003)."""
 
+import asyncio
 from pathlib import Path
 from contextlib import asynccontextmanager
 
@@ -28,13 +29,31 @@ def get_db():
 # Lifespan
 # ---------------------------------------------------------------------------
 
+scheduler_task = None  # asyncio task do scan periódico — None se default_cron não configurado
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global scheduler_task
     # startup: run migrations if needed
     from db_migrations import migrate_if_needed
     migrate_if_needed()
+
+    # startup: scan periódico (cron em monitor_agent.default_cron do
+    # config.yaml) — antes disso só rodava manual, via clique em "Scan Tudo".
+    cron_expr = MONITOR_CONFIG.get("default_cron")
+    if cron_expr:
+        from monitor.scheduler import run_scheduler
+        scheduler_task = asyncio.create_task(run_scheduler(cron_expr, run_full_scan))
+        print(f"[startup] Scan automático ligado — cron: {cron_expr}")
+    else:
+        print("[startup] monitor_agent.default_cron não configurado — scan automático desligado.")
+
     yield
-    # shutdown: nothing to clean up
+
+    # shutdown: encerra o loop do scheduler de forma limpa
+    if scheduler_task:
+        scheduler_task.cancel()
 
 
 # ---------------------------------------------------------------------------
@@ -341,14 +360,14 @@ def persist_scan(result: dict, url_data: dict | None = None):
     return clean
 
 
-@app.post("/scan/all")
-def scan_all_route():
-    """Scan all enabled URLs. Returns summary + per-URL results with RAG."""
+def run_full_scan():
+    """Escaneia todas as URLs habilitadas. Compartilhada pela rota manual
+    POST /scan/all e pelo scheduler automático (monitor/scheduler.py) —
+    mesma lógica pros dois casos, só muda quem chama."""
     from monitor.url_registry import list_urls as _list_urls
 
     urls = _list_urls(enabled_only=True)
     raw_results = []
-    url_map = {u["id"]: u for u in urls}
 
     for url_data in urls:
         result = _scan_single(url_data)
@@ -369,6 +388,12 @@ def scan_all_route():
         "errors": errors,
         "scans": saved,
     }
+
+
+@app.post("/scan/all")
+def scan_all_route():
+    """Scan all enabled URLs. Returns summary + per-URL results with RAG."""
+    return run_full_scan()
 
 
 @app.post("/scan/{url_id}")
@@ -812,6 +837,10 @@ def health_extended():
         "service": "monitor-agent-api",
         "db_connected": True,  # if we reach here, lifespan passed
         "rag_engine_available": rw.is_rag_available(),
+        "scheduler": {
+            "cron": MONITOR_CONFIG.get("default_cron"),
+            "running": bool(scheduler_task) and not scheduler_task.done(),
+        },
     }
 
 
