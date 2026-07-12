@@ -293,10 +293,9 @@
             <input type="text" class="form-input" id="editClientEmail">
         </div>
         <div class="form-group">
-            <label>Chave de acesso atual</label>
-            <div class="api-key-box" id="editClientKeyValue"></div>
-            <button class="btn btn-sm btn-danger" onclick="regenerateClientKey()">Gerar nova chave</button>
-            <span style="color:#64748b; font-size:0.8rem;">— invalida a chave atual na hora</span>
+            <label>Chave de acesso <span style="font-weight:normal; color:#64748b;">(edite livremente e clique em Salvar — a chave antiga para de funcionar na hora)</span></label>
+            <input type="text" class="form-input" id="editClientKeyValue" style="font-family:monospace;">
+            <button class="btn btn-sm btn-danger" style="margin-top:0.5rem;" onclick="regenerateClientKey()">Gerar chave aleatória agora</button>
         </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeClientEditModal()">Cancelar</button>
@@ -919,14 +918,14 @@ function showClientEditModal(userId) {
     if (!client) return;
     document.getElementById('editClientId').value = client.id;
     document.getElementById('editClientEmail').value = client.email;
-    document.getElementById('editClientKeyValue').textContent = client.api_key || '—';
+    document.getElementById('editClientKeyValue').value = client.api_key || '';
     document.getElementById('clientEditModal').classList.add('active');
 }
 
 function closeClientEditModal() { document.getElementById('clientEditModal').classList.remove('active'); }
 
 async function regenerateClientKey() {
-    if (!confirm('Gerar uma nova chave? A chave atual deixa de funcionar imediatamente.')) return;
+    if (!confirm('Gerar uma nova chave aleatória agora? A chave atual deixa de funcionar imediatamente.')) return;
     const id = document.getElementById('editClientId').value;
     try {
         const res = await fetch(ADMIN_API + `/admin/users/${id}`, {
@@ -934,17 +933,20 @@ async function regenerateClientKey() {
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao gerar nova chave.');
-        document.getElementById('editClientKeyValue').textContent = data.api_key;
+        document.getElementById('editClientKeyValue').value = data.api_key;
+        loadClients();
     } catch(e) { alert('Erro ao gerar nova chave.'); }
 }
 
 async function saveClientEdit() {
     const id = document.getElementById('editClientId').value;
     const email = document.getElementById('editClientEmail').value.trim();
+    const apiKey = document.getElementById('editClientKeyValue').value.trim();
     if (!email) return alert('Email é obrigatório.');
+    if (!apiKey) return alert('Chave de acesso não pode ficar vazia.');
     try {
         const res = await fetch(ADMIN_API + `/admin/users/${id}`, {
-            method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email })
+            method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, api_key: apiKey })
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar cliente.');
