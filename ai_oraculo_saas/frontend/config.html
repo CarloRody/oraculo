@@ -21,7 +21,7 @@
 
     <div class="header">
         <h1 class="gradient">&#128279; Configurações</h1>
-        <p>Provedor de LLM, banco de dados e demais parâmetros do Oráculo</p>
+        <p>Banco de dados, LLM de uso interno e demais parâmetros globais do Oráculo</p>
     </div>
 
     <div class="container">
@@ -30,7 +30,16 @@
         </p>
 
         <div class="card-item">
-            <h3>Provedor LLM</h3>
+            <h3>LLM Global (uso interno)</h3>
+            <p style="color:#fbbf24; font-size:0.85rem; margin-bottom:1rem;">
+                ⚠ Este provedor <strong>não</strong> é o modelo que os clientes usam. Ele só entra em chamadas sem
+                cliente identificado (uso interno de <code>extract.html</code>/<code>rag.html</code>, ou testes locais
+                do admin) — sem preço, sem cobrança de crédito. Cada plano tem seu próprio modelo, com preço real,
+                configurado em <strong>Painel Admin → Modelos</strong> e vinculado ao plano em
+                <strong>Painel Admin → Planos</strong>; um cliente cujo plano não tem modelo configurado é bloqueado
+                direto, não cai mais neste fallback.
+            </p>
+            <a href="admin.html" class="btn" style="display:inline-block; margin-bottom:1.25rem; text-decoration:none;">Configurar modelos por plano →</a>
             <div class="form-group"><label>Provedor</label><input type="text" id="cfgLlmProvider" placeholder="Ex: LM Studio"></div>
             <div class="form-group"><label>URL base</label><input type="text" id="cfgLlmBaseUrl" placeholder="http://.../v1/chat/completions"></div>
             <div class="form-group"><label>Modelo</label><input type="text" id="cfgLlmModel" placeholder="auto"></div>
