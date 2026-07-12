@@ -37,6 +37,16 @@
 
         .empty-text, .error-text { padding: 1.5rem; text-align: center; }
 
+        .dup-panel { margin-bottom: 1.5rem; border: 1px solid #f59e0b; border-radius: 8px; overflow: hidden; }
+        .dup-panel-header { padding: 0.85rem 1rem; background: #3a2e12; color: #fbbf24; font-weight: 600; }
+        .dup-group { padding: 0.85rem 1rem; border-top: 1px solid #334155; }
+        .dup-group .dup-url { color: #94a3b8; font-size: 0.82rem; margin-bottom: 0.5rem; word-break: break-all; }
+        .dup-doc-row { display: flex; align-items: center; gap: 0.6rem; padding: 0.35rem 0; cursor: pointer; }
+        .dup-doc-row input[type="radio"] { flex-shrink: 0; }
+        .dup-doc-row .node-name { color: #e2e8f0; font-size: 0.9rem; }
+        .dup-best { color: #4ade80; font-size: 0.78rem; font-weight: 600; }
+        .dup-panel-actions { padding: 0.85rem 1rem; border-top: 1px solid #334155; display: flex; align-items: center; gap: 1rem; }
+
         @media (max-width: 640px) {
             .node-row .node-meta { display: none; }
         }
@@ -55,8 +65,11 @@
         <div class="actions-bar">
             <button class="btn btn-danger" id="deleteSelectedBtn" onclick="deleteSelected()" disabled>Apagar selecionados</button>
             <button class="btn" onclick="loadTree()">Recarregar</button>
+            <button class="btn" onclick="checkDuplicates()">Verificar Duplicados</button>
             <span class="count" id="selectionCount"></span>
         </div>
+
+        <div id="dupPanel"></div>
 
         <div id="treeContainer"><p class="loading-text">Carregando...</p></div>
     </div>
@@ -212,6 +225,85 @@ async function deleteSelected() {
     }
     btn.textContent = 'Apagar selecionados';
     await loadTree();
+}
+
+// ---- Duplicados (mesma area+url apareceu mais de uma vez) ----
+let dupGroups = [];
+
+async function checkDuplicates() {
+    const panel = document.getElementById('dupPanel');
+    panel.innerHTML = '<p class="loading-text">Verificando duplicados...</p>';
+    try {
+        const res = await fetch(API + '/admin/documents/duplicates');
+        const data = await res.json();
+        dupGroups = data.groups || [];
+        if (!dupGroups.length) {
+            panel.innerHTML = '';
+            alert('Nenhum link duplicado encontrado.');
+            return;
+        }
+        renderDupPanel();
+    } catch (e) {
+        panel.innerHTML = '';
+        alert('Erro ao verificar duplicados.');
+    }
+}
+
+function renderDupPanel() {
+    const panel = document.getElementById('dupPanel');
+    panel.innerHTML = `
+        <div class="dup-panel">
+            <div class="dup-panel-header">⚠ ${dupGroups.length} URL(s) duplicada(s) encontrada(s) — escolha qual versão manter em cada grupo (a recomendada já vem marcada)</div>
+            ${dupGroups.map((g, gi) => `
+                <div class="dup-group">
+                    <div class="dup-url">${esc(g.area_name)} — ${esc(g.url)}</div>
+                    ${g.documents.map(d => `
+                        <label class="dup-doc-row">
+                            <input type="radio" name="dup_keep_${gi}" value="${d.id}" ${d.id === g.recommended_keep_id ? 'checked' : ''}>
+                            <span class="node-name">${esc(d.name)}</span>
+                            ${statusBadge(d.processing_status)}
+                            <span class="node-meta">${d.chunk_count} chunks${d.child_count ? ` • ${d.child_count} filho(s)` : ''}${d.last_processed_at ? ' • processado em ' + new Date(d.last_processed_at).toLocaleString('pt-BR') : ' • nunca processado'}</span>
+                            ${d.id === g.recommended_keep_id ? '<span class="dup-best">&#10003; Melhor versão</span>' : ''}
+                        </label>
+                    `).join('')}
+                </div>
+            `).join('')}
+            <div class="dup-panel-actions">
+                <button class="btn" onclick="resolveDuplicates()">Resolver automaticamente</button>
+                <button class="btn btn-danger" onclick="closeDupPanel()">Cancelar</button>
+            </div>
+        </div>
+    `;
+}
+
+function closeDupPanel() {
+    dupGroups = [];
+    document.getElementById('dupPanel').innerHTML = '';
+}
+
+async function resolveDuplicates() {
+    const resolutions = dupGroups.map((g, gi) => {
+        const checked = document.querySelector(`input[name="dup_keep_${gi}"]:checked`);
+        const keepId = checked ? Number(checked.value) : g.recommended_keep_id;
+        const removeIds = g.documents.map(d => d.id).filter(id => id !== keepId);
+        return { keep_id: keepId, remove_ids: removeIds };
+    });
+    const totalRemoved = resolutions.reduce((sum, r) => sum + r.remove_ids.length, 0);
+    if (!totalRemoved) { closeDupPanel(); return; }
+    const ok = confirm(`Isso vai apagar ${totalRemoved} documento(s) duplicado(s), mantendo a melhor versão de cada grupo (filhos dos removidos são reconectados ao mantido). Confirmar?`);
+    if (!ok) return;
+
+    try {
+        const res = await fetch(API + '/admin/documents/duplicates/resolve', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ resolutions })
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.error || 'Erro ao resolver duplicados.');
+        alert(`${data.documents_removed} documento(s) duplicado(s) removido(s).`);
+        closeDupPanel();
+        loadTree();
+    } catch (e) { alert('Erro ao resolver duplicados.'); }
 }
 
 document.getElementById('year').textContent = new Date().getFullYear();

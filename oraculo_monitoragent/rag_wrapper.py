@@ -97,6 +97,52 @@ def update_document_content(doc_id, content_text):
         conn.close()
 
 
+def find_existing_document(area_id, url):
+    """id do documento mais recente já cadastrado pra essa (area_id, url), ou
+    None — mesma query já usada em _process_rag_for_change (main.py), agora
+    reaproveitada pelo crawl de árvore pra evitar duplicar a mesma URL toda
+    vez que a árvore é recuperada de novo."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM documents WHERE area_id = %s AND url = %s ORDER BY upload_date DESC LIMIT 1",
+            (area_id, url),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    except Exception as e:
+        print(f"Error finding existing document for area {area_id} url {url}: {e}")
+        return None
+    finally:
+        conn.close()
+
+
+def update_document_for_recrawl(doc_id, content_text, name, parent_doc_id, fetch_mode):
+    """Atualiza um documento existente com o conteúdo/posição na árvore
+    redescobertos numa nova recuperação de árvore — recrawl pode achar a
+    página numa posição diferente (outro pai), então além do conteúdo
+    também atualiza name/parent_doc_id/fetch_mode, não só content_text
+    (diferente de update_document_content, usada pelo monitoramento de URL
+    única onde a posição não muda)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE documents
+               SET content_text=%s, name=%s, parent_doc_id=%s, fetch_mode=%s, processing_status='pending'
+               WHERE id=%s""",
+            (content_text, name, parent_doc_id, fetch_mode, doc_id),
+        )
+        conn.commit()
+        return True
+    except Exception as e:
+        print(f"Error updating document {doc_id} for recrawl: {e}")
+        return False
+    finally:
+        conn.close()
+
+
 def get_document(doc_id):
     """Fetch a Tutor document by ID."""
     conn = _conn()
@@ -145,7 +191,19 @@ def process_document(doc_id):
 
 
 def ingest_and_index(content_text, name, area_id, url=None, parent_doc_id=None, fetch_mode='http'):
-    """Create document + attempt RAG indexing. Never raises."""
+    """Create-or-update document + attempt RAG indexing. Never raises.
+
+    Se já existe um documento pra essa (area_id, url), reaproveita e
+    reprocessa em vez de criar uma linha nova — sem isso, toda vez que a
+    árvore de links é recuperada de novo, as mesmas URLs viravam documentos
+    duplicados e desatualizados (o antigo nunca era atualizado nem reusado)."""
+    existing_id = find_existing_document(area_id, url) if url else None
+    if existing_id:
+        if not update_document_for_recrawl(existing_id, content_text, name, parent_doc_id, fetch_mode):
+            return {"ok": False, "error": "Failed to update existing document"}
+        result = process_document(existing_id)
+        return {"doc_id": existing_id, "name": name, **result}
+
     doc_id = create_document_in_tutor(
         name=name, area_id=area_id, content_text=content_text,
         url=url, parent_doc_id=parent_doc_id, fetch_mode=fetch_mode

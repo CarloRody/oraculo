@@ -173,13 +173,17 @@ def get_documents():
 
 @app.route('/api/documents', methods=['POST'])
 def create_document():
-    """Cria um novo documento e processa RAG automaticamente."""
+    """Cria um novo documento e processa RAG automaticamente. Se já existe um
+    documento com essa (area_id, url), atualiza esse em vez de criar um
+    duplicado — mesmo padrão usado pelo crawl de árvore do Monitor Agent
+    (ver rag_wrapper.ingest_and_index)."""
     data = request.get_json()
     area_id = data.get('area_id')
     url = data.get('url')
     is_external = data.get('is_external_link', False)
     content_text = data.get('content_text', '')  # Texto direto (para uploads de arquivo)
     fetch_mode = data.get('fetch_mode') or 'http'
+    name = data.get('name', 'Documento sem nome')
 
     auth_error = authorize_client_area_write(area_id)
     if auth_error:
@@ -192,17 +196,36 @@ def create_document():
     try:
         cur = conn.cursor()
 
-        # INSERT básico com RETURNING
-        cur.execute(
-            """INSERT INTO documents (area_id, name, url, is_external_link, status, processing_status, last_checked_at, upload_date, fetch_mode)
-               VALUES (%s, %s, %s, %s, 'active', 'pending', NOW(), NOW(), %s) RETURNING id""",
-            (area_id, data.get('name', 'Documento sem nome'), url if url else None, is_external, fetch_mode)
-        )
-        doc_id = cur.fetchone()[0]
+        existing_id = None
+        if url:
+            cur.execute(
+                "SELECT id FROM documents WHERE area_id = %s AND url = %s ORDER BY upload_date DESC LIMIT 1",
+                (area_id, url)
+            )
+            row = cur.fetchone()
+            existing_id = row[0] if row else None
 
-        # Se foi enviado texto direto, salva no banco antes de processar
-        if content_text and not is_external:
-            cur.execute("UPDATE documents SET content_text = %s WHERE id = %s", (content_text, doc_id))
+        if existing_id:
+            doc_id = existing_id
+            cur.execute(
+                """UPDATE documents SET name=%s, is_external_link=%s, status='active',
+                       processing_status='pending', last_checked_at=NOW(), fetch_mode=%s
+                   WHERE id=%s""",
+                (name, is_external, fetch_mode, doc_id)
+            )
+            if content_text and not is_external:
+                cur.execute("UPDATE documents SET content_text = %s WHERE id = %s", (content_text, doc_id))
+        else:
+            cur.execute(
+                """INSERT INTO documents (area_id, name, url, is_external_link, status, processing_status, last_checked_at, upload_date, fetch_mode)
+                   VALUES (%s, %s, %s, %s, 'active', 'pending', NOW(), NOW(), %s) RETURNING id""",
+                (area_id, name, url if url else None, is_external, fetch_mode)
+            )
+            doc_id = cur.fetchone()[0]
+
+            # Se foi enviado texto direto, salva no banco antes de processar
+            if content_text and not is_external:
+                cur.execute("UPDATE documents SET content_text = %s WHERE id = %s", (content_text, doc_id))
 
         conn.commit()
         conn.close()
@@ -212,7 +235,7 @@ def create_document():
 
         return jsonify({
             "id": doc_id,
-            "message": "Documento criado com sucesso",
+            "message": "Documento atualizado (já existia essa URL nessa área)" if existing_id else "Documento criado com sucesso",
             "rag_result": result
         }), 201
 
@@ -1491,6 +1514,113 @@ def admin_delete_document(doc_id):
         return jsonify({"message": f"Documento {doc_id} excluído"})
     except Exception as e:
         if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route('/admin/documents/duplicates', methods=['GET'])
+def admin_get_duplicate_documents():
+    """Agrupa documentos com a mesma (area_id, url) — sobra de quando a
+    árvore de links era recuperada várias vezes antes do upsert existir em
+    ingest_and_index/create_document (cada recuperação criava uma linha
+    nova em vez de reaproveitar a existente). Cada grupo já vem com
+    recommended_keep_id calculado pela heurística: indexado > mais chunks >
+    processado mais recentemente > status ativo — o front pré-seleciona
+    esse, mas o admin pode trocar antes de resolver."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível", "groups": []}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT area_id, url FROM documents
+               WHERE url IS NOT NULL
+               GROUP BY area_id, url
+               HAVING COUNT(*) > 1"""
+        )
+        dup_keys = cur.fetchall()
+
+        groups = []
+        for area_id, url in dup_keys:
+            cur.execute(
+                """SELECT d.id, d.name, a.name as area_name, d.url,
+                          d.processing_status, d.chunk_count, d.status, d.fetch_mode,
+                          d.parent_doc_id, d.last_processed_at,
+                          (SELECT count(*) FROM documents c WHERE c.parent_doc_id = d.id) as child_count
+                   FROM documents d JOIN areas a ON a.id = d.area_id
+                   WHERE d.area_id = %s AND d.url = %s
+                   ORDER BY d.upload_date DESC""",
+                (area_id, url)
+            )
+            rows = cur.fetchall()
+            if len(rows) < 2:
+                continue  # já resolvido por uma corrida concorrente, pula
+
+            def sort_key(r):
+                proc_status = r[4] or "pending"
+                chunk_count = r[5] or 0
+                status = r[6] or "active"
+                last_processed = r[9]
+                return (
+                    0 if proc_status == "indexed" else 1,
+                    -chunk_count,
+                    -(last_processed.timestamp() if last_processed else 0),
+                    0 if status == "active" else 1,
+                )
+            best_row = min(rows, key=sort_key)
+
+            docs = [{
+                "id": r[0], "name": r[1], "area_name": r[2], "url": r[3],
+                "processing_status": r[4] or "pending", "chunk_count": r[5] or 0,
+                "status": r[6] or "active", "fetch_mode": r[7] or "http",
+                "parent_doc_id": r[8],
+                "last_processed_at": r[9].isoformat() if r[9] else None,
+                "child_count": r[10] or 0
+            } for r in rows]
+
+            groups.append({
+                "area_id": area_id, "area_name": docs[0]["area_name"],
+                "url": url, "documents": docs, "recommended_keep_id": best_row[0]
+            })
+
+        conn.close()
+        return jsonify({"groups": groups, "total_groups": len(groups)})
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e), "groups": []}), 500
+
+
+@app.route('/admin/documents/duplicates/resolve', methods=['POST'])
+def admin_resolve_duplicate_documents():
+    """Aplica a resolução de duplicados escolhida no admin: corpo
+    {"resolutions": [{"keep_id": X, "remove_ids": [Y, Z]}, ...]}. Pra cada
+    remove_id, reparenta os filhos dele pro keep_id primeiro (senão apagar
+    o perdedor orfanaria os nós que a árvore tinha pendurado nele) e só
+    depois apaga chunks + a linha do documento perdedor."""
+    data = request.get_json()
+    resolutions = data.get('resolutions') or []
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        documents_removed = 0
+        for res in resolutions:
+            keep_id = res.get('keep_id')
+            remove_ids = res.get('remove_ids') or []
+            if not keep_id or not remove_ids:
+                continue
+            for remove_id in remove_ids:
+                if remove_id == keep_id:
+                    continue
+                cur.execute("UPDATE documents SET parent_doc_id = %s WHERE parent_doc_id = %s", (keep_id, remove_id))
+                cur.execute("DELETE FROM document_chunks WHERE doc_id = %s", (remove_id,))
+                cur.execute("DELETE FROM documents WHERE id = %s", (remove_id,))
+                documents_removed += cur.rowcount
+        conn.commit()
+        conn.close()
+        return jsonify({"groups_resolved": len(resolutions), "documents_removed": documents_removed})
+    except Exception as e:
+        if conn: conn.rollback(); conn.close()
         return jsonify({"error": str(e)}), 500
 
 
