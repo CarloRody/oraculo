@@ -108,6 +108,10 @@ class CrawlAdvance(BaseModel):
     links: list[CrawlAdvanceLink]
 
 
+class MonitorSelection(BaseModel):
+    page_ids: list[int]
+
+
 # ---------------------------------------------------------------------------
 # Routes — Health
 # ---------------------------------------------------------------------------
@@ -235,7 +239,6 @@ def _process_rag_for_change(result: dict, url_data: dict):
     if not text:
         return {}
 
-    status = result["status"]
     area_id = url_data.get("area_id")
     name = url_data.get("name", "Untitled")
     url = url_data["url"]
@@ -243,56 +246,28 @@ def _process_rag_for_change(result: dict, url_data: dict):
     import rag_wrapper as rw
 
     try:
-        if status == "new":
-            # First time: create doc in Tutor + RAG index
-            doc_id = rw.create_document_in_tutor(
-                name=f"{name} — {url}",
-                area_id=area_id,
-                content_text=text,
-                url=url,
-            )
-            if not doc_id:
-                return {"rag_ok": False, "error": "Could not create document"}
+        # Decisão create-vs-update depende só de "o documento já existe pra
+        # essa (area_id, url)?", não do status "new"/"changed" do scan —
+        # sem isso, uma URL que já virou documento via crawl de árvore (ver
+        # rag_wrapper.ingest_and_index) e só depois é promovida a
+        # monitorada cairia sempre no caso "new" no primeiro scan (é a
+        # primeira vez que MONITOR_URLS vê essa URL) e duplicaria o
+        # documento já existente.
+        existing_doc_id = rw.find_existing_document(area_id, url)
+        if existing_doc_id:
+            rag_result = rw.reprocess_existing(existing_doc_id, text)
+            return {"rag_ok": True, "doc_id": existing_doc_id, **rag_result}
 
-            rag_result = rw.process_document(doc_id)
-            return {"rag_ok": True, "doc_id": doc_id, **rag_result}
-
-        elif status == "changed":
-            # URL already monitored — find existing Tutor docs for this area+URL
-            import psycopg2
-            db_cfg = {
-                "dbname": "ai_tutor_db",
-                "user": "postgres",
-                "host": "/var/run/postgresql",
-            }
-            conn = psycopg2.connect(**db_cfg)
-            try:
-                cur = conn.cursor()
-                # Find the most recent document for this area+URL
-                cur.execute(
-                    "SELECT id FROM documents WHERE area_id = %s AND url = %s ORDER BY upload_date DESC LIMIT 1",
-                    (area_id, url),
-                )
-                row = cur.fetchone()
-            finally:
-                conn.close()
-
-            if row:
-                doc_id = row[0]
-                rag_result = rw.reprocess_existing(doc_id, text)
-                return {"rag_ok": True, "doc_id": doc_id, **rag_result}
-            else:
-                # No existing doc found — treat as new
-                doc_id = rw.create_document_in_tutor(
-                    name=f"{name} — {url}",
-                    area_id=area_id,
-                    content_text=text,
-                    url=url,
-                )
-                if not doc_id:
-                    return {"rag_ok": False, "error": "Could not create document"}
-                rag_result = rw.process_document(doc_id)
-                return {"rag_ok": True, "doc_id": doc_id, **rag_result}
+        doc_id = rw.create_document_in_tutor(
+            name=f"{name} — {url}",
+            area_id=area_id,
+            content_text=text,
+            url=url,
+        )
+        if not doc_id:
+            return {"rag_ok": False, "error": "Could not create document"}
+        rag_result = rw.process_document(doc_id)
+        return {"rag_ok": True, "doc_id": doc_id, **rag_result}
 
     except Exception as e:
         print(f"RAG processing error for URL {url_data.get('id')}: {e}")
@@ -776,6 +751,43 @@ def crawl_detail(crawl_id: int):
         conn.close()
 
     return {"crawl": dict(crawl), "pages": pages}
+
+
+@app.post("/crawl/{crawl_id}/monitor")
+def crawl_add_to_monitoring(crawl_id: int, data: MonitorSelection):
+    """Registra páginas escolhidas da árvore (pai e/ou filhos específicos)
+    em monitor_urls — só a partir daqui elas passam a ser reconferidas pelo
+    scan_all periódico. Antes disso, uma página crawleada é só uma
+    ingestão única, nunca mais reconferida. area_id/fetch_mode vêm do
+    próprio crawl (uniformes pra sessão inteira)."""
+    from monitor.url_registry import add_url
+
+    conn = get_db()
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute("SELECT area_id, fetch_mode FROM monitor_crawls WHERE id = %s", (crawl_id,))
+        crawl = cur.fetchone()
+        if not crawl:
+            raise HTTPException(404, "Crawl not found")
+        cur.execute(
+            "SELECT id, url, title FROM monitor_crawl_pages WHERE crawl_id = %s AND id = ANY(%s)",
+            (crawl_id, data.page_ids),
+        )
+        pages = cur.fetchall()
+    finally:
+        conn.close()
+
+    added, skipped = [], []
+    for p in pages:
+        try:
+            row = add_url(
+                name=p["title"] or p["url"], url=p["url"],
+                area_id=crawl["area_id"], fetch_mode=crawl["fetch_mode"], enabled=True,
+            )
+            added.append(row["id"])
+        except ValueError:
+            skipped.append(p["url"])  # já estava registrada em monitor_urls
+    return {"added": len(added), "skipped": skipped}
 
 
 @app.post("/rag/process/{tutor_doc_id}")

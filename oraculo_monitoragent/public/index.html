@@ -210,6 +210,7 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 <div class="card-header">
   <h2>🌳 Árvore de Conhecimento</h2>
   <div class="card-header-actions" id="crawlHeaderActions" style="display:none">
+    <button class="btn btn-auto" id="btnAddToMonitoring" onclick="addSelectedToMonitoring(this)" disabled>👁 Adicionar ao Monitoramento (<span id="monitorSelCount">0</span>)</button>
     <button class="btn btn-scan" onclick="crawlFinalize()">✔ Finalizar</button>
     <button class="btn btn-del" onclick="crawlCancel()">✖ Cancelar Árvore</button>
   </div>
@@ -419,6 +420,7 @@ async function extractLinks(urlId, btn) {
 // one level at a time, not fully automatic (keeps the tree under control).
 let currentCrawl = null; // {crawl_id, max_depth, domain}
 let crawlLinksByGroup = {}; // groupId -> candidate links array for that page
+let selectedForMonitoring = new Set(); // monitor_crawl_pages ids marked "Monitorar esta página"
 
 async function startCrawlTree(urlId, btn) {
   const depthStr = prompt('Quantos níveis de profundidade? (1 a 5, ex: 3 = página + filhas + netas)', '3');
@@ -431,6 +433,7 @@ async function startCrawlTree(urlId, btn) {
     }));
     currentCrawl = { crawl_id: r.crawl_id, max_depth: r.max_depth, domain: r.domain };
     crawlLinksByGroup = {};
+    selectedForMonitoring = new Set();
     document.getElementById('crawlContainer').innerHTML = '';
     renderCrawlLevel({ ...r.root_page }, r.links);
     showToast(`Árvore iniciada — documento raiz criado (#${r.root_page.tutor_doc_id}).`);
@@ -466,9 +469,12 @@ function renderCrawlLevel(page, links) {
   block.id = groupId + '_block';
   block.style.cssText = `margin:10px 0;margin-left:${indent}px;padding:12px;background:#1a2540;border-radius:8px;border:1px solid #253552`;
   block.innerHTML = `
-    <div style="margin-bottom:8px;color:#fff;font-weight:600">
-      Nível ${page.depth}: ${esc(page.title)}
-      <span style="color:#5a6b8c;font-size:.78rem;font-weight:400">(documento #${page.tutor_doc_id})</span>
+    <div style="margin-bottom:8px;color:#fff;font-weight:600;display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <span>Nível ${page.depth}: ${esc(page.title)}
+      <span style="color:#5a6b8c;font-size:.78rem;font-weight:400">(documento #${page.tutor_doc_id})</span></span>
+      <label style="display:flex;align-items:center;gap:5px;font-weight:400;font-size:.8rem;color:#9fb3d9;cursor:pointer">
+        <input type="checkbox" onchange="toggleMonitorSelect(${page.id}, this.checked)"> Monitorar esta página
+      </label>
     </div>
     ${linksHtml}
     ${actionsHtml}
@@ -478,6 +484,31 @@ function renderCrawlLevel(page, links) {
 
 function selectAllCrawlLinks(groupId, checked) {
   document.querySelectorAll(`input[data-group="${groupId}"]`).forEach(cb => cb.checked = checked);
+}
+
+function toggleMonitorSelect(pageId, checked) {
+  if (checked) selectedForMonitoring.add(pageId); else selectedForMonitoring.delete(pageId);
+  document.getElementById('monitorSelCount').textContent = selectedForMonitoring.size;
+  document.getElementById('btnAddToMonitoring').disabled = selectedForMonitoring.size === 0;
+}
+
+async function addSelectedToMonitoring(btn) {
+  if (!currentCrawl || !selectedForMonitoring.size) return;
+  const pageIds = Array.from(selectedForMonitoring);
+  try {
+    const r = await withButtonLoading(btn, 'Adicionando...', () => api(`/crawl/${currentCrawl.crawl_id}/monitor`, {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ page_ids: pageIds })
+    }));
+    let msg = `${r.added} página(s) adicionada(s) ao monitoramento.`;
+    if (r.skipped.length) msg += ` ${r.skipped.length} já estava(m) monitorada(s).`;
+    showToast(msg);
+    selectedForMonitoring = new Set();
+    document.querySelectorAll('#crawlContainer input[type="checkbox"][onchange^="toggleMonitorSelect"]').forEach(cb => cb.checked = false);
+    document.getElementById('monitorSelCount').textContent = '0';
+    document.getElementById('btnAddToMonitoring').disabled = true;
+    refresh();
+  } catch(e) { showToast('Erro ao adicionar ao monitoramento: '+e.message, true); }
 }
 
 async function advanceCrawl(parentPageId, groupId, btn) {
