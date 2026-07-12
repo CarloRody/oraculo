@@ -1517,6 +1517,78 @@ def admin_delete_document(doc_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route('/admin/documents/low-content', methods=['GET'])
+def admin_get_low_content_documents():
+    """Documentos com conteúdo raso/desprezível — dois sinais combinados:
+    (1) texto total curto (ou falha de extração), (2) muitos chunks curtos
+    dentro do documento (proxy pra conteúdo irrelevante — menu, rodapé,
+    fragmento cortado — mesmo quando o total não é tão pequeno assim).
+    'pending' fica de fora: ainda não processado não é a mesma coisa que
+    processado e raso. Ação (reprocessar/apagar) continua sendo por
+    documento inteiro — não existe gestão por chunk avulso."""
+    try:
+        doc_threshold = int(request.args.get('doc_threshold', 400))
+        chunk_threshold = int(request.args.get('chunk_threshold', 80))
+        ratio_threshold = float(request.args.get('ratio_threshold', 0.4))
+    except ValueError:
+        return jsonify({"error": "Parâmetros de threshold inválidos"}), 400
+
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível", "documents": []}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """WITH chunk_stats AS (
+                   SELECT doc_id,
+                          COUNT(*) as total_chunks,
+                          COUNT(*) FILTER (WHERE LENGTH(content_chunk) < %(chunk_threshold)s) as short_chunks,
+                          ROUND(AVG(LENGTH(content_chunk))) as avg_chunk_length
+                   FROM document_chunks
+                   GROUP BY doc_id
+               )
+               SELECT d.id, d.name, a.name as area_name, d.url, d.processing_status, d.chunk_count,
+                      COALESCE(LENGTH(d.content_text), 0) as content_length, d.status, d.fetch_mode,
+                      d.parent_doc_id,
+                      (SELECT count(*) FROM documents c WHERE c.parent_doc_id = d.id) as child_count,
+                      COALESCE(cs.total_chunks, 0) as total_chunks,
+                      COALESCE(cs.short_chunks, 0) as short_chunks,
+                      COALESCE(cs.avg_chunk_length, 0) as avg_chunk_length,
+                      CASE
+                          WHEN d.processing_status = 'failed' THEN 'falha_extracao'
+                          WHEN COALESCE(LENGTH(d.content_text), 0) < %(doc_threshold)s THEN 'conteudo_total_raso'
+                          ELSE 'muitos_chunks_curtos'
+                      END as reason
+               FROM documents d
+               JOIN areas a ON a.id = d.area_id
+               LEFT JOIN chunk_stats cs ON cs.doc_id = d.id
+               WHERE d.processing_status = 'failed'
+                  OR (d.processing_status = 'indexed' AND COALESCE(LENGTH(d.content_text), 0) < %(doc_threshold)s)
+                  OR (d.processing_status = 'indexed' AND cs.total_chunks > 0
+                      AND cs.short_chunks::float / cs.total_chunks >= %(ratio_threshold)s)
+               ORDER BY content_length ASC""",
+            {"doc_threshold": doc_threshold, "chunk_threshold": chunk_threshold, "ratio_threshold": ratio_threshold}
+        )
+        rows = cur.fetchall()
+        documents = [{
+            "id": r[0], "name": r[1], "area_name": r[2], "url": r[3] or "",
+            "processing_status": r[4] or "pending", "chunk_count": r[5] or 0,
+            "content_length": r[6], "status": r[7] or "active", "fetch_mode": r[8] or "http",
+            "parent_doc_id": r[9], "child_count": r[10] or 0,
+            "total_chunks": r[11], "short_chunks": r[12], "avg_chunk_length": r[13],
+            "reason": r[14]
+        } for r in rows]
+        conn.close()
+        return jsonify({
+            "documents": documents,
+            "thresholds": {"doc_threshold": doc_threshold, "chunk_threshold": chunk_threshold, "ratio_threshold": ratio_threshold},
+            "total": len(documents)
+        })
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e), "documents": []}), 500
+
+
 @app.route('/admin/documents/duplicates', methods=['GET'])
 def admin_get_duplicate_documents():
     """Agrupa documentos com a mesma (area_id, url) — sobra de quando a

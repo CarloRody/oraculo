@@ -66,10 +66,12 @@
             <button class="btn btn-danger" id="deleteSelectedBtn" onclick="deleteSelected()" disabled>Apagar selecionados</button>
             <button class="btn" onclick="loadTree()">Recarregar</button>
             <button class="btn" onclick="checkDuplicates()">Verificar Duplicados</button>
+            <button class="btn" onclick="checkLowContent()">Verificar Conteúdo Fraco</button>
             <span class="count" id="selectionCount"></span>
         </div>
 
         <div id="dupPanel"></div>
+        <div id="lowContentPanel"></div>
 
         <div id="treeContainer"><p class="loading-text">Carregando...</p></div>
     </div>
@@ -304,6 +306,65 @@ async function resolveDuplicates() {
         closeDupPanel();
         loadTree();
     } catch (e) { alert('Erro ao resolver duplicados.'); }
+}
+
+// ---- Conteúdo fraco (documento raso, falha de extração, ou muitos chunks curtos/irrelevantes) ----
+const LOW_CONTENT_REASON_LABEL = {
+    falha_extracao: 'Falha na extração',
+    conteudo_total_raso: 'Conteúdo total raso',
+    muitos_chunks_curtos: 'Muitos chunks curtos'
+};
+
+async function checkLowContent() {
+    const panel = document.getElementById('lowContentPanel');
+    panel.innerHTML = '<p class="loading-text">Verificando conteúdo fraco...</p>';
+    try {
+        const res = await fetch(API + '/admin/documents/low-content');
+        const data = await res.json();
+        const docs = data.documents || [];
+        if (!docs.length) {
+            panel.innerHTML = '';
+            alert('Nenhum documento com conteúdo raso encontrado.');
+            return;
+        }
+        renderLowContentPanel(docs);
+    } catch (e) {
+        panel.innerHTML = '';
+        alert('Erro ao verificar conteúdo fraco.');
+    }
+}
+
+function renderLowContentPanel(docs) {
+    const panel = document.getElementById('lowContentPanel');
+    panel.innerHTML = `
+        <div class="dup-panel">
+            <div class="dup-panel-header">⚠ ${docs.length} documento(s) com conteúdo raso — marque e use "Apagar selecionados", ou reprocesse individualmente</div>
+            ${docs.map(d => `
+                <div class="dup-group">
+                    <label class="dup-doc-row">
+                        <input type="checkbox" onchange="toggleSelect(${d.id}, this.checked)">
+                        <span class="node-name">${esc(d.name)}</span>
+                        ${statusBadge(d.processing_status)}
+                        <span class="dup-best">${LOW_CONTENT_REASON_LABEL[d.reason] || d.reason}</span>
+                    </label>
+                    <div class="node-meta" style="margin-left:1.9rem;">
+                        ${esc(d.area_name)} • ${d.content_length} caractere(s) de texto • ${d.short_chunks}/${d.total_chunks} chunk(s) curto(s)
+                        ${d.url ? ` • ${esc(d.url)}` : ''}
+                    </div>
+                    <button class="btn" style="margin-top:0.4rem; margin-left:1.9rem; padding:0.35rem 0.8rem; font-size:0.8rem;" onclick="reprocessDoc(${d.id})">Reprocessar</button>
+                </div>
+            `).join('')}
+        </div>
+    `;
+}
+
+async function reprocessDoc(id) {
+    if (!confirm('Reprocessar RAG deste documento?')) return;
+    try {
+        await fetch(API + `/admin/documents/${id}/reprocess`, { method: 'POST' });
+        alert('Reprocessamento iniciado.');
+        loadTree();
+    } catch (e) { alert('Erro no reprocessamento.'); }
 }
 
 document.getElementById('year').textContent = new Date().getFullYear();
