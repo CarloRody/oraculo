@@ -227,7 +227,7 @@ const BASE = window.location.origin;
 let refreshInterval;
 let areasCache = [];
 
-document.getElementById('backLink').href = `${window.location.protocol}//${window.location.hostname}:5001/`;
+document.getElementById('backLink').href = `${window.location.protocol}//${window.location.hostname}:5001/index.html`;
 
 async function api(path, opts={}) {
   const r = await fetch(BASE + path, opts);
