@@ -1,39 +1,28 @@
-# Evolution API (conector Baileys/QR Code) + Redis — único componente Docker
-# do monorepo, isolado de propósito (ver Parte 12 do plano). O whatsapp-agent
-# em si (Python) continua bare-metal/systemd, igual aos outros serviços, e
-# fala com este container via 127.0.0.1:8080.
+# WAHA (WhatsApp HTTP API, baseada em WWebJS/Baileys) — único componente
+# Docker do monorepo, isolado de propósito (ver Parte 12 do plano). O
+# whatsapp-agent em si (Python) continua bare-metal/systemd, igual aos
+# outros serviços, e fala com este container via 127.0.0.1:8080.
+#
+# Trocado de Evolution API para WAHA nesta primeira versão: o pull da imagem
+# da Evolution API (atendai/evolution-api) estava sendo recusado pelo Docker
+# Hub (limite de pull anônimo), enquanto a imagem da WAHA baixou sem problema.
 #
 # Uso:
 #   cd whatsapp-agent/docker
-#   cp .env.example .env   # e preencha EVOLUTION_API_KEY com uma chave forte
+#   cp .env.example .env   # e preencha WAHA_API_KEY com uma chave forte
 #   docker compose up -d
-version: "3.8"
-
 services:
-  evolution-api:
-    image: atendai/evolution-api:latest
+  waha:
+    image: devlikeapro/waha:arm-2026.6.2   # tag específica arm64 — "latest" só tem build amd64
     restart: always
     ports:
-      - "127.0.0.1:8080:8080"   # só localhost — nunca exposto fora da Pi
+      - "127.0.0.1:8080:3000"   # só localhost — nunca exposto fora da Pi
     environment:
-      - AUTHENTICATION_API_KEY=${EVOLUTION_API_KEY}
-      - CACHE_REDIS_ENABLED=true
-      - CACHE_REDIS_URI=redis://evolution-redis:6379
-      - CACHE_REDIS_SAVE_INSTANCES=true
-      - CACHE_LOCAL_ENABLED=false
+      - WHATSAPP_API_KEY=${WAHA_API_KEY}
+      - WHATSAPP_SWAGGER_CONFIG_ADVANCED=false
     volumes:
-      - evolution_instances:/evolution/instances
-    depends_on:
-      - evolution-redis
-    mem_limit: 512m   # Orange Pi tem só 3.8GB total
-
-  evolution-redis:
-    image: redis:7-alpine
-    restart: always
-    volumes:
-      - evolution_redis_data:/data
-    mem_limit: 128m
+      - waha_sessions:/app/.sessions
+    mem_limit: 768m   # Orange Pi tem só 3.8GB total
 
 volumes:
-  evolution_instances:
-  evolution_redis_data:
+  waha_sessions:
