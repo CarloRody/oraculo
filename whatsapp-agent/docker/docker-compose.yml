@@ -22,6 +22,8 @@ services:
       - WHATSAPP_SWAGGER_CONFIG_ADVANCED=false
     volumes:
       - waha_sessions:/app/.sessions
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # pra WAHA conseguir chamar o webhook em :5005 no host
     mem_limit: 768m   # Orange Pi tem só 3.8GB total
 
 volumes:

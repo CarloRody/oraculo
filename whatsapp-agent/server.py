@@ -185,6 +185,191 @@ def mark_session_connected(account_id):
         conn.close()
 
 
+def get_account_by_session(session_name):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT {', '.join(ACCOUNT_COLUMNS)} FROM whatsapp_accounts WHERE wa_session_name = %s",
+            (session_name,),
+        )
+        row = cur.fetchone()
+        return _row_to_account(row) if row else None
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Contatos / conversas / mensagens
+# ---------------------------------------------------------------------------
+
+def get_or_create_contact(account_id, wa_id, push_name=None):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM whatsapp_contacts WHERE account_id = %s AND wa_id = %s",
+            (account_id, wa_id),
+        )
+        row = cur.fetchone()
+        if row:
+            if push_name:
+                cur.execute(
+                    "UPDATE whatsapp_contacts SET push_name = %s, last_interaction_at = NOW() WHERE id = %s",
+                    (push_name, row[0]),
+                )
+                conn.commit()
+            return row[0]
+        cur.execute(
+            """INSERT INTO whatsapp_contacts (account_id, wa_id, push_name, last_interaction_at)
+               VALUES (%s, %s, %s, NOW()) RETURNING id""",
+            (account_id, wa_id, push_name),
+        )
+        contact_id = cur.fetchone()[0]
+        conn.commit()
+        return contact_id
+    finally:
+        conn.close()
+
+
+def get_or_create_chat(account_id, contact_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM whatsapp_chats WHERE account_id = %s AND contact_id = %s",
+            (account_id, contact_id),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        cur.execute(
+            """INSERT INTO whatsapp_chats (account_id, chat_type, contact_id)
+               VALUES (%s, 'contact', %s) RETURNING id""",
+            (account_id, contact_id),
+        )
+        chat_id = cur.fetchone()[0]
+        conn.commit()
+        return chat_id
+    finally:
+        conn.close()
+
+
+def get_chat(chat_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.id, c.account_id, c.contact_id, ct.wa_id, a.wa_session_name
+               FROM whatsapp_chats c
+               JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               JOIN whatsapp_accounts a ON a.id = c.account_id
+               WHERE c.id = %s""",
+            (chat_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(zip(["id", "account_id", "contact_id", "wa_id", "wa_session_name"], row))
+    finally:
+        conn.close()
+
+
+def save_message(chat_id, account_id, direction, body, sender_contact_id=None, wa_message_id=None):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        status = "sent" if direction == "out" else "delivered"
+        cur.execute(
+            """INSERT INTO whatsapp_messages
+               (chat_id, account_id, wa_message_id, direction, sender_contact_id, message_type, body, status)
+               VALUES (%s, %s, %s, %s, %s, 'text', %s, %s) RETURNING id""",
+            (chat_id, account_id, wa_message_id, direction, sender_contact_id, body, status),
+        )
+        message_id = cur.fetchone()[0]
+        preview = (body or "")[:120]
+        if direction == "in":
+            cur.execute(
+                """UPDATE whatsapp_chats
+                   SET last_message_at = NOW(), last_message_preview = %s, unread_count = unread_count + 1
+                   WHERE id = %s""",
+                (preview, chat_id),
+            )
+        else:
+            cur.execute(
+                "UPDATE whatsapp_chats SET last_message_at = NOW(), last_message_preview = %s WHERE id = %s",
+                (preview, chat_id),
+            )
+        conn.commit()
+        return message_id
+    finally:
+        conn.close()
+
+
+def list_chats(account_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.id, c.unread_count, c.is_pinned, c.last_message_at, c.last_message_preview,
+                      ct.name, ct.push_name, ct.wa_id
+               FROM whatsapp_chats c
+               JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               WHERE c.account_id = %s AND c.is_archived = FALSE
+               ORDER BY c.last_message_at DESC NULLS LAST""",
+            (account_id,),
+        )
+        cols = ["id", "unread_count", "is_pinned", "last_message_at", "last_message_preview",
+                "contact_name", "push_name", "wa_id"]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            if r.get("last_message_at"):
+                r["last_message_at"] = str(r["last_message_at"])
+            contact_name = r.pop("contact_name")
+            push_name = r.pop("push_name")
+            r["display_name"] = contact_name or push_name or r["wa_id"]
+        return rows
+    finally:
+        conn.close()
+
+
+def list_messages(chat_id, before_id=None, limit=50):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ["id", "direction", "message_type", "body", "status", "sent_at", "is_ai_generated"]
+        if before_id:
+            cur.execute(
+                f"""SELECT {', '.join(cols)} FROM whatsapp_messages
+                    WHERE chat_id = %s AND id < %s ORDER BY id DESC LIMIT %s""",
+                (chat_id, before_id, limit),
+            )
+        else:
+            cur.execute(
+                f"""SELECT {', '.join(cols)} FROM whatsapp_messages
+                    WHERE chat_id = %s ORDER BY id DESC LIMIT %s""",
+                (chat_id, limit),
+            )
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            if r.get("sent_at"):
+                r["sent_at"] = str(r["sent_at"])
+        rows.reverse()  # devolve em ordem cronológica (mais antiga primeiro)
+        return rows
+    finally:
+        conn.close()
+
+
+def mark_chat_read(chat_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_chats SET unread_count = 0 WHERE id = %s", (chat_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Rotas — página própria
 # ---------------------------------------------------------------------------
@@ -248,8 +433,10 @@ def api_connect_account(account_id):
         return jsonify({"ok": False, "message": "Só contas QR Code usam este fluxo"}), 400
 
     session_name = account["wa_session_name"]
+    webhook_base = (WHATSAPP_CONFIG.get("webhook_base_url") or "http://host.docker.internal:5005").rstrip("/")
+    webhook_url = f"{webhook_base}/webhooks/waha"
     try:
-        waha.create_and_start_session(session_name)
+        waha.create_and_start_session(session_name, webhook_url=webhook_url)
 
         # A WAHA cria a sessão de forma assíncrona (STARTING -> SCAN_QR_CODE),
         # então esperamos um pouco antes do QR ficar disponível — até 20s,
@@ -332,6 +519,119 @@ def api_disconnect_account(account_id):
         return jsonify({"ok": False, "message": str(e)}), 502
     update_account_status(account_id, "disconnected")
     log_event(account_id, "disconnected_manual")
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Rotas — conversas e mensagens
+# ---------------------------------------------------------------------------
+
+@app.route("/api/whatsapp/accounts/<int:account_id>/chats", methods=["GET"])
+def api_list_chats(account_id):
+    if not get_account(account_id):
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    return jsonify({"chats": list_chats(account_id)})
+
+
+@app.route("/api/whatsapp/chats/<int:chat_id>/messages", methods=["GET"])
+def api_list_messages(chat_id):
+    before_id = request.args.get("before_id", type=int)
+    limit = request.args.get("limit", default=50, type=int)
+    return jsonify({"messages": list_messages(chat_id, before_id=before_id, limit=limit)})
+
+
+@app.route("/api/whatsapp/chats/<int:chat_id>/messages", methods=["POST"])
+def api_send_message(chat_id):
+    data = request.json or {}
+    text = (data.get("text") or "").strip()
+    if not text:
+        return jsonify({"ok": False, "message": "Texto é obrigatório"}), 400
+
+    chat = get_chat(chat_id)
+    if not chat:
+        return jsonify({"ok": False, "message": "Conversa não encontrada"}), 404
+
+    try:
+        result = waha.send_text(chat["wa_session_name"], chat["wa_id"], text)
+    except WahaError as e:
+        return jsonify({"ok": False, "message": str(e)}), 502
+
+    wa_message_id = (result or {}).get("id")
+    message_id = save_message(chat_id, chat["account_id"], "out", text, wa_message_id=wa_message_id)
+    return jsonify({"ok": True, "id": message_id})
+
+
+@app.route("/api/whatsapp/accounts/<int:account_id>/chats/start", methods=["POST"])
+def api_start_chat(account_id):
+    account = get_account(account_id)
+    if not account:
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+
+    data = request.json or {}
+    phone = re.sub(r"\D", "", data.get("phone") or "")
+    text = (data.get("text") or "").strip()
+    if not phone:
+        return jsonify({"ok": False, "message": "Telefone é obrigatório (só números, com DDI, ex: 5511999999999)"}), 400
+    if not text:
+        return jsonify({"ok": False, "message": "Texto é obrigatório"}), 400
+
+    wa_id = f"{phone}@c.us"
+    contact_id = get_or_create_contact(account_id, wa_id)
+    chat_id = get_or_create_chat(account_id, contact_id)
+
+    try:
+        result = waha.send_text(account["wa_session_name"], wa_id, text)
+    except WahaError as e:
+        return jsonify({"ok": False, "message": str(e)}), 502
+
+    wa_message_id = (result or {}).get("id")
+    save_message(chat_id, account_id, "out", text, wa_message_id=wa_message_id)
+    return jsonify({"ok": True, "chat_id": chat_id})
+
+
+@app.route("/api/whatsapp/chats/<int:chat_id>/read", methods=["POST"])
+def api_mark_chat_read(chat_id):
+    mark_chat_read(chat_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/webhooks/waha", methods=["POST"])
+def webhook_waha():
+    payload = request.json or {}
+    event = payload.get("event")
+
+    # Log cru sempre, antes de tentar interpretar — garante que temos o
+    # payload real da WAHA pra corrigir o parser abaixo se o formato não
+    # bater exatamente com o esperado (não dava pra confirmar isso sem um
+    # evento de verdade, ver plano).
+    log_event(None, "webhook_received", detail=payload)
+
+    session_name = payload.get("session")
+    account = get_account_by_session(session_name) if session_name else None
+    if not account:
+        return jsonify({"ok": True})  # sessão desconhecida (ex: conta de teste já removida) — ignora
+
+    if event == "session.status":
+        inner = payload.get("payload") or {}
+        waha_status = inner.get("status") or payload.get("status")
+        our_status = WAHA_STATUS_MAP.get(waha_status)
+        if our_status:
+            update_account_status(account["id"], our_status, connected=(our_status == "connected"))
+            log_event(account["id"], "status_via_webhook", detail={"waha_status": waha_status})
+
+    elif event == "message":
+        msg = payload.get("payload") or {}
+        if msg.get("fromMe"):
+            return jsonify({"ok": True})  # mensagens enviadas por nós já são gravadas na hora do envio
+        wa_id = msg.get("from")
+        body = msg.get("body")
+        wa_message_id = msg.get("id")
+        push_name = msg.get("notifyName") or (msg.get("_data") or {}).get("notifyName")
+        if wa_id:
+            contact_id = get_or_create_contact(account["id"], wa_id, push_name)
+            chat_id = get_or_create_chat(account["id"], contact_id)
+            save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
+
     return jsonify({"ok": True})
 
 

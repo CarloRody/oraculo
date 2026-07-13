@@ -49,17 +49,30 @@ def _request(method, path, expected_statuses=(200, 201), **kwargs):
     return res.json() if res.content else {}
 
 
-def create_and_start_session(session_name):
-    """Cria e inicia a sessão na primeira vez; se já existir (409, reconectar
-    uma conta que já tinha sido criada antes), reinicia com /start."""
+def create_and_start_session(session_name, webhook_url=None):
+    """Cria e inicia a sessão na primeira vez, já configurando o webhook de
+    mensagens/status (fixado na criação — reconectar uma sessão existente via
+    /start NÃO reaplica essa config, só uma sessão nova pega o webhook).
+    Se já existir (409, reconectar uma conta criada antes), reinicia com /start."""
+    body = {"name": session_name, "start": True}
+    if webhook_url:
+        body["config"] = {
+            "webhooks": [{"url": webhook_url, "events": ["message", "session.status"]}]
+        }
     try:
-        return _request(
-            "POST", "/api/sessions", json={"name": session_name, "start": True}
-        )
+        return _request("POST", "/api/sessions", json=body)
     except WahaError as e:
         if "409" in str(e):
             return _request("POST", f"/api/sessions/{session_name}/start", expected_statuses=(200, 201))
         raise
+
+
+def send_text(session_name, chat_id, text):
+    return _request(
+        "POST",
+        "/api/sendText",
+        json={"session": session_name, "chatId": chat_id, "text": text},
+    )
 
 
 def session_status(session_name):
