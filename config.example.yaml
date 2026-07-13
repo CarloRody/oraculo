@@ -44,3 +44,11 @@ backup_manager:
     enabled: false      # liga/desliga o backup automático agendado
     interval_hours: 24  # roda o backup completo a cada N horas
     retention_days: 14  # apaga sozinho backups mais velhos que N dias (vazio/null = nunca apaga)
+
+ddns:
+  enabled: false
+  interval_minutes: 15
+  hostname: null                 # ex: carlorody.jflddns.com.br
+  username: null
+  password: null
+  update_url_template: null      # ex (palpite dyndns2): "http://ipservice.jflddns.com.br/nic/update?hostname={hostname}&myip={ip}"

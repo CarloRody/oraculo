@@ -5,7 +5,9 @@ import os
 import secrets
 import subprocess
 import copy
-from datetime import date
+import threading
+import time
+from datetime import date, datetime
 import requests as _http_requests
 from flask_cors import CORS
 
@@ -2654,6 +2656,186 @@ def health_check():
     })
 
 
+# ---------------------------------------------------------------------------
+# DDNS — atualização automática de hostname dinâmico, exibida na aba "Saúde
+# do Sistema" do admin. update_url_template fica configurável (não hardcoded)
+# porque o protocolo exato do provedor (jflddns.com.br) não é documentado
+# publicamente — o valor-padrão é um palpite no formato dyndns2 (o mesmo do
+# No-IP/DynDNS clássico), a confirmar/corrigir na tela depois de testar.
+# ---------------------------------------------------------------------------
+
+DDNS_LOCK = threading.Lock()
+
+
+def _fmt_ts(ts):
+    if not ts:
+        return None
+    return datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M")
+
+
+def _ddns_initial_state():
+    ddns_cfg = CONFIG.get("ddns", {}) or {}
+    return {
+        "enabled": bool(ddns_cfg.get("enabled", False)),
+        "interval_minutes": int(ddns_cfg.get("interval_minutes") or 15),
+        "last_checked_at": None,
+        "last_ip": None,
+        "last_update_at": None,
+        "last_update_ok": None,
+        "last_update_message": None,
+    }
+
+
+DDNS_STATE = _ddns_initial_state()
+
+
+def get_external_ip():
+    res = _http_requests.get("https://api.ipify.org", timeout=5)
+    res.raise_for_status()
+    return res.text.strip()
+
+
+def update_ddns(ip):
+    """Chama a URL de atualização configurada com o IP informado. Nunca
+    levanta — quem chama trata (ok, message). Não decodifica os códigos de
+    resposta específicos do dyndns2 (good/nochg/badauth) porque o protocolo
+    exato deste provedor ainda não foi confirmado — só reporta sucesso/
+    falha por status HTTP + corpo da resposta."""
+    ddns_cfg = CONFIG.get("ddns", {}) or {}
+    hostname = ddns_cfg.get("hostname")
+    username = ddns_cfg.get("username")
+    password = ddns_cfg.get("password")
+    template = ddns_cfg.get("update_url_template")
+    if not hostname or not template:
+        return False, "DDNS não configurado (hostname/URL de atualização ausentes)"
+    try:
+        url = template.format(hostname=hostname, ip=ip)
+        auth = (username, password) if username else None
+        res = _http_requests.get(url, auth=auth, timeout=10)
+        ok = res.status_code == 200
+        message = f"HTTP {res.status_code}: {res.text.strip()[:200]}"
+        return ok, message
+    except Exception as e:
+        return False, str(e)
+
+
+def run_ddns_check(force=False):
+    """Descobre o IP externo atual e, se mudou desde a última checagem (ou
+    force=True), chama update_ddns(). Sempre atualiza DDNS_STATE."""
+    try:
+        ip = get_external_ip()
+    except Exception as e:
+        with DDNS_LOCK:
+            DDNS_STATE["last_checked_at"] = time.time()
+        return False, f"Não foi possível descobrir o IP externo: {e}"
+
+    with DDNS_LOCK:
+        DDNS_STATE["last_checked_at"] = time.time()
+        changed = ip != DDNS_STATE["last_ip"]
+
+    if not changed and not force:
+        return True, f"IP sem mudança ({ip}) — nada a atualizar"
+
+    ok, message = update_ddns(ip)
+    with DDNS_LOCK:
+        DDNS_STATE["last_ip"] = ip
+        DDNS_STATE["last_update_at"] = time.time()
+        DDNS_STATE["last_update_ok"] = ok
+        DDNS_STATE["last_update_message"] = message
+    return ok, message
+
+
+def run_ddns_scheduler():
+    """Loop em background (thread própria, iniciada no __main__): acorda a
+    cada 60s, roda run_ddns_check() quando habilitado e já passou
+    interval_minutes desde a última checagem — mesmo espírito do scheduler
+    do Backup Manager, mas em minutos em vez de horas."""
+    while True:
+        time.sleep(60)
+        try:
+            with DDNS_LOCK:
+                enabled = DDNS_STATE["enabled"]
+                interval_minutes = DDNS_STATE["interval_minutes"]
+                last_checked_at = DDNS_STATE["last_checked_at"]
+            if not enabled:
+                continue
+            due = last_checked_at is None or (time.time() - last_checked_at) >= interval_minutes * 60
+            if due:
+                run_ddns_check()
+        except Exception as e:
+            print(f"[ddns] Erro no ciclo automático: {e}")
+
+
+@app.route('/admin/ddns', methods=['GET'])
+def admin_get_ddns():
+    ddns_cfg = CONFIG.get("ddns", {}) or {}
+    with DDNS_LOCK:
+        state = dict(DDNS_STATE)
+    return jsonify({
+        "enabled": state["enabled"],
+        "interval_minutes": state["interval_minutes"],
+        "hostname": ddns_cfg.get("hostname"),
+        "username": ddns_cfg.get("username"),
+        "password_configured": bool(ddns_cfg.get("password")),
+        "update_url_template": ddns_cfg.get("update_url_template"),
+        "last_checked_at": _fmt_ts(state["last_checked_at"]),
+        "last_ip": state["last_ip"],
+        "last_update_at": _fmt_ts(state["last_update_at"]),
+        "last_update_ok": state["last_update_ok"],
+        "last_update_message": state["last_update_message"],
+    })
+
+
+@app.route('/admin/ddns', methods=['POST'])
+def admin_save_ddns():
+    """Salva a configuração de DDNS em config.yaml e aplica na hora em
+    memória — sem precisar reiniciar o serviço (mesmo princípio do
+    agendamento do Backup Manager). Senha só é sobrescrita se vier
+    preenchida no payload (mesma convenção do /admin/config existente)."""
+    payload = request.get_json(silent=True) or {}
+
+    try:
+        interval_minutes = int(payload.get("interval_minutes") or 15)
+    except (TypeError, ValueError):
+        return jsonify({"error": "interval_minutes inválido"}), 400
+    if interval_minutes < 1:
+        return jsonify({"error": "interval_minutes precisa ser >= 1"}), 400
+    enabled = bool(payload.get("enabled", False))
+
+    new_config = copy.deepcopy(CONFIG)
+    ddns = new_config.setdefault("ddns", {})
+    ddns["enabled"] = enabled
+    ddns["interval_minutes"] = interval_minutes
+    if "hostname" in payload:
+        ddns["hostname"] = payload["hostname"] or None
+    if "username" in payload:
+        ddns["username"] = payload["username"] or None
+    if "password" in payload and payload["password"]:
+        ddns["password"] = payload["password"]
+    if "update_url_template" in payload:
+        ddns["update_url_template"] = payload["update_url_template"] or None
+
+    try:
+        save_config(new_config)
+    except Exception as e:
+        return jsonify({"error": f"Falha ao gravar config.yaml: {e}"}), 500
+
+    CONFIG["ddns"] = ddns
+    with DDNS_LOCK:
+        DDNS_STATE["enabled"] = enabled
+        DDNS_STATE["interval_minutes"] = interval_minutes
+
+    return jsonify({"success": True, "message": "Configuração de DDNS salva."})
+
+
+@app.route('/admin/ddns/test', methods=['POST'])
+def admin_test_ddns():
+    """Dispara uma atualização imediata (ignora "só se mudou"), pra testar
+    na hora depois de salvar credenciais, sem esperar o próximo ciclo."""
+    ok, message = run_ddns_check(force=True)
+    return jsonify({"ok": ok, "message": message})
+
+
 @app.route('/api/allowed-pages', methods=['GET'])
 def get_allowed_pages():
     """Páginas liberadas para O CLIENTE identificado por X-Oraculo-Key — cada
@@ -2758,5 +2940,6 @@ def serve_frontend(filename):
 
 if __name__ == '__main__':
     migrate_if_needed()
+    threading.Thread(target=run_ddns_scheduler, daemon=True).start()
     print("API Server rodando em http://localhost:5001 (RAG integrado)")
     app.run(host='0.0.0.0', port=5001, debug=False)

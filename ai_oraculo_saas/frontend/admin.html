@@ -180,6 +180,38 @@
     <div id="health-tab" class="tab-content">
         <h2 style="color:#60a5fa; margin-bottom:1.5rem;">Saúde do Sistema</h2>
         <div id="health-info"></div>
+
+        <h3 style="color:#60a5fa; margin:2rem 0 1rem;">🌐 DDNS</h3>
+        <div class="card-item">
+            <div id="ddns-status" style="margin-bottom:1rem; font-size:0.9rem; color:#94a3b8;">Carregando...</div>
+            <div class="form-group">
+                <label><input type="checkbox" id="ddnsEnabled" style="width:auto; margin-right:0.4rem;"> Ativar atualização automática</label>
+            </div>
+            <div class="form-group">
+                <label>A cada quantos minutos</label>
+                <input type="number" class="form-input" id="ddnsInterval" min="1" value="15" style="max-width:140px;">
+            </div>
+            <div class="form-group">
+                <label>Hostname</label>
+                <input type="text" class="form-input" id="ddnsHostname" placeholder="carlorody.jflddns.com.br">
+            </div>
+            <div class="form-group">
+                <label>Usuário</label>
+                <input type="text" class="form-input" id="ddnsUsername" placeholder="usuário da conta jflddns.com.br">
+            </div>
+            <div class="form-group">
+                <label>Senha <span style="font-weight:normal; color:#64748b;" id="ddnsPasswordHint">(deixe em branco para manter a atual)</span></label>
+                <input type="password" class="form-input" id="ddnsPassword" placeholder="••••••••">
+            </div>
+            <div class="form-group">
+                <label>URL de atualização <span style="font-weight:normal; color:#64748b;">(use {hostname} e {ip} — palpite inicial, confirme com "Testar agora")</span></label>
+                <input type="text" class="form-input" id="ddnsUrlTemplate" placeholder="http://ipservice.jflddns.com.br/nic/update?hostname={hostname}&myip={ip}">
+            </div>
+            <div style="margin-top:1rem; display:flex; gap:0.6rem;">
+                <button class="btn" onclick="saveDdns()">Salvar</button>
+                <button class="btn btn-sm" onclick="testDdns()" id="ddnsTestBtn">Testar agora</button>
+            </div>
+        </div>
     </div>
 
 </div>
@@ -1237,6 +1269,60 @@ async function loadHealth() {
     } catch(e) { document.getElementById('health-info').innerHTML = '<p style="color:#ef4444;">Não foi possível conectar ao admin server.</p>'; }
 }
 
+// ---- DDNS ----
+async function loadDdns() {
+    try {
+        const res = await fetch(ADMIN_API + '/admin/ddns');
+        const d = await res.json();
+        document.getElementById('ddnsEnabled').checked = d.enabled;
+        document.getElementById('ddnsInterval').value = d.interval_minutes;
+        document.getElementById('ddnsHostname').value = d.hostname || '';
+        document.getElementById('ddnsUsername').value = d.username || '';
+        document.getElementById('ddnsUrlTemplate').value = d.update_url_template || '';
+        document.getElementById('ddnsPasswordHint').textContent = d.password_configured ? '(deixe em branco para manter a atual)' : '(nenhuma senha salva ainda)';
+
+        let statusHtml = `IP externo do último check: <b>${esc(d.last_ip) || '—'}</b> em ${esc(d.last_checked_at) || '—'}<br>`;
+        statusHtml += d.last_update_at
+            ? `Última atualização enviada: ${esc(d.last_update_at)} — <span style="color:${d.last_update_ok ? '#22c55e' : '#ef4444'}">${d.last_update_ok ? 'sucesso' : 'falhou'}</span> — ${esc(d.last_update_message || '')}`
+            : 'Nenhuma atualização enviada ainda.';
+        document.getElementById('ddns-status').innerHTML = statusHtml;
+    } catch(e) { document.getElementById('ddns-status').innerHTML = '<span style="color:#ef4444;">Não foi possível carregar o status do DDNS.</span>'; }
+}
+
+async function saveDdns() {
+    const payload = {
+        enabled: document.getElementById('ddnsEnabled').checked,
+        interval_minutes: Number(document.getElementById('ddnsInterval').value) || 15,
+        hostname: document.getElementById('ddnsHostname').value.trim(),
+        username: document.getElementById('ddnsUsername').value.trim(),
+        update_url_template: document.getElementById('ddnsUrlTemplate').value.trim(),
+    };
+    const pw = document.getElementById('ddnsPassword').value;
+    if (pw) payload.password = pw;
+    try {
+        const res = await fetch(ADMIN_API + '/admin/ddns', {
+            method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Erro ao salvar.'); return; }
+        document.getElementById('ddnsPassword').value = '';
+        alert('Configuração de DDNS salva.');
+        loadDdns();
+    } catch(e) { alert('Erro ao salvar configuração de DDNS.'); }
+}
+
+async function testDdns() {
+    const btn = document.getElementById('ddnsTestBtn');
+    btn.disabled = true; btn.textContent = 'Testando...';
+    try {
+        const res = await fetch(ADMIN_API + '/admin/ddns/test', { method: 'POST' });
+        const data = await res.json();
+        alert((data.ok ? '✅ ' : '❌ ') + data.message);
+        loadDdns();
+    } catch(e) { alert('Erro ao testar DDNS.'); }
+    finally { btn.disabled = false; btn.textContent = 'Testar agora'; }
+}
+
 // ---- Acesso (páginas liberadas — por cliente, botão "Acessos" na aba Clientes) ----
 const ALL_CLIENT_PAGES = [
     { file: 'extract.html', label: 'Extrair Dados' },
@@ -1294,7 +1380,7 @@ async function saveClientAccess() {
 }
 
 // ---- Init ----
-loadStats(); loadDocs(); loadHealth(); loadModels();
+loadStats(); loadDocs(); loadHealth(); loadDdns(); loadModels();
 // loadClients() lê allAreas (marca quem já tem base de conhecimento própria),
 // então precisa esperar loadAreas() terminar antes de rodar.
 Promise.all([loadAreas(), loadPlans()]).then(loadClients);
