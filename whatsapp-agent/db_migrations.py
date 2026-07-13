@@ -28,7 +28,7 @@ MIGRATIONS = [
         area_id INTEGER REFERENCES areas(id) ON DELETE SET NULL,
         status VARCHAR(20) NOT NULL DEFAULT 'disconnected'
             CHECK (status IN ('disconnected', 'connecting', 'qr_pending', 'connected', 'error')),
-        evolution_instance_name VARCHAR(100),
+        wa_session_name VARCHAR(100),
         meta_phone_number_id VARCHAR(50),
         meta_waba_id VARCHAR(50),
         meta_access_token_enc TEXT,
