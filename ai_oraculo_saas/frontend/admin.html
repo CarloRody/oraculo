@@ -375,6 +375,10 @@
             <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th><th></th></tr></thead>
             <tbody id="plan-areas-table-body"></tbody>
         </table>
+        <div style="display:flex; gap:0.5rem; align-items:center; margin:0.75rem 0;">
+            <select class="form-input" id="planAddAreaSelect" style="flex:1;"><option value="">Selecione uma área...</option></select>
+            <button type="button" class="btn btn-sm" onclick="addAreaToPlan()">+ Adicionar Área</button>
+        </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closePlanModal()">Cancelar</button>
             <button class="btn" onclick="savePlan()">Salvar</button>
@@ -1167,28 +1171,66 @@ async function loadPlans() {
     } catch(e) { document.getElementById('plans-list').innerHTML = '<p style="color:#ef4444;">Erro ao carregar planos.</p>'; }
 }
 
+let currentPlanAreaIds = []; // áreas hoje "na lista" do modal de plano (não necessariamente salvas ainda)
+
+function planAreaRowHtml(area, s) {
+    s = s || {};
+    const ownerTag = area.owner_user_id ? ` <span style="color:#a78bfa; font-size:0.75rem;">🔒 ${esc(area.owner_email)}</span>` : '';
+    return `<tr id="planAreaRow_${area.id}">
+        <td>${esc(area.name)}${ownerTag}</td>
+        <td><input type="number" class="form-input" id="planQuota_${area.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
+        <td><input type="number" step="0.01" class="form-input" id="planPrice_${area.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
+        <td><button type="button" class="btn btn-sm btn-danger" title="Remover esta área do plano" onclick="removeAreaFromPlan(${area.id})">🗑</button></td>
+    </tr>`;
+}
+
 function renderPlanAreasTable(existingAreas) {
     const byArea = {};
     (existingAreas || []).forEach(a => byArea[a.area_id] = a);
-    document.getElementById('plan-areas-table-body').innerHTML = allAreas.map(a => {
-        const s = byArea[a.id] || {};
-        const ownerTag = a.owner_user_id ? ` <span style="color:#a78bfa; font-size:0.75rem;">🔒 ${esc(a.owner_email)}</span>` : '';
-        return `<tr>
-            <td>${esc(a.name)}${ownerTag}</td>
-            <td><input type="number" class="form-input" id="planQuota_${a.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
-            <td><input type="number" step="0.01" class="form-input" id="planPrice_${a.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
-            <td><button type="button" class="btn btn-sm btn-danger" title="Remover esta área do plano" onclick="removeAreaFromPlan(${a.id})">🗑</button></td>
-        </tr>`;
-    }).join('');
+    currentPlanAreaIds = (existingAreas || []).map(a => a.area_id);
+
+    const tbody = document.getElementById('plan-areas-table-body');
+    if (!currentPlanAreaIds.length) {
+        tbody.innerHTML = '<tr><td colspan="4" style="color:#64748b;">Nenhuma área adicionada ainda — use "Adicionar Área" abaixo.</td></tr>';
+    } else {
+        tbody.innerHTML = currentPlanAreaIds.map(id => {
+            const a = allAreas.find(x => x.id === id);
+            return a ? planAreaRowHtml(a, byArea[id]) : '';
+        }).join('');
+    }
+    refreshAddAreaOptions();
+}
+
+function refreshAddAreaOptions() {
+    const sel = document.getElementById('planAddAreaSelect');
+    const available = allAreas.filter(a => !currentPlanAreaIds.includes(a.id));
+    sel.innerHTML = '<option value="">Selecione uma área...</option>' + available.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+}
+
+function addAreaToPlan() {
+    const sel = document.getElementById('planAddAreaSelect');
+    const areaId = Number(sel.value);
+    if (!areaId || currentPlanAreaIds.includes(areaId)) return;
+    const area = allAreas.find(a => a.id === areaId);
+    if (!area) return;
+
+    currentPlanAreaIds.push(areaId);
+    const tbody = document.getElementById('plan-areas-table-body');
+    if (tbody.rows.length === 1 && !tbody.rows[0].id) tbody.innerHTML = ''; // tira o "nenhuma área ainda"
+    tbody.insertAdjacentHTML('beforeend', planAreaRowHtml(area));
+    refreshAddAreaOptions();
 }
 
 function removeAreaFromPlan(areaId) {
-    // Área "removida do plano" = sem cota nem preço definidos — é assim que
-    // savePlan() já decide o que entra na tabela plan_area_pricing (só manda
-    // áreas com pelo menos um dos dois campos preenchidos). Só entra em
-    // vigor quando o modal for salvo; "Cancelar" descarta a remoção.
-    document.getElementById(`planQuota_${areaId}`).value = '';
-    document.getElementById(`planPrice_${areaId}`).value = '';
+    // Tira a área da lista de verdade agora (não só limpa os campos) — só
+    // entra em vigor quando o modal for salvo; "Cancelar" descarta a remoção.
+    currentPlanAreaIds = currentPlanAreaIds.filter(id => id !== areaId);
+    const row = document.getElementById(`planAreaRow_${areaId}`);
+    if (row) row.remove();
+    if (!currentPlanAreaIds.length) {
+        document.getElementById('plan-areas-table-body').innerHTML = '<tr><td colspan="4" style="color:#64748b;">Nenhuma área adicionada ainda — use "Adicionar Área" abaixo.</td></tr>';
+    }
+    refreshAddAreaOptions();
 }
 
 function showPlanModal(planId) {
@@ -1217,15 +1259,15 @@ async function savePlan() {
     const modelIdVal = document.getElementById('planModelId').value;
     const model_id = modelIdVal ? Number(modelIdVal) : null;
 
-    const areas = allAreas.map(a => {
-        const quotaVal = document.getElementById(`planQuota_${a.id}`).value;
-        const priceVal = document.getElementById(`planPrice_${a.id}`).value;
+    const areas = currentPlanAreaIds.map(id => {
+        const quotaVal = document.getElementById(`planQuota_${id}`).value;
+        const priceVal = document.getElementById(`planPrice_${id}`).value;
         return {
-            area_id: a.id,
+            area_id: id,
             monthly_token_quota: quotaVal ? Number(quotaVal) : null,
             price_per_1k_tokens: priceVal ? Number(priceVal) : null
         };
-    }).filter(a => a.monthly_token_quota !== null || a.price_per_1k_tokens !== null);
+    });
 
     try {
         const res = await fetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
