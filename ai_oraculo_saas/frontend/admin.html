@@ -340,7 +340,7 @@
             </select>
         </div>
         <table>
-            <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th></tr></thead>
+            <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th><th></th></tr></thead>
             <tbody id="plan-areas-table-body"></tbody>
         </table>
         <div class="modal-actions">
@@ -1145,8 +1145,18 @@ function renderPlanAreasTable(existingAreas) {
             <td>${esc(a.name)}${ownerTag}</td>
             <td><input type="number" class="form-input" id="planQuota_${a.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
             <td><input type="number" step="0.01" class="form-input" id="planPrice_${a.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
+            <td><button type="button" class="btn btn-sm btn-danger" title="Remover esta área do plano" onclick="removeAreaFromPlan(${a.id})">🗑</button></td>
         </tr>`;
     }).join('');
+}
+
+function removeAreaFromPlan(areaId) {
+    // Área "removida do plano" = sem cota nem preço definidos — é assim que
+    // savePlan() já decide o que entra na tabela plan_area_pricing (só manda
+    // áreas com pelo menos um dos dois campos preenchidos). Só entra em
+    // vigor quando o modal for salvo; "Cancelar" descarta a remoção.
+    document.getElementById(`planQuota_${areaId}`).value = '';
+    document.getElementById(`planPrice_${areaId}`).value = '';
 }
 
 function showPlanModal(planId) {
