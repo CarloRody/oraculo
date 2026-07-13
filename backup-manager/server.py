@@ -81,7 +81,11 @@ def create_folder_backup(target):
         os.remove(filepath)
 
     cmd = f"tar cf {shlex.quote(filepath)} -C {shlex.quote(path)} ."
-    success, out, err = run(cmd)
+    # Pastas registradas agora podem ser bem maiores que os 2 projetos de
+    # código-fonte de antes (ex: /root/totvs tem 5GB) — 300s (padrão de
+    # run()) não é suficiente num SBC; 1h cobre pastas bem grandes sem
+    # travar a rota (cada request Flask roda na sua própria thread).
+    success, out, err = run(cmd, timeout=3600)
     if not success:
         return False, err
 
