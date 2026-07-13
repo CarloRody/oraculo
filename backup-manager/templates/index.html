@@ -42,18 +42,23 @@
 body{font-family:'Segoe UI',system-ui,sans-serif;background:#0f172a;color:#e2e8f0;min-height:100vh;display:flex;flex-direction:column;align-items:center;padding:2rem 1rem}
 h1{margin-bottom:.5rem;font-size:1.6rem;color:#38bdf8}
 .subtitle{color:#94a3b8;margin-bottom:2rem;font-size:.9rem}
-.container{width:100%;max-width:760px}
+.container{width:100%;max-width:820px}
+
+/* Cards */
+.card{background:#111c33;border:1px solid #1e293b;border-radius:10px;padding:1.2rem 1.4rem;margin-bottom:1.4rem}
+.card h2{font-size:1.05rem;color:#fff;margin-bottom:.9rem;display:flex;align-items:center;gap:.4rem}
 
 /* Buttons */
-.btn-row{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:2rem}
+.btn-row{display:flex;gap:.6rem;flex-wrap:wrap;margin-bottom:1.4rem}
 button,.btn{padding:.55rem 1.1rem;border:none;border-radius:8px;font-size:.85rem;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:.4rem;transition:all .15s}
 button:hover,.btn:hover{filter:brightness(1.1);transform:translateY(-1px)}
+button:disabled{opacity:.5;cursor:wait;transform:none}
 .btn-db{background:#7c3aed;color:#fff}
-.btn-tutor{background:#0ea5e9;color:#fff}
-.btn-monitor{background:#10b981;color:#fff}
 .btn-all{background:#f59e0b;color:#1a1a2e;font-weight:700}
 .btn-del{background:#ef4444;color:#fff;padding:.3rem .6rem;font-size:.78rem;border-radius:6px}
+.btn-run{background:#0ea5e9;color:#fff;padding:.3rem .6rem;font-size:.78rem;border-radius:6px}
 .btn-cancel{background:#475569;color:#fff}
+.btn-add{background:#1e293b;color:#7dd3fc;border:1px dashed #334155}
 
 /* Status */
 .status-bar{padding:.6rem 1rem;border-radius:8px;margin-bottom:1.2rem;display:none;font-size:.85rem;align-items:center;gap:.5rem}
@@ -68,7 +73,6 @@ tbody tr:hover{background:#1e293b60}
 .badge{display:inline-block;padding:.15rem .5rem;border-radius:999px;font-size:.72rem;font-weight:600}
 .badge-db{background:#7c3aed30;color:#c4b5fd}
 .badge-tutor{background:#0ea5e930;color:#7dd3fc}
-.badge-monitor{background:#10b98130;color:#a7f3d0}
 
 /* Progress */
 .progress-wrap{display:none;margin-bottom:1.2rem;background:#1e293b;border-radius:8px;padding:.8rem 1rem;font-size:.85rem}
@@ -76,8 +80,38 @@ tbody tr:hover{background:#1e293b60}
 .progress-fill{height:100%;background:#38bdf8;border-radius:3px;width:0%;transition:width .4s ease;animation:pulse 1.2s infinite alternate}
 @keyframes pulse{from{opacity:.7}to{opacity:1}}
 
+/* Forms */
+.form-row{display:flex;gap:.8rem;flex-wrap:wrap;align-items:end;margin-bottom:.8rem}
+.form-group{display:flex;flex-direction:column;gap:.3rem;flex:1 1 160px;min-width:140px}
+.form-group label{font-size:.72rem;color:#94a3b8;text-transform:uppercase;font-weight:600;letter-spacing:.03em}
+input[type=text],input[type=number],select{background:#0f172a;border:1px solid #334155;color:#fff;padding:.5rem .7rem;border-radius:6px;font-size:.85rem;width:100%}
+input:focus,select:focus{outline:none;border-color:#38bdf8}
+.checkbox-row{display:flex;align-items:center;gap:.5rem;font-size:.85rem;color:#cbd5e1;cursor:pointer;margin-bottom:.8rem}
+.schedule-status{font-size:.8rem;color:#94a3b8;margin-top:.4rem}
+
+/* Toggle switch (auto_backup por alvo) */
+.toggle-switch{position:relative;display:inline-block;width:34px;height:19px;background:#334155;border-radius:11px;cursor:pointer;flex-shrink:0;vertical-align:middle}
+.toggle-switch::after{content:'';position:absolute;top:2px;left:2px;width:15px;height:15px;background:#fff;border-radius:50%;transition:.15s}
+.toggle-switch.on{background:#10b981}
+.toggle-switch.on::after{left:17px}
+
+/* Modal (cadastrar pasta / banco) */
+.modal-overlay{display:none;position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;align-items:center;justify-content:center;padding:1rem}
+.modal-overlay.active{display:flex}
+.modal{background:#111c33;border:1px solid #334155;border-radius:10px;padding:1.4rem;max-width:460px;width:100%;max-height:85vh;overflow-y:auto}
+.modal h3{color:#fff;font-size:1rem;margin-bottom:1rem}
+.modal-actions{display:flex;gap:.6rem;justify-content:flex-end;margin-top:1rem}
+
+/* Folder browser */
+.browse-box{background:#0f172a;border:1px solid #334155;border-radius:6px;padding:.6rem;margin-bottom:.8rem}
+.browse-current{font-size:.75rem;color:#38bdf8;word-break:break-all;margin-bottom:.4rem}
+.browse-list{max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:2px}
+.browse-item{padding:.35rem .5rem;border-radius:4px;font-size:.82rem;cursor:pointer}
+.browse-item:hover{background:#1e293b}
+.browse-empty{color:#64748b;font-size:.8rem;padding:.3rem .5rem}
+
 /* Footer */
-.footer{margin-top:2rem;color:#475569;font-size:.75rem;text-align:center}
+.footer{margin-top:.5rem;color:#475569;font-size:.75rem;text-align:center}
 
 /* Back link */
 .back-link{color:#94a3b8;text-decoration:none;font-size:.85rem;display:inline-flex;align-items:center;gap:5px;padding:6px 10px;border:1px solid #334155;border-radius:6px;margin-bottom:1rem;transition:.15s}
@@ -88,17 +122,12 @@ tbody tr:hover{background:#1e293b60}
 
 <a href="#" id="backLink" class="back-link">&larr; Oráculo</a>
 <h1>📦 Backup Manager</h1>
-<p class="subtitle">Gerenciamento de backups — Oráculo & Monitor Agent</p>
+<p class="subtitle">Cadastro de pastas/bancos, backup sob demanda e agendado</p>
 
 <div class="container">
 
-  <!-- Action buttons -->
-  <div class="btn-row">
-    <button onclick="backup('db')" class="btn-db" title="Backup do banco PostgreSQL">🗄️ Banco DB</button>
-    <button onclick="backup('tar','ai-tutor-saas')" class="btn-tutor" title="Backup código AI Tutor SaaS">📚 AI Tutor</button>
-    <button onclick="backup('tar','monitor-agent')" class="btn-monitor" title="Backup código Monitor Agent">🔍 Monitor Agent</button>
-    <button onclick="backupAll()" class="btn-all" title="Backup completo de tudo">⚡ Backup Completo</button>
-  </div>
+  <!-- Status message -->
+  <div id="statusBar" class="status-bar"></div>
 
   <!-- Progress -->
   <div id="progressWrap" class="progress-wrap">
@@ -106,38 +135,114 @@ tbody tr:hover{background:#1e293b60}
     <div class="progress-bar"><div id="progressFill" class="progress-fill"></div></div>
   </div>
 
-  <!-- Status message -->
-  <div id="statusBar" class="status-bar"></div>
+  <!-- Backup automático -->
+  <div class="card">
+    <h2>⚙ Backup Automático</h2>
+    <label class="checkbox-row"><input type="checkbox" id="schedEnabled"> Ativar backup automático</label>
+    <div class="form-row">
+      <div class="form-group"><label>A cada quantas horas</label><input type="number" id="schedInterval" min="1" value="24"></div>
+      <div class="form-group"><label>Manter últimos N dias (opcional)</label><input type="number" id="schedRetention" min="1" placeholder="sem limite"></div>
+      <button class="btn-db" onclick="saveSchedule()">Salvar</button>
+    </div>
+    <p id="scheduleStatus" class="schedule-status">Carregando...</p>
+  </div>
+
+  <!-- Pastas e bancos cadastrados -->
+  <div class="card">
+    <h2>🗂 Pastas e Bancos Cadastrados</h2>
+    <div class="btn-row">
+      <button class="btn-add" onclick="openFolderModal()">+ Cadastrar Pasta</button>
+      <button class="btn-add" onclick="openDbModal()">+ Cadastrar Banco de Dados</button>
+      <button class="btn-all" onclick="backupAll()" title="Roda backup de todos os alvos habilitados">⚡ Backup Completo</button>
+    </div>
+    <table>
+      <thead><tr><th></th><th>Nome</th><th>Caminho / Banco</th><th>Automático</th><th>Ação</th></tr></thead>
+      <tbody id="targetsList"><tr><td colspan="5" style="color:#64748b">Carregando...</td></tr></tbody>
+    </table>
+  </div>
 
   <!-- Backup list -->
-  <table>
-    <thead>
-      <tr><th>Arquivo</th><th>Tipo</th><th>Tamanho</th><th>Data</th><th>Ação</th></tr>
-    </thead>
-    <tbody id="backupList">
-      {% for b in backups %}
-      <tr data-name="{{ b.name }}">
-        <td>{{ b.name }}</td>
-        <td>
-          {% if 'db' in b.name %}<span class="badge badge-db">DB</span>{% endif %}
-          {% if 'tutor-saas' in b.name %}<span class="badge badge-tutor">Tutor</span>{% endif %}
-          {% if 'monitor-agent' in b.name %}<span class="badge badge-monitor">Monitor</span>{% endif %}
-        </td>
-        <td>{{ "%.1f"|format(b.size) }} MB</td>
-        <td>{{ b.modified }}</td>
-        <td><button onclick="deleteBackup('{{ b.name }}')" class="btn-del">🗑️ Excluir</button></td>
-      </tr>
-      {% endfor %}
-    </tbody>
-  </table>
+  <div class="card">
+    <h2>📄 Backups Existentes</h2>
+    <table>
+      <thead>
+        <tr><th>Arquivo</th><th>Tipo</th><th>Tamanho</th><th>Data</th><th>Ação</th></tr>
+      </thead>
+      <tbody id="backupList">
+        {% for b in backups %}
+        <tr data-name="{{ b.name }}">
+          <td>{{ b.name }}</td>
+          <td>{% if b.kind == 'database' %}<span class="badge badge-db">Banco</span>{% else %}<span class="badge badge-tutor">Pasta</span>{% endif %}</td>
+          <td>{{ "%.1f"|format(b.size) }} MB</td>
+          <td>{{ b.modified }}</td>
+          <td><button onclick="deleteBackup('{{ b.name }}')" class="btn-del">🗑️ Excluir</button></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
 
   <p class="footer">Dados em <code>/root/backup</code> | Porta 5004</p>
+</div>
+
+<!-- Modal: cadastrar pasta -->
+<div class="modal-overlay" id="folderModal">
+  <div class="modal">
+    <h3>+ Cadastrar Pasta</h3>
+    <div class="form-group" style="margin-bottom:.8rem">
+      <label>Nome</label>
+      <input type="text" id="folderLabel" placeholder="Ex: TOTVS Protheus">
+    </div>
+    <div class="form-group" style="margin-bottom:.8rem">
+      <label>Caminho absoluto no servidor</label>
+      <input type="text" id="folderPath" placeholder="/root/...">
+    </div>
+    <div class="browse-box">
+      <div id="browseCurrentPath" class="browse-current">/root</div>
+      <div id="browseList" class="browse-list"></div>
+    </div>
+    <label class="checkbox-row"><input type="checkbox" id="folderAuto" checked> Entra no backup automático</label>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeFolderModal()">Cancelar</button>
+      <button class="btn-db" onclick="saveFolderTarget()">Cadastrar</button>
+    </div>
+  </div>
+</div>
+
+<!-- Modal: cadastrar banco -->
+<div class="modal-overlay" id="dbModal">
+  <div class="modal">
+    <h3>+ Cadastrar Banco de Dados</h3>
+    <div class="form-group" style="margin-bottom:.8rem">
+      <label>Nome</label>
+      <input type="text" id="dbLabel" placeholder="Ex: TOTVS Protheus - Banco">
+    </div>
+    <div class="form-group" style="margin-bottom:.8rem">
+      <label>Banco Postgres</label>
+      <select id="dbName"></select>
+    </div>
+    <label class="checkbox-row"><input type="checkbox" id="dbAuto" checked> Entra no backup automático</label>
+    <div class="modal-actions">
+      <button class="btn-cancel" onclick="closeDbModal()">Cancelar</button>
+      <button class="btn-db" onclick="saveDbTarget()">Cadastrar</button>
+    </div>
+  </div>
 </div>
 
 <script>
 const $ = id => document.getElementById(id);
 
 $('backLink').href = `${window.location.protocol}//${window.location.hostname}:5001/index.html`;
+
+function esc(s) { return s != null ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
+
+async function api(url, opts) {
+  const res = await fetch(url, opts);
+  let data = {};
+  try { data = await res.json(); } catch(e) {}
+  if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);
+  return data;
+}
 
 function showProgress(label) {
   $('progressWrap').style.display = 'block';
@@ -153,77 +258,200 @@ function showStatus(ok, msg) {
   const el = $('statusBar');
   el.className = ok ? 'status-bar status-ok' : 'status-bar status-err';
   el.innerHTML = (ok ? '✅ ' : '❌ ') + msg;
+  el.style.display = 'flex';
   setTimeout(() => el.style.display = 'none', 8000);
 }
-
-// ── Criar backup individual ──
-async function backup(kind, project) {
-  const label = kind === 'db' ? 'Backup do banco...' : `Backup ${project || ''}`;
-  showProgress(label);
-  hideStatus();
-
-  const url = kind === 'db' ? '/api/backup/db' : `/api/backup/tar/${project}`;
-  try {
-    const res = await fetch(url, { method: 'POST' });
-    const data = await res.json();
-    showStatus(res.ok, data.message);
-    if (res.ok) refreshList();
-  } catch(e) {
-    showStatus(false, e.message || 'Erro de conexão');
-  } finally {
-    hideProgress();
-  }
-}
-
-// ── Backup completo ──
-async function backupAll() {
-  showProgress('Backup completo (DB + Tutor + Monitor)...');
-  hideStatus();
-  try {
-    const res = await fetch('/api/backup/all', { method: 'POST' });
-    const data = await res.json();
-    let msg = '';
-    for (const r of data.results) {
-      msg += `${r.name}: ${r.message}<br>`;
-    }
-    showStatus(res.ok, msg);
-    if (res.ok) refreshList();
-  } catch(e) {
-    showStatus(false, e.message || 'Erro de conexão');
-  } finally {
-    hideProgress();
-  }
-}
-
 function hideStatus() { $('statusBar').style.display = 'none'; }
+
+// ── Cadastro de alvos ──
+async function loadTargets() {
+  try {
+    const data = await api('/api/targets');
+    renderTargets(data.targets || []);
+  } catch(e) { console.warn('Erro ao carregar cadastro:', e.message); }
+}
+
+function renderTargets(targets) {
+  const tbody = $('targetsList');
+  if (!targets.length) {
+    tbody.innerHTML = '<tr><td colspan="5" style="color:#64748b">Nenhuma pasta ou banco cadastrado ainda.</td></tr>';
+    return;
+  }
+  tbody.innerHTML = targets.map(t => `
+    <tr>
+      <td>${t.kind === 'folder' ? '📁' : '🗄️'}</td>
+      <td>${esc(t.label)}</td>
+      <td style="font-size:.78rem;color:#94a3b8">${esc(t.kind === 'folder' ? t.path : t.dbname)}</td>
+      <td><span class="toggle-switch ${t.auto_backup ? 'on' : ''}" title="Entra no backup automático" onclick="toggleTargetAuto(${t.id}, ${!t.auto_backup})"></span></td>
+      <td>
+        <button class="btn-run" onclick="runTargetBackup(${t.id}, this)">▶ Backup</button>
+        <button class="btn-del" onclick="removeTarget(${t.id}, '${esc(t.label)}')">🗑️</button>
+      </td>
+    </tr>
+  `).join('');
+}
+
+async function toggleTargetAuto(id, newVal) {
+  try {
+    await api(`/api/targets/${id}`, { method:'PATCH', headers:{'Content-Type':'application/json'}, body: JSON.stringify({auto_backup: newVal}) });
+    loadTargets();
+  } catch(e) { showStatus(false, e.message); }
+}
+
+async function removeTarget(id, label) {
+  if (!confirm(`Remover "${label}" do cadastro?\nBackups já criados NÃO são apagados — só deixa de aparecer aqui e de entrar no backup automático.`)) return;
+  try {
+    await api(`/api/targets/${id}`, { method: 'DELETE' });
+    loadTargets();
+  } catch(e) { showStatus(false, e.message); }
+}
+
+async function runTargetBackup(id, btn) {
+  if (btn) btn.disabled = true;
+  showProgress('Rodando backup...');
+  hideStatus();
+  try {
+    const data = await api(`/api/backup/target/${id}`, { method: 'POST' });
+    showStatus(true, data.message);
+    refreshList();
+  } catch(e) {
+    showStatus(false, e.message);
+  } finally {
+    hideProgress();
+    if (btn) btn.disabled = false;
+  }
+}
+
+// ── Modal: cadastrar pasta (com mini-navegador de diretórios) ──
+let currentBrowsePath = '/root';
+
+function openFolderModal() {
+  $('folderLabel').value = '';
+  $('folderPath').value = '';
+  $('folderModal').classList.add('active');
+  browseTo('/root');
+}
+function closeFolderModal() { $('folderModal').classList.remove('active'); }
+
+async function browseTo(path) {
+  try {
+    const data = await api('/api/browse?path=' + encodeURIComponent(path));
+    currentBrowsePath = data.path;
+    $('browseCurrentPath').textContent = data.path;
+    let html = '';
+    if (data.parent) html += `<div class="browse-item" onclick="browseTo('${esc(data.parent)}')">⬆ .. (subir)</div>`;
+    html += data.folders.map(f => `<div class="browse-item" onclick="browseTo('${esc(data.path)}/${esc(f)}')">📁 ${esc(f)}</div>`).join('');
+    $('browseList').innerHTML = html || '<div class="browse-empty">Nenhuma subpasta aqui</div>';
+    $('folderPath').value = data.path;
+  } catch(e) { showStatus(false, 'Erro ao navegar: ' + e.message); }
+}
+
+async function saveFolderTarget() {
+  const label = $('folderLabel').value.trim();
+  const path = $('folderPath').value.trim();
+  const auto = $('folderAuto').checked;
+  if (!label || !path) { showStatus(false, 'Preencha nome e caminho.'); return; }
+  try {
+    await api('/api/targets', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({kind:'folder', label, path, auto_backup: auto}) });
+    closeFolderModal();
+    showStatus(true, 'Pasta cadastrada.');
+    loadTargets();
+  } catch(e) { showStatus(false, e.message); }
+}
+
+// ── Modal: cadastrar banco ──
+async function openDbModal() {
+  $('dbLabel').value = '';
+  const sel = $('dbName');
+  sel.innerHTML = '<option>Carregando...</option>';
+  $('dbModal').classList.add('active');
+  try {
+    const data = await api('/api/databases/available');
+    sel.innerHTML = (data.databases || []).map(d => `<option value="${esc(d)}">${esc(d)}</option>`).join('') || '<option value="">Nenhum banco encontrado</option>';
+  } catch(e) { sel.innerHTML = '<option value="">Erro ao carregar</option>'; }
+}
+function closeDbModal() { $('dbModal').classList.remove('active'); }
+
+async function saveDbTarget() {
+  const label = $('dbLabel').value.trim();
+  const dbname = $('dbName').value;
+  const auto = $('dbAuto').checked;
+  if (!label || !dbname) { showStatus(false, 'Preencha nome e selecione um banco.'); return; }
+  try {
+    await api('/api/targets', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({kind:'database', label, dbname, auto_backup: auto}) });
+    closeDbModal();
+    showStatus(true, 'Banco cadastrado.');
+    loadTargets();
+  } catch(e) { showStatus(false, e.message); }
+}
+
+// ── Backup completo (todos os alvos habilitados) ──
+async function backupAll() {
+  showProgress('Backup completo (todos os alvos habilitados)...');
+  hideStatus();
+  try {
+    const data = await api('/api/backup/all', { method: 'POST' });
+    let msg = '';
+    for (const r of data.results) msg += `${r.name}: ${r.message}<br>`;
+    showStatus(data.ok, msg || 'Nenhum alvo habilitado.');
+    refreshList();
+  } catch(e) {
+    showStatus(false, e.message);
+  } finally {
+    hideProgress();
+  }
+}
 
 // ── Deletar backup ──
 async function deleteBackup(filename) {
   if (!confirm(`Excluir "${filename}"?\nEsta ação é irreversível.`)) return;
-
   try {
-    const res = await fetch('/api/backup/delete', {
+    const data = await api('/api/backup/delete', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ filename })
     });
-    const data = await res.json();
-    showStatus(res.ok, data.message);
-    if (res.ok) refreshList();
+    showStatus(true, data.message);
+    refreshList();
   } catch(e) {
-    showStatus(false, e.message || 'Erro ao deletar');
+    showStatus(false, e.message);
   }
 }
 
-// ── Atualizar lista via API ──
+// ── Agendamento ──
+async function loadSchedule() {
+  try {
+    const s = await api('/api/schedule');
+    $('schedEnabled').checked = s.enabled;
+    $('schedInterval').value = s.interval_hours;
+    $('schedRetention').value = s.retention_days ?? '';
+    let statusTxt = s.enabled
+      ? `Ativo — próxima execução em torno de ${s.next_run_at || 'em breve'}`
+      : 'Desativado';
+    if (s.last_run_at) statusTxt += ` • Última execução automática: ${s.last_run_at} (${s.last_run_ok ? 'sucesso' : 'com erro'})`;
+    $('scheduleStatus').textContent = statusTxt;
+  } catch(e) { $('scheduleStatus').textContent = 'Erro ao carregar status do agendamento.'; }
+}
+
+async function saveSchedule() {
+  const payload = {
+    enabled: $('schedEnabled').checked,
+    interval_hours: Number($('schedInterval').value) || 24,
+    retention_days: $('schedRetention').value ? Number($('schedRetention').value) : null,
+  };
+  try {
+    await api('/api/schedule', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+    showStatus(true, 'Agendamento salvo.');
+    loadSchedule();
+  } catch(e) { showStatus(false, e.message); }
+}
+
+// ── Atualizar lista de backups via API ──
 async function refreshList() {
   try {
-    const res = await fetch('/api/backups', { signal: AbortSignal.timeout(5000) });
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const data = await res.json();
+    const data = await api('/api/backups');
     renderTable(data.backups);
   } catch(e) {
-    // Não limpa a tabela em erro — mantém o que já estava visível
     console.warn('Refresh falhou:', e.message);
   }
 }
@@ -232,11 +460,7 @@ function renderTable(backups) {
   const tbody = $('backupList');
   tbody.innerHTML = '';
   for (const b of backups) {
-    let badge = '';
-    if (b.name.includes('db')) badge = '<span class="badge badge-db">DB</span>';
-    else if (b.name.includes('tutor-saas')) badge = '<span class="badge badge-tutor">Tutor</span>';
-    else if (b.name.includes('monitor-agent')) badge = '<span class="badge badge-monitor">Monitor</span>';
-
+    const badge = b.kind === 'database' ? '<span class="badge badge-db">Banco</span>' : '<span class="badge badge-tutor">Pasta</span>';
     const tr = document.createElement('tr');
     tr.dataset.name = b.name;
     tr.innerHTML = `
@@ -250,8 +474,10 @@ function renderTable(backups) {
   }
 }
 
-// Auto-refresh a cada 30s
-setInterval(refreshList, 30000);
+// Init + auto-refresh a cada 30s
+loadTargets();
+loadSchedule();
+setInterval(() => { refreshList(); loadTargets(); loadSchedule(); }, 30000);
 </script>
 
 </body>

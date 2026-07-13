@@ -40,3 +40,7 @@ monitor_agent:
 
 backup_manager:
   backup_dir: /root/backup
+  schedule:
+    enabled: false      # liga/desliga o backup automático agendado
+    interval_hours: 24  # roda o backup completo a cada N horas
+    retention_days: 14  # apaga sozinho backups mais velhos que N dias (vazio/null = nunca apaga)
