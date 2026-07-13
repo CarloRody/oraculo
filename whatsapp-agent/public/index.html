@@ -1,0 +1,262 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>WhatsApp — Oráculo</title>
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: #0a1628;
+        color: #e0e0e0;
+        min-height: 100vh;
+        padding: 2rem;
+    }
+    h1 {
+        background: linear-gradient(135deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 1.8rem;
+        margin-bottom: 0.25rem;
+    }
+    .subtitle { color: #64748b; margin-bottom: 2rem; font-size: 0.9rem; }
+    .card {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        max-width: 700px;
+    }
+    .card h2 { font-size: 1.1rem; color: #f8fafc; margin-bottom: 1rem; }
+    .form-row { display: flex; gap: 0.75rem; }
+    .form-input {
+        flex: 1;
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 0.6rem 0.8rem;
+        color: #e0e0e0;
+        font-size: 0.9rem;
+    }
+    .btn {
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        padding: 0.6rem 1.2rem;
+        font-size: 0.9rem;
+        cursor: pointer;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+    .btn-danger { background: #ef4444; }
+    .btn-secondary { background: #334155; }
+    .account-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.9rem 0;
+        border-bottom: 1px solid #1a2744;
+    }
+    .account-row:last-child { border-bottom: none; }
+    .account-info { display: flex; align-items: center; gap: 0.6rem; }
+    .status-badge {
+        display: inline-block;
+        padding: 0.2rem 0.6rem;
+        border-radius: 10px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    .status-connected { background: #1f4a2d; color: #4ade80; }
+    .status-qr_pending, .status-connecting { background: #4a3a1f; color: #fbbf24; }
+    .status-disconnected { background: #1a2744; color: #94a3b8; }
+    .status-error { background: #4a1f27; color: #f87171; }
+    .account-actions { display: flex; gap: 0.5rem; }
+    .empty { color: #64748b; font-size: 0.9rem; padding: 1rem 0; }
+    .modal-overlay {
+        display: none;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.6);
+        align-items: center; justify-content: center;
+        z-index: 100;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 2rem;
+        text-align: center;
+        max-width: 360px;
+    }
+    .modal h3 { color: #f8fafc; margin-bottom: 1rem; }
+    .modal img { width: 260px; height: 260px; border-radius: 8px; background: #fff; padding: 8px; }
+    .modal p { color: #94a3b8; font-size: 0.85rem; margin-top: 1rem; }
+    .modal .close-btn { margin-top: 1.25rem; }
+</style>
+</head>
+<body>
+
+<h1>📱 WhatsApp</h1>
+<p class="subtitle">Serviço independente do Oráculo — porta 5005</p>
+
+<div class="card">
+    <h2>+ Nova Conta (QR Code)</h2>
+    <div class="form-row">
+        <input type="text" class="form-input" id="newAccountLabel" placeholder="Rótulo, ex: Comercial">
+        <button class="btn" onclick="createAccount()">Criar</button>
+    </div>
+</div>
+
+<div class="card">
+    <h2>Contas</h2>
+    <div id="accountsList"><p class="empty">Carregando...</p></div>
+</div>
+
+<div class="modal-overlay" id="qrModal">
+    <div class="modal">
+        <h3>Escaneie com o WhatsApp</h3>
+        <img id="qrImage" src="" alt="QR Code">
+        <p id="qrStatusText">Aguardando leitura...</p>
+        <button class="btn btn-secondary close-btn" onclick="closeQrModal()">Fechar</button>
+    </div>
+</div>
+
+<script>
+const API = window.location.origin;
+let pollTimer = null;
+let pollingAccountId = null;
+
+async function fetchAccounts() {
+    const res = await fetch(API + '/api/whatsapp/accounts');
+    const data = await res.json();
+    return data.accounts || [];
+}
+
+function statusLabel(status) {
+    return {
+        connected: 'Conectado',
+        qr_pending: 'Aguardando QR',
+        connecting: 'Conectando',
+        disconnected: 'Desconectado',
+        error: 'Erro',
+    }[status] || status;
+}
+
+async function renderAccounts() {
+    const accounts = await fetchAccounts();
+    const el = document.getElementById('accountsList');
+    if (!accounts.length) {
+        el.innerHTML = '<p class="empty">Nenhuma conta cadastrada ainda.</p>';
+        return;
+    }
+    el.innerHTML = accounts.map(a => `
+        <div class="account-row">
+            <div class="account-info">
+                <strong>${esc(a.label)}</strong>
+                <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
+            </div>
+            <div class="account-actions">
+                ${a.status === 'connected'
+                    ? `<button class="btn btn-sm btn-secondary" onclick="disconnectAccount(${a.id})">Desconectar</button>`
+                    : `<button class="btn btn-sm" onclick="connectAccount(${a.id})">Conectar</button>`}
+                <button class="btn btn-sm btn-danger" onclick="removeAccount(${a.id})">🗑</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+}
+
+async function createAccount() {
+    const input = document.getElementById('newAccountLabel');
+    const label = input.value.trim();
+    if (!label) return;
+    const res = await fetch(API + '/api/whatsapp/accounts', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ label, connection_type: 'qrcode' }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+        alert(data.message || 'Erro ao criar conta');
+        return;
+    }
+    input.value = '';
+    await renderAccounts();
+}
+
+async function removeAccount(id) {
+    if (!confirm('Remover esta conta? Isso desconecta o WhatsApp e apaga o cadastro.')) return;
+    await fetch(API + `/api/whatsapp/accounts/${id}`, { method: 'DELETE' });
+    await renderAccounts();
+}
+
+async function disconnectAccount(id) {
+    await fetch(API + `/api/whatsapp/accounts/${id}/disconnect`, { method: 'POST' });
+    await renderAccounts();
+}
+
+async function connectAccount(id) {
+    document.getElementById('qrStatusText').textContent = 'Gerando QR Code...';
+    document.getElementById('qrImage').src = '';
+    document.getElementById('qrModal').classList.add('active');
+
+    const res = await fetch(API + `/api/whatsapp/accounts/${id}/connect`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+        document.getElementById('qrStatusText').textContent = data.message || 'Erro ao conectar';
+        return;
+    }
+    if (data.status === 'connected') {
+        document.getElementById('qrStatusText').textContent = 'Já estava conectado!';
+        setTimeout(closeQrModal, 1200);
+        await renderAccounts();
+        return;
+    }
+    const src = data.qr_base64.startsWith('data:') ? data.qr_base64 : `data:image/png;base64,${data.qr_base64}`;
+    document.getElementById('qrImage').src = src;
+    document.getElementById('qrStatusText').textContent = 'Aguardando leitura...';
+    startPolling(id);
+}
+
+function startPolling(accountId) {
+    stopPolling();
+    pollingAccountId = accountId;
+    pollTimer = setInterval(async () => {
+        const res = await fetch(API + `/api/whatsapp/accounts/${accountId}/status`);
+        const data = await res.json();
+        if (!data.ok) return;
+        if (data.account.status === 'connected') {
+            document.getElementById('qrStatusText').textContent = 'Conectado! ✅';
+            stopPolling();
+            setTimeout(closeQrModal, 1200);
+            await renderAccounts();
+        }
+    }, 2000);
+}
+
+function stopPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+    pollingAccountId = null;
+}
+
+function closeQrModal() {
+    document.getElementById('qrModal').classList.remove('active');
+    stopPolling();
+    renderAccounts();
+}
+
+renderAccounts();
+setInterval(renderAccounts, 15000);
+</script>
+
+</body>
+</html>

@@ -111,6 +111,7 @@
         <button class="tab-btn" onclick="switchTab('documents')">Documentos</button>
         <button class="tab-btn" onclick="switchTab('clients')">Clientes</button>
         <button class="tab-btn" onclick="switchTab('health')">Saúde do Sistema</button>
+        <button class="tab-btn" onclick="openWhatsApp()" title="Abre o serviço de WhatsApp em outra aba (porta 5005, independente do Oráculo)">📱 WhatsApp ↗</button>
     </div>
 
     <!-- ÁREAS -->
@@ -491,6 +492,11 @@ const ADMIN_API = window.location.protocol + '//' + window.location.host;
 let allAreas = [];
 
 function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
+
+// ---- WhatsApp (serviço próprio, porta 5005 — não faz parte do admin.html) ----
+function openWhatsApp() {
+    window.open(window.location.protocol + '//' + window.location.hostname + ':5005/', '_blank');
+}
 
 // ---- Tabs ----
 function switchTab(name) {
