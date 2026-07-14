@@ -160,6 +160,9 @@
         <h2>+ Nova Conta (QR Code)</h2>
         <div class="form-row">
             <input type="text" class="form-input" id="newAccountLabel" placeholder="Rótulo, ex: Comercial">
+            <select class="form-input" id="newAccountClient" style="flex:none; width:220px;">
+                <option value="">Sem cliente vinculado</option>
+            </select>
             <button class="btn" onclick="createAccount()">Criar</button>
         </div>
     </div>
@@ -198,6 +201,22 @@
         <img id="qrImage" src="" alt="QR Code">
         <p id="qrStatusText">Aguardando leitura...</p>
         <button class="btn btn-secondary close-btn" onclick="closeQrModal()">Fechar</button>
+    </div>
+</div>
+
+<div class="modal-overlay" id="clientModal">
+    <div class="modal" style="max-width:320px;">
+        <h3>Vincular cliente</h3>
+        <div style="text-align:left; margin-top:1rem;">
+            <label style="color:#94a3b8; font-size:0.8rem;">Cliente</label>
+            <select class="form-input" id="clientModalSelect" style="margin:0.4rem 0;">
+                <option value="">Sem cliente vinculado</option>
+            </select>
+        </div>
+        <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+            <button class="btn btn-secondary" style="flex:1;" onclick="closeClientModal()">Cancelar</button>
+            <button class="btn" style="flex:1;" onclick="submitClientModal()">Salvar</button>
+        </div>
     </div>
 </div>
 
@@ -262,9 +281,15 @@ async function renderAccounts() {
     }
     el.innerHTML = accounts.map(a => `
         <div class="account-row">
-            <div class="account-info">
-                <strong>${esc(a.label)}</strong>
-                <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
+            <div class="account-info" style="flex-direction:column; align-items:flex-start; gap:0.15rem;">
+                <div>
+                    <strong>${esc(a.label)}</strong>
+                    <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
+                </div>
+                <div style="font-size:0.78rem; color:#64748b;">
+                    ${a.client_email ? `👤 ${esc(a.client_email)}` : 'Sem cliente vinculado'}
+                    <a href="#" onclick="openClientModal(${a.id}, ${a.user_id ?? 'null'}); return false;" style="color:#60a5fa; margin-left:0.4rem;">editar</a>
+                </div>
             </div>
             <div class="account-actions">
                 ${a.status === 'connected'
@@ -276,14 +301,27 @@ async function renderAccounts() {
     `).join('');
 }
 
+let allClients = [];
+
+async function loadClients() {
+    const res = await fetch(API + '/api/whatsapp/clients');
+    const data = await res.json();
+    allClients = data.clients || [];
+    const options = '<option value="">Sem cliente vinculado</option>' +
+        allClients.map(c => `<option value="${c.id}">${esc(c.email)}</option>`).join('');
+    document.getElementById('newAccountClient').innerHTML = options;
+    document.getElementById('clientModalSelect').innerHTML = options;
+}
+
 async function createAccount() {
     const input = document.getElementById('newAccountLabel');
     const label = input.value.trim();
+    const userId = document.getElementById('newAccountClient').value;
     if (!label) return;
     const res = await fetch(API + '/api/whatsapp/accounts', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ label, connection_type: 'qrcode' }),
+        body: JSON.stringify({ label, connection_type: 'qrcode', user_id: userId ? Number(userId) : null }),
     });
     const data = await res.json();
     if (!res.ok) {
@@ -291,6 +329,31 @@ async function createAccount() {
         return;
     }
     input.value = '';
+    document.getElementById('newAccountClient').value = '';
+    await renderAccounts();
+}
+
+let clientModalAccountId = null;
+
+function openClientModal(accountId, currentUserId) {
+    clientModalAccountId = accountId;
+    document.getElementById('clientModalSelect').value = currentUserId || '';
+    document.getElementById('clientModal').classList.add('active');
+}
+
+function closeClientModal() {
+    document.getElementById('clientModal').classList.remove('active');
+    clientModalAccountId = null;
+}
+
+async function submitClientModal() {
+    const userId = document.getElementById('clientModalSelect').value;
+    await fetch(API + `/api/whatsapp/accounts/${clientModalAccountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ user_id: userId ? Number(userId) : null }),
+    });
+    closeClientModal();
     await renderAccounts();
 }
 
@@ -485,6 +548,7 @@ async function submitStartChat() {
     await refreshChatList();
 }
 
+loadClients();
 renderAccounts();
 setInterval(renderAccounts, 15000);
 </script>

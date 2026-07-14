@@ -80,7 +80,7 @@ def log_event(account_id, event, level="info", detail=None):
 
 ACCOUNT_COLUMNS = [
     "id", "label", "connection_type", "phone_number", "status",
-    "wa_session_name", "ai_auto_reply_enabled", "last_connected_at", "created_at",
+    "wa_session_name", "ai_auto_reply_enabled", "last_connected_at", "created_at", "user_id",
 ]
 
 
@@ -93,11 +93,25 @@ def _row_to_account(row):
 
 
 def get_accounts():
+    # LEFT JOIN com users (mesmo ai_tutor_db, mesma conexão — não é banco
+    # separado) só pra trazer o e-mail do cliente vinculado junto, sem
+    # round-trip extra pro frontend.
     conn = _conn()
     try:
         cur = conn.cursor()
-        cur.execute(f"SELECT {', '.join(ACCOUNT_COLUMNS)} FROM whatsapp_accounts ORDER BY created_at DESC")
-        return [_row_to_account(r) for r in cur.fetchall()]
+        cols = ", ".join(f"a.{c}" for c in ACCOUNT_COLUMNS)
+        cur.execute(
+            f"""SELECT {cols}, u.email AS client_email
+                FROM whatsapp_accounts a
+                LEFT JOIN users u ON u.id = a.user_id
+                ORDER BY a.created_at DESC"""
+        )
+        rows = []
+        for r in cur.fetchall():
+            d = _row_to_account(r[:-1])
+            d["client_email"] = r[-1]
+            rows.append(d)
+        return rows
     finally:
         conn.close()
 
@@ -106,21 +120,42 @@ def get_account(account_id):
     conn = _conn()
     try:
         cur = conn.cursor()
-        cur.execute(f"SELECT {', '.join(ACCOUNT_COLUMNS)} FROM whatsapp_accounts WHERE id = %s", (account_id,))
+        cols = ", ".join(f"a.{c}" for c in ACCOUNT_COLUMNS)
+        cur.execute(
+            f"""SELECT {cols}, u.email AS client_email
+                FROM whatsapp_accounts a
+                LEFT JOIN users u ON u.id = a.user_id
+                WHERE a.id = %s""",
+            (account_id,),
+        )
         row = cur.fetchone()
-        return _row_to_account(row) if row else None
+        if not row:
+            return None
+        d = _row_to_account(row[:-1])
+        d["client_email"] = row[-1]
+        return d
     finally:
         conn.close()
 
 
-def create_account(label, connection_type):
+def get_clients():
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, email FROM users ORDER BY email")
+        return [{"id": r[0], "email": r[1]} for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def create_account(label, connection_type, user_id=None):
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO whatsapp_accounts (label, connection_type)
-               VALUES (%s, %s) RETURNING id""",
-            (label, connection_type),
+            """INSERT INTO whatsapp_accounts (label, connection_type, user_id)
+               VALUES (%s, %s, %s) RETURNING id""",
+            (label, connection_type, user_id),
         )
         account_id = cur.fetchone()[0]
         cur.execute(
@@ -129,6 +164,17 @@ def create_account(label, connection_type):
         )
         conn.commit()
         return account_id
+    finally:
+        conn.close()
+
+
+def update_account_client(account_id, user_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_accounts SET user_id = %s WHERE id = %s", (user_id, account_id))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -399,11 +445,17 @@ def api_list_accounts():
     return jsonify({"accounts": get_accounts()})
 
 
+@app.route("/api/whatsapp/clients", methods=["GET"])
+def api_list_clients():
+    return jsonify({"clients": get_clients()})
+
+
 @app.route("/api/whatsapp/accounts", methods=["POST"])
 def api_create_account():
     data = request.json or {}
     label = (data.get("label") or "").strip()
     connection_type = data.get("connection_type") or "qrcode"
+    user_id = data.get("user_id") or None
     if not label:
         return jsonify({"ok": False, "message": "Label é obrigatório"}), 400
     if connection_type not in ("qrcode", "business_api"):
@@ -411,9 +463,20 @@ def api_create_account():
     if connection_type == "business_api":
         return jsonify({"ok": False, "message": "Business API ainda não implementado nesta primeira versão — use QR Code."}), 400
 
-    account_id = create_account(label, connection_type)
-    log_event(account_id, "account_created", detail={"label": label, "connection_type": connection_type})
+    account_id = create_account(label, connection_type, user_id=user_id)
+    log_event(account_id, "account_created", detail={"label": label, "connection_type": connection_type, "user_id": user_id})
     return jsonify({"ok": True, "id": account_id}), 201
+
+
+@app.route("/api/whatsapp/accounts/<int:account_id>", methods=["PATCH"])
+def api_update_account(account_id):
+    if not get_account(account_id):
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    data = request.json or {}
+    if "user_id" not in data:
+        return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
+    update_account_client(account_id, data["user_id"] or None)
+    return jsonify({"ok": True})
 
 
 @app.route("/api/whatsapp/accounts/<int:account_id>", methods=["DELETE"])
