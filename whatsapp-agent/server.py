@@ -1,35 +1,35 @@
 #!/usr/bin/env python3
 """WhatsApp Agent — serviço independente (porta 5005) pra integração com
-WhatsApp (conta comum via QR Code, usando a WAHA como conector).
+WhatsApp (conta comum via QR Code, usando a Evolution API como conector).
 
 Roda separado do Oráculo (ai_oraculo_saas) — não importa nem altera nada lá.
 Só consome a API do Oráculo quando fizer sentido (ex: resposta automática via
 RAG, planejado pra depois). Por enquanto: cadastro de contas + fluxo de
-conexão/QR, primeiro passo do módulo descrito no plano.
+conexão/QR + conversas, primeiro passo do módulo descrito no plano.
 """
 
 import datetime
 import re
 import threading
-import time
 
 import psycopg2
 import psycopg2.extras
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
-import connectors.waha as waha
+import connectors.evolution as evolution
 from config import DB_CONFIG, WHATSAPP_CONFIG
-from connectors.waha import WahaError
+from connectors.evolution import EvolutionError
 from db_migrations import migrate_if_needed
 
-# WAHA usa nomes de status próprios — mapeados pro enum de whatsapp_accounts.status
-WAHA_STATUS_MAP = {
-    "STARTING": "connecting",
-    "SCAN_QR_CODE": "qr_pending",
-    "WORKING": "connected",
-    "FAILED": "error",
-    "STOPPED": "disconnected",
+# Evolution API usa 3 estados (close/connecting/open) — mapeados pro enum de
+# whatsapp_accounts.status. 'qr_pending' é setado manualmente por nós logo
+# depois de criar a instância (o QR já vem na resposta do create, não
+# precisa de polling assíncrono como no conector antigo).
+EVOLUTION_STATUS_MAP = {
+    "close": "disconnected",
+    "connecting": "connecting",
+    "open": "connected",
 }
 
 app = Flask(__name__, static_folder=None)
@@ -48,9 +48,15 @@ def slugify(label):
 
 
 def _session_name(account_id, label):
-    # Nome estável da sessão na WAHA — inclui o id pra nunca colidir entre
-    # contas com o mesmo rótulo.
+    # Nome estável da instância na Evolution API — inclui o id pra nunca
+    # colidir entre contas com o mesmo rótulo.
     return f"oraculo-{account_id}-{slugify(label)}"
+
+
+def _phone_from_wa_id(wa_id):
+    # wa_id guardado como JID completo (ex: "5537999872331@s.whatsapp.net");
+    # a Evolution API quer só o número no campo "number" de /message/sendText.
+    return (wa_id or "").split("@")[0]
 
 
 def log_event(account_id, event, level="info", detail=None):
@@ -417,8 +423,12 @@ def api_delete_account(account_id):
         return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
     if account["connection_type"] == "qrcode":
         try:
-            waha.delete_session(account["wa_session_name"])
-        except WahaError:
+            evolution.logout(account["wa_session_name"])
+        except EvolutionError:
+            pass
+        try:
+            evolution.delete_instance(account["wa_session_name"])
+        except EvolutionError:
             pass
     delete_account(account_id)
     return jsonify({"ok": True})
@@ -432,54 +442,41 @@ def api_connect_account(account_id):
     if account["connection_type"] != "qrcode":
         return jsonify({"ok": False, "message": "Só contas QR Code usam este fluxo"}), 400
 
-    session_name = account["wa_session_name"]
-    webhook_base = (WHATSAPP_CONFIG.get("webhook_base_url") or "http://host.docker.internal:5005").rstrip("/")
-    webhook_url = f"{webhook_base}/webhooks/waha"
-    try:
-        waha.create_and_start_session(session_name, webhook_url=webhook_url)
+    instance_name = account["wa_session_name"]
+    webhook_base = (WHATSAPP_CONFIG.get("webhook_base_url") or "http://127.0.0.1:5005").rstrip("/")
+    webhook_url = f"{webhook_base}/webhooks/evolution"
 
-        # A WAHA cria a sessão de forma assíncrona (STARTING -> SCAN_QR_CODE),
-        # então esperamos um pouco antes do QR ficar disponível — até 20s,
-        # checando a cada 1s (a criação em si costuma levar uns 15-18s no Pi).
-        status = "STARTING"
-        for _ in range(20):
-            status = waha.session_status(session_name)
-            if status != "STARTING":
-                break
-            time.sleep(1)
-    except WahaError as e:
+    try:
+        result = evolution.create_instance(instance_name)
+        qr_data = (result or {}).get("qrcode") or {}
+        if result.get("already_exists"):
+            # instância já existia (reconectar depois de logout) — busca QR novo
+            qr_data = evolution.get_qr(instance_name)
+        evolution.set_webhook(instance_name, webhook_url)
+    except EvolutionError as e:
         update_account_status(account_id, "error")
         log_event(account_id, "connect_failed", level="error", detail={"error": str(e)})
         return jsonify({"ok": False, "message": str(e)}), 502
 
-    our_status = WAHA_STATUS_MAP.get(status, "error")
-
-    if status == "WORKING":
-        update_account_status(account_id, "connected", connected=True)
-        log_event(account_id, "reconnected_without_qr")
-        return jsonify({"ok": True, "status": "connected"})
-
-    if status != "SCAN_QR_CODE":
-        update_account_status(account_id, our_status)
-        log_event(account_id, "connect_failed", level="error", detail={"waha_status": status})
-        return jsonify({"ok": False, "message": f"Sessão não ficou pronta pro QR (status: {status})"}), 502
-
-    try:
-        qr_data = waha.get_qr(session_name)
-    except WahaError as e:
+    qr_base64 = qr_data.get("base64")
+    if not qr_base64:
+        # já pode estar conectado (sessão anterior ainda válida)
+        try:
+            state = evolution.connection_state(instance_name)
+        except EvolutionError as e:
+            update_account_status(account_id, "error")
+            return jsonify({"ok": False, "message": str(e)}), 502
+        if state == "open":
+            update_account_status(account_id, "connected", connected=True)
+            log_event(account_id, "reconnected_without_qr")
+            return jsonify({"ok": True, "status": "connected"})
         update_account_status(account_id, "error")
-        return jsonify({"ok": False, "message": str(e)}), 502
+        return jsonify({"ok": False, "message": "Evolution API não retornou QR nem estado conectado"}), 502
 
-    qr_base64 = qr_data.get("data")
-    mimetype = qr_data.get("mimetype", "image/png")
     save_qr_session(account_id, qr_base64)
     update_account_status(account_id, "qr_pending")
     log_event(account_id, "qr_generated")
-    return jsonify({
-        "ok": True,
-        "status": "qr_pending",
-        "qr_base64": f"data:{mimetype};base64,{qr_base64}",
-    })
+    return jsonify({"ok": True, "status": "qr_pending", "qr_base64": qr_base64})
 
 
 @app.route("/api/whatsapp/accounts/<int:account_id>/status", methods=["GET"])
@@ -490,11 +487,11 @@ def api_account_status(account_id):
 
     if account["connection_type"] == "qrcode" and account["status"] in ("qr_pending", "connecting", "connected"):
         try:
-            waha_status = waha.session_status(account["wa_session_name"])
-        except WahaError as e:
+            evo_state = evolution.connection_state(account["wa_session_name"])
+        except EvolutionError as e:
             return jsonify({"ok": True, "account": account, "warning": str(e)})
 
-        our_status = WAHA_STATUS_MAP.get(waha_status, "error")
+        our_status = EVOLUTION_STATUS_MAP.get(evo_state, "error")
         if our_status == "connected" and account["status"] != "connected":
             update_account_status(account_id, "connected", connected=True)
             mark_session_connected(account_id)
@@ -514,8 +511,8 @@ def api_disconnect_account(account_id):
     if not account:
         return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
     try:
-        waha.stop_session(account["wa_session_name"])
-    except WahaError as e:
+        evolution.logout(account["wa_session_name"])
+    except EvolutionError as e:
         return jsonify({"ok": False, "message": str(e)}), 502
     update_account_status(account_id, "disconnected")
     log_event(account_id, "disconnected_manual")
@@ -552,11 +549,11 @@ def api_send_message(chat_id):
         return jsonify({"ok": False, "message": "Conversa não encontrada"}), 404
 
     try:
-        result = waha.send_text(chat["wa_session_name"], chat["wa_id"], text)
-    except WahaError as e:
+        result = evolution.send_text(chat["wa_session_name"], _phone_from_wa_id(chat["wa_id"]), text)
+    except EvolutionError as e:
         return jsonify({"ok": False, "message": str(e)}), 502
 
-    wa_message_id = (result or {}).get("id")
+    wa_message_id = ((result or {}).get("key") or {}).get("id")
     message_id = save_message(chat_id, chat["account_id"], "out", text, wa_message_id=wa_message_id)
     return jsonify({"ok": True, "id": message_id})
 
@@ -575,16 +572,16 @@ def api_start_chat(account_id):
     if not text:
         return jsonify({"ok": False, "message": "Texto é obrigatório"}), 400
 
-    wa_id = f"{phone}@c.us"
+    wa_id = f"{phone}@s.whatsapp.net"
     contact_id = get_or_create_contact(account_id, wa_id)
     chat_id = get_or_create_chat(account_id, contact_id)
 
     try:
-        result = waha.send_text(account["wa_session_name"], wa_id, text)
-    except WahaError as e:
+        result = evolution.send_text(account["wa_session_name"], phone, text)
+    except EvolutionError as e:
         return jsonify({"ok": False, "message": str(e)}), 502
 
-    wa_message_id = (result or {}).get("id")
+    wa_message_id = ((result or {}).get("key") or {}).get("id")
     save_message(chat_id, account_id, "out", text, wa_message_id=wa_message_id)
     return jsonify({"ok": True, "chat_id": chat_id})
 
@@ -595,38 +592,40 @@ def api_mark_chat_read(chat_id):
     return jsonify({"ok": True})
 
 
-@app.route("/webhooks/waha", methods=["POST"])
-def webhook_waha():
+@app.route("/webhooks/evolution", methods=["POST"])
+def webhook_evolution():
     payload = request.json or {}
-    event = payload.get("event")
+    event = (payload.get("event") or "").lower().replace("_", ".")
 
     # Log cru sempre, antes de tentar interpretar — garante que temos o
-    # payload real da WAHA pra corrigir o parser abaixo se o formato não
-    # bater exatamente com o esperado (não dava pra confirmar isso sem um
-    # evento de verdade, ver plano).
+    # payload real da Evolution API pra corrigir o parser abaixo se o
+    # formato não bater exatamente com o esperado (mesma disciplina usada
+    # com o conector antigo, ver plano).
     log_event(None, "webhook_received", detail=payload)
 
-    session_name = payload.get("session")
-    account = get_account_by_session(session_name) if session_name else None
+    instance_name = payload.get("instance")
+    account = get_account_by_session(instance_name) if instance_name else None
     if not account:
-        return jsonify({"ok": True})  # sessão desconhecida (ex: conta de teste já removida) — ignora
+        return jsonify({"ok": True})  # instância desconhecida (ex: conta de teste já removida) — ignora
 
-    if event == "session.status":
-        inner = payload.get("payload") or {}
-        waha_status = inner.get("status") or payload.get("status")
-        our_status = WAHA_STATUS_MAP.get(waha_status)
+    data = payload.get("data") or {}
+
+    if event == "connection.update":
+        evo_state = data.get("state")
+        our_status = EVOLUTION_STATUS_MAP.get(evo_state)
         if our_status:
             update_account_status(account["id"], our_status, connected=(our_status == "connected"))
-            log_event(account["id"], "status_via_webhook", detail={"waha_status": waha_status})
+            log_event(account["id"], "status_via_webhook", detail={"evolution_state": evo_state})
 
-    elif event == "message":
-        msg = payload.get("payload") or {}
-        if msg.get("fromMe"):
+    elif event == "messages.upsert":
+        key = data.get("key") or {}
+        if key.get("fromMe"):
             return jsonify({"ok": True})  # mensagens enviadas por nós já são gravadas na hora do envio
-        wa_id = msg.get("from")
-        body = msg.get("body")
-        wa_message_id = msg.get("id")
-        push_name = msg.get("notifyName") or (msg.get("_data") or {}).get("notifyName")
+        wa_id = key.get("remoteJid")
+        message = data.get("message") or {}
+        body = message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
+        wa_message_id = key.get("id")
+        push_name = data.get("pushName")
         if wa_id:
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
             chat_id = get_or_create_chat(account["id"], contact_id)
