@@ -51,14 +51,27 @@ def _request(method, path, expected_statuses=(200, 201), **kwargs):
 
 def create_and_start_session(session_name, webhook_url=None):
     """Cria e inicia a sessão na primeira vez, já configurando o webhook de
-    mensagens/status (fixado na criação — reconectar uma sessão existente via
-    /start NÃO reaplica essa config, só uma sessão nova pega o webhook).
-    Se já existir (409, reconectar uma conta criada antes), reinicia com /start."""
-    body = {"name": session_name, "start": True}
+    mensagens/status e o "store" do engine NOWEB (fixados na criação —
+    reconectar uma sessão existente via /start NÃO reaplica essa config, só
+    uma sessão nova pega. A própria WAHA recomenda não mudar esses valores
+    depois do QR escaneado, sob risco de perder o histórico).
+
+    store.enabled/fullSync é obrigatório pro NOWEB rastrear contatos/estado
+    de entrega direito — sem isso, mensagens enviadas ficavam presas em
+    status "PENDING" e nunca chegavam de verdade no destinatário (descoberto
+    testando contra um número real).
+
+    Se a sessão já existir (409, reconectar uma conta criada antes),
+    reinicia com /start."""
+    body = {
+        "name": session_name,
+        "start": True,
+        "config": {
+            "noweb": {"store": {"enabled": True, "fullSync": True}},
+        },
+    }
     if webhook_url:
-        body["config"] = {
-            "webhooks": [{"url": webhook_url, "events": ["message", "session.status"]}]
-        }
+        body["config"]["webhooks"] = [{"url": webhook_url, "events": ["message", "session.status"]}]
     try:
         return _request("POST", "/api/sessions", json=body)
     except WahaError as e:
