@@ -20,6 +20,11 @@ services:
     environment:
       - WHATSAPP_API_KEY=${WAHA_API_KEY}
       - WHATSAPP_SWAGGER_CONFIG_ADVANCED=false
+      # WEBJS (padrão) roda um Chrome escondido simulando o site do WhatsApp Web —
+      # quebrou em produção com "Error: No LID for user" depois de uma atualização
+      # do WhatsApp Web (bug conhecido: github.com/devlikeapro/waha/issues/1881).
+      # NOWEB fala o protocolo direto, sem depender do site, e não é afetado.
+      - WHATSAPP_DEFAULT_ENGINE=NOWEB
     volumes:
       - waha_sessions:/app/.sessions
     extra_hosts:
