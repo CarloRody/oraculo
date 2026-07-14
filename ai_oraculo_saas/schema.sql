@@ -10,7 +10,8 @@ CREATE TABLE IF NOT EXISTS areas (
     slug VARCHAR(50) UNIQUE NOT NULL,
     vector_ref TEXT NOT NULL, -- Nome do índice no ChromaDB/Qdrant (ex: 'area_engenharia_v1')
     status VARCHAR(10) DEFAULT 'draft' CHECK (status IN ('active', 'draft', 'archived')),
-    owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL -- NULL = área global; preenchida = base de conhecimento privada de um cliente
+    owner_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL, -- NULL = área global; preenchida = base de conhecimento privada de um cliente
+    custom_prompt TEXT -- instruções extras da área, injetadas no system prompt de /api/chat, /api/agent-research e no bot de WhatsApp
 );
 
 -- 1.5. Tabela: ai_models (Cadastro de modelos de IA — cada linha é um backend

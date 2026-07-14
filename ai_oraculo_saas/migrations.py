@@ -309,6 +309,16 @@ MIGRATIONS = [
         END IF;
     END $$;
     """,
+
+    # 16 — prompt personalizado por área. NULL = comportamento de sempre
+    # (prompt padrão hardcoded em /api/chat e /api/agent-research); preenchido
+    # = instruções extras daquela área (ex: "sempre oriente abertura de
+    # chamado"), usadas tanto no chat/pesquisa do site quanto no bot de
+    # resposta automática do WhatsApp (whatsapp-agent, área vinculada via
+    # whatsapp_accounts.area_id).
+    """
+    ALTER TABLE areas ADD COLUMN IF NOT EXISTS custom_prompt TEXT;
+    """,
 ]
 
 

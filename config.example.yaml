@@ -62,3 +62,6 @@ whatsapp_agent:
 evolution_api:
   base_url: "http://127.0.0.1:8090"   # Evolution API bare-metal (Node.js), ver evolution-api/ e evolution-api.service
   api_key: null                        # mesma chave usada em evolution-api/.env (AUTHENTICATION_API_KEY)
+
+oraculo_api:
+  base_url: "http://127.0.0.1:5001"   # ai_oraculo_saas (mesmo host, bare-metal) — usado pelo bot de resposta automática do WhatsApp pra chamar /api/chat

@@ -16,7 +16,7 @@ import sys, os as _os_module
 sys.path.insert(0, _os_module.path.join(_os_module.path.dirname(__file__), '..'))
 from rag_engine import process_document, search_similar, get_model, extract_pdf_text
 from migrations import migrate_if_needed
-from config import CONFIG, DB_CONFIG, save_config
+from config import CONFIG, DB_CONFIG, save_config, WHATSAPP_AGENT_BASE_URL
 
 app = Flask(__name__)
 CORS(app)  # Permite que o frontend acesse de qualquer origem local
@@ -29,6 +29,23 @@ def get_db_connection():
         return conn
     except Exception as e:
         print(f"Erro ao conectar com o banco: {e}")
+        return None
+
+
+def _call_whatsapp_agent(method, path, **kwargs):
+    """Chama a API do whatsapp-agent (serviço separado, porta 5005) — usado só
+    pra ler/escrever o vínculo área<->conexão em whatsapp_accounts, nunca SQL
+    direto na tabela do outro serviço. O whatsapp-agent é opcional (pode estar
+    fora do ar) e isso nunca pode quebrar o admin do Oráculo, por isso qualquer
+    falha só loga e retorna None em vez de propagar."""
+    try:
+        resp = _http_requests.request(method, f"{WHATSAPP_AGENT_BASE_URL}{path}", timeout=8, **kwargs)
+        if resp.status_code >= 400:
+            print(f"[_call_whatsapp_agent] {method} {path} -> {resp.status_code}: {resp.text[:200]}")
+            return None
+        return resp.json()
+    except Exception as e:
+        print(f"[_call_whatsapp_agent] {method} {path} falhou: {e}")
         return None
 
 
@@ -435,6 +452,34 @@ def _area_name(area_id):
     except Exception:
         if conn: conn.close()
         return f"Área #{area_id}"
+
+
+def _area_custom_prompts_block(area_ids):
+    """Monta o bloco de instruções extras das áreas envolvidas na consulta
+    (custom_prompt, configurado no cadastro da área) — anexado ao system
+    prompt de /api/chat e /api/agent-research. Áreas sem custom_prompt não
+    entram; sem nenhuma configurada, retorna string vazia (comportamento de
+    sempre, sem mudança no prompt padrão)."""
+    if not area_ids:
+        return ""
+    conn = get_db_connection()
+    if not conn:
+        return ""
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT name, custom_prompt FROM areas WHERE id = ANY(%s) AND custom_prompt IS NOT NULL AND custom_prompt != ''",
+            (list(area_ids),)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        if not rows:
+            return ""
+        lines = "\n".join(f"[{name}]: {prompt}" for name, prompt in rows)
+        return f"\n\nInstruções adicionais definidas para a(s) área(s) consultada(s):\n{lines}"
+    except Exception:
+        if conn: conn.close()
+        return ""
 
 
 def resolve_area_ids(data):
@@ -1023,7 +1068,7 @@ def chat():
             "Se o contexto RAG não cobrir todos os aspectos da pergunta, complete com seu conhecimento prévio. "
             "Cite quando algo vem do contexto vs conhecimento geral. "
             "Responda em português de forma clara e didática."
-        )
+        ) + _area_custom_prompts_block(billing_area_ids)
 
         user_prompt = f"""Contexto do documento:
 {'=' * 60}
@@ -1156,6 +1201,8 @@ def agent_research():
             elif QUOTA_ENFORCEMENT == "warn":
                 quota_warning = f"Uso de tokens acima do limite mensal contratado para: {', '.join(over_quota_names)}."
 
+        area_custom_prompts = _area_custom_prompts_block(billing_area_ids)
+
         official_system_prompt = (
             "Você é um assistente que responde exclusivamente com base na documentação "
             "oficial fornecida abaixo. Se a documentação não cobrir algum aspecto da "
@@ -1163,7 +1210,7 @@ def agent_research():
             "Desenvolva a resposta com detalhes relevantes do contexto (explicações, "
             "exemplos, exceções, passos) sempre que a documentação tiver material pra "
             "isso — não seja desnecessariamente breve. Responda em português."
-        )
+        ) + area_custom_prompts
         official_user_prompt = f"""Contexto da documentação oficial:
 {'=' * 60}
 {full_context_text if full_context_text else '(nenhum trecho relevante encontrado na documentação)'}
@@ -1214,7 +1261,7 @@ Pergunta: {message}"""
             "de resumir demais, mantendo tudo que for útil pra responder a pergunta com "
             "profundidade. Se houver alguma divergência relevante entre as duas fontes, "
             "aponte isso explicitamente na resposta. Responda em português."
-        )
+        ) + area_custom_prompts
         cmp_user_prompt = f"""Pergunta original: {message}
 
 Resposta da documentação oficial:
@@ -1290,7 +1337,7 @@ def admin_get_areas():
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT a.id, a.name, a.slug, a.status, a.owner_user_id, u.email
+            """SELECT a.id, a.name, a.slug, a.status, a.owner_user_id, u.email, a.custom_prompt
                FROM areas a LEFT JOIN users u ON u.id = a.owner_user_id
                ORDER BY a.name"""
         )
@@ -1301,7 +1348,7 @@ def admin_get_areas():
             doc_count = cur.fetchone()[0]
             areas.append({
                 "id": r[0], "name": r[1], "slug": r[2], "status": r[3], "doc_count": doc_count,
-                "owner_user_id": r[4], "owner_email": r[5]
+                "owner_user_id": r[4], "owner_email": r[5], "custom_prompt": r[6]
             })
         conn.close()
         return jsonify({"total": len(areas), "areas": areas})
@@ -1320,6 +1367,7 @@ def admin_create_area():
     name = data.get('name', '').strip()
     owner_user_id = data.get('owner_user_id')
     status = data.get('status') or 'active'
+    custom_prompt = (data.get('custom_prompt') or '').strip() or None
     if status not in ('active', 'draft', 'archived'):
         return jsonify({"error": "Status inválido (use active, draft ou archived)"}), 400
     if not name:
@@ -1332,13 +1380,13 @@ def admin_create_area():
         vector_ref = f"area_{slug}_v1"
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO areas (name, slug, vector_ref, status, owner_user_id) VALUES (%s, %s, %s, %s, %s) RETURNING id",
-            (name, slug, vector_ref, status, owner_user_id)
+            "INSERT INTO areas (name, slug, vector_ref, status, owner_user_id, custom_prompt) VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
+            (name, slug, vector_ref, status, owner_user_id, custom_prompt)
         )
         area_id = cur.fetchone()[0]
         conn.commit()
         conn.close()
-        return jsonify({"id": area_id, "name": name, "slug": slug, "status": status, "owner_user_id": owner_user_id}), 201
+        return jsonify({"id": area_id, "name": name, "slug": slug, "status": status, "owner_user_id": owner_user_id, "custom_prompt": custom_prompt}), 201
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         conn.close()
@@ -1362,6 +1410,7 @@ def admin_update_area(area_id):
         return jsonify({"error": "Status inválido (use active, draft ou archived)"}), 400
 
     owner_user_id = data.get('owner_user_id') or None
+    custom_prompt = (data.get('custom_prompt') or '').strip() or None
 
     conn = get_db_connection()
     if not conn:
@@ -1370,15 +1419,15 @@ def admin_update_area(area_id):
         slug = (data.get('slug') or '').strip() or name.lower().replace(' ', '-').replace('/', '-')
         cur = conn.cursor()
         cur.execute(
-            "UPDATE areas SET name = %s, slug = %s, status = %s, owner_user_id = %s WHERE id = %s",
-            (name, slug, status, owner_user_id, area_id)
+            "UPDATE areas SET name = %s, slug = %s, status = %s, owner_user_id = %s, custom_prompt = %s WHERE id = %s",
+            (name, slug, status, owner_user_id, custom_prompt, area_id)
         )
         conn.commit()
         if cur.rowcount == 0:
             conn.close()
             return jsonify({"error": "Área não encontrada"}), 404
         conn.close()
-        return jsonify({"id": area_id, "name": name, "slug": slug, "status": status, "owner_user_id": owner_user_id})
+        return jsonify({"id": area_id, "name": name, "slug": slug, "status": status, "owner_user_id": owner_user_id, "custom_prompt": custom_prompt})
     except psycopg2.errors.UniqueViolation:
         conn.rollback()
         conn.close()
@@ -1404,6 +1453,11 @@ def admin_delete_area(area_id):
             conn.close()
             return jsonify({"error": "Área não encontrada"}), 404
         conn.close()
+        # A área deixou de existir pra todo mundo — limpa o vínculo com
+        # conexões WhatsApp em qualquer cliente que a tivesse (sem user_ids,
+        # não é escopado a um plano). Best-effort: o whatsapp-agent pode estar
+        # fora do ar, isso nunca deve impedir o arquivamento da área.
+        _call_whatsapp_agent('POST', '/api/whatsapp/accounts/unlink-area', json={"area_id": area_id})
         return jsonify({"message": f"Área {area_id} arquivada"})
     except Exception as e:
         if conn: conn.close()
@@ -1934,6 +1988,77 @@ def admin_update_user(user_id):
         return jsonify({"error": str(e)}), 500
 
 
+def _client_area_ids(user_id):
+    """Áreas disponíveis pro cliente: as do plano (get_plan_area_ids) mais a
+    área privada dele, se tiver (owner_user_id) — mesmas duas fontes já
+    usadas em /api/areas e /api/my-area."""
+    area_ids = set(get_plan_area_ids(user_id))
+    conn = get_db_connection()
+    if conn:
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id FROM areas WHERE owner_user_id = %s AND status = 'active'", (user_id,))
+            row = cur.fetchone()
+            if row:
+                area_ids.add(row[0])
+        finally:
+            conn.close()
+    return area_ids
+
+
+@app.route('/admin/users/<int:user_id>/areas-whatsapp', methods=['GET'])
+def admin_user_areas_whatsapp(user_id):
+    """Áreas do cliente (plano + privada) com qual conexão WhatsApp dele (se
+    alguma) está vinculada a cada uma, mais a lista de conexões pra popular o
+    seletor — tudo numa chamada só, pro admin.html não orquestrar 3
+    requisições."""
+    area_ids = _client_area_ids(user_id)
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        areas = []
+        if area_ids:
+            cur.execute(
+                "SELECT id, name, custom_prompt FROM areas WHERE id = ANY(%s) ORDER BY name",
+                (list(area_ids),)
+            )
+            areas = [{"id": r[0], "name": r[1], "custom_prompt": r[2]} for r in cur.fetchall()]
+        conn.close()
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+    wa_result = _call_whatsapp_agent('GET', '/api/whatsapp/accounts', params={"user_id": user_id}) or {}
+    accounts = wa_result.get("accounts") or []
+    linked_by_area = {a["area_id"]: a["id"] for a in accounts if a.get("area_id")}
+    for area in areas:
+        area["linked_account_id"] = linked_by_area.get(area["id"])
+
+    return jsonify({
+        "areas": areas,
+        "accounts": [{"id": a["id"], "label": a["label"], "status": a["status"]} for a in accounts],
+        "whatsapp_agent_unreachable": wa_result is None,
+    })
+
+
+@app.route('/admin/users/<int:user_id>/areas/<int:area_id>/whatsapp-account', methods=['PUT'])
+def admin_set_client_area_whatsapp(user_id, area_id):
+    """Vincula (ou desvincula, account_id null) uma conexão WhatsApp do
+    cliente a uma das áreas dele. Delega a escrita de fato pro whatsapp-agent
+    (dono da tabela whatsapp_accounts) via HTTP."""
+    if area_id not in _client_area_ids(user_id):
+        return jsonify({"error": "Essa área não está disponível para este cliente"}), 400
+    data = request.get_json() or {}
+    account_id = data.get('account_id') or None
+    result = _call_whatsapp_agent('PUT', '/api/whatsapp/area-link',
+                                   json={"user_id": user_id, "area_id": area_id, "account_id": account_id})
+    if result is None:
+        return jsonify({"error": "whatsapp-agent indisponível — tente novamente em instantes"}), 502
+    return jsonify({"ok": True})
+
+
 @app.route('/admin/plans', methods=['GET'])
 def admin_list_plans():
     """Lista planos com a tabela de preço por área e quantos clientes usam cada um."""
@@ -1973,17 +2098,26 @@ def admin_list_plans():
 def _replace_plan_area_pricing(cur, plan_id, areas):
     """Apaga e regrava as linhas de plan_area_pricing de um plano — o formulário
     sempre manda a tabela completa, então substituir tudo é mais simples e
-    seguro do que tentar diffar upsert/delete linha a linha."""
+    seguro do que tentar diffar upsert/delete linha a linha.
+    Retorna os area_id que saíram do plano (estavam antes, não estão na lista
+    nova) — usado pra limpar o vínculo área<->conexão WhatsApp de quem usava
+    essa área só por causa deste plano."""
+    cur.execute("SELECT area_id FROM plan_area_pricing WHERE plan_id = %s", (plan_id,))
+    previous_area_ids = {r[0] for r in cur.fetchall()}
+
     cur.execute("DELETE FROM plan_area_pricing WHERE plan_id = %s", (plan_id,))
+    new_area_ids = set()
     for a in (areas or []):
         area_id = a.get('area_id')
         if not area_id:
             continue
+        new_area_ids.add(area_id)
         cur.execute(
             """INSERT INTO plan_area_pricing (plan_id, area_id, monthly_token_quota, price_per_1k_tokens)
                VALUES (%s, %s, %s, %s)""",
             (plan_id, area_id, a.get('monthly_token_quota'), a.get('price_per_1k_tokens'))
         )
+    return previous_area_ids - new_area_ids
 
 
 @app.route('/admin/plans', methods=['POST'])
@@ -2049,11 +2183,26 @@ def admin_update_plan(plan_id):
                 conn.close()
                 return jsonify({"error": "Plano não encontrado"}), 404
 
+        removed_area_ids = set()
         if 'areas' in data:
-            _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
+            removed_area_ids = _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
+
+        if removed_area_ids:
+            cur.execute("SELECT id FROM users WHERE plan_id = %s", (plan_id,))
+            plan_user_ids = [r[0] for r in cur.fetchall()]
 
         conn.commit()
         conn.close()
+
+        # Áreas que saíram do plano — limpa o vínculo com conexão WhatsApp só
+        # de clientes deste plano (escopado por user_ids: um cliente que
+        # também tenha essa área como base privada não é afetado). Best-effort,
+        # depois do commit — o whatsapp-agent pode estar fora do ar.
+        if removed_area_ids and plan_user_ids:
+            for area_id in removed_area_ids:
+                _call_whatsapp_agent('POST', '/api/whatsapp/accounts/unlink-area',
+                                      json={"area_id": area_id, "user_ids": plan_user_ids})
+
         return jsonify({"message": f"Plano {plan_id} atualizado"})
     except psycopg2.errors.UniqueViolation:
         conn.rollback()

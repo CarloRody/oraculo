@@ -32,3 +32,10 @@ CONFIG = load_config()
 # a bare {"host": "/var/run/postgresql", "dbname": ..., "user": ...} connects
 # via Unix socket peer auth, exactly like the old hardcoded DB_CONFIG did.
 DB_CONFIG = {k: v for k, v in CONFIG["database"].items() if v is not None}
+
+# Endereço do whatsapp-agent (serviço separado, porta 5005) — reaproveita a
+# mesma chave que o whatsapp-agent já usa pra se auto-referenciar nos
+# callbacks da Evolution API, não cria uma config nova. Usado só pra
+# vincular área<->conexão WhatsApp no cadastro de clientes; nunca escrevemos
+# direto nas tabelas whatsapp_* daqui.
+WHATSAPP_AGENT_BASE_URL = (CONFIG.get("whatsapp_agent") or {}).get("webhook_base_url") or "http://127.0.0.1:5005"

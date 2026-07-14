@@ -244,6 +244,10 @@
                 <option value="">Global (sem dono — visível conforme o plano de qualquer cliente)</option>
             </select>
         </div>
+        <div class="form-group">
+            <label>Prompt personalizado <span style="font-weight:normal; color:#64748b;">(opcional — instruções extras desta área, usadas no chat/pesquisa e no bot de WhatsApp. Ex: "sempre oriente abertura de chamado" ou "responda só com base na documentação")</span></label>
+            <textarea class="form-input" id="areaCustomPrompt" rows="3" placeholder="Deixe vazio para usar só o comportamento padrão"></textarea>
+        </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeAreaModal()">Cancelar</button>
             <button class="btn" onclick="saveArea()">Salvar</button>
@@ -330,6 +334,12 @@
             <label>Chave de acesso <span style="font-weight:normal; color:#64748b;">(edite livremente e clique em Salvar — a chave antiga para de funcionar na hora)</span></label>
             <input type="text" class="form-input" id="editClientKeyValue" style="font-family:monospace;">
             <button class="btn btn-sm btn-danger" style="margin-top:0.5rem;" onclick="regenerateClientKey()">Gerar chave aleatória agora</button>
+        </div>
+        <div class="form-group">
+            <label>Áreas &amp; conexões WhatsApp <span style="font-weight:normal; color:#64748b;">(qual conexão do próprio cliente atende automaticamente por cada área do plano dele)</span></label>
+            <div id="clientAreasWhatsappBox" style="background:#0f172a; border:1px solid #334155; border-radius:6px; padding:0.75rem;">
+                <p style="color:#64748b; font-size:0.85rem; margin:0;">Carregando...</p>
+            </div>
         </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeClientEditModal()">Cancelar</button>
@@ -575,6 +585,7 @@ function showAreaModal(area) {
         document.getElementById('areaSlug').value = area.slug || '';
         document.getElementById('areaStatus').value = area.status || 'active';
         ownerSelect.value = area.owner_user_id || '';
+        document.getElementById('areaCustomPrompt').value = area.custom_prompt || '';
     } else {
         document.getElementById('areaModalTitle').textContent = 'Nova Área';
         document.getElementById('editAreaId').value = '';
@@ -582,6 +593,7 @@ function showAreaModal(area) {
         document.getElementById('areaSlug').value = '';
         document.getElementById('areaStatus').value = 'active';
         ownerSelect.value = '';
+        document.getElementById('areaCustomPrompt').value = '';
     }
 }
 
@@ -593,9 +605,10 @@ async function saveArea() {
     const slug = document.getElementById('areaSlug').value.trim();
     const status = document.getElementById('areaStatus').value;
     const ownerVal = document.getElementById('areaOwner').value;
+    const customPrompt = document.getElementById('areaCustomPrompt').value.trim();
     if (!name) return alert('Nome é obrigatório.');
 
-    const payload = { name, status, owner_user_id: ownerVal ? Number(ownerVal) : null };
+    const payload = { name, status, owner_user_id: ownerVal ? Number(ownerVal) : null, custom_prompt: customPrompt || null };
     if (slug) payload.slug = slug;
 
     try {
@@ -989,6 +1002,51 @@ function showClientEditModal(userId) {
     document.getElementById('editClientEmail').value = client.email;
     document.getElementById('editClientKeyValue').value = client.api_key || '';
     document.getElementById('clientEditModal').classList.add('active');
+    loadClientAreasWhatsapp(userId);
+}
+
+async function loadClientAreasWhatsapp(userId) {
+    const box = document.getElementById('clientAreasWhatsappBox');
+    box.innerHTML = '<p style="color:#64748b; font-size:0.85rem; margin:0;">Carregando...</p>';
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}/areas-whatsapp`);
+        const data = await res.json();
+        if (!res.ok) { box.innerHTML = `<p style="color:#f87171; font-size:0.85rem; margin:0;">${esc(data.error || 'Erro ao carregar áreas.')}</p>`; return; }
+
+        if (!data.areas.length) {
+            box.innerHTML = '<p style="color:#64748b; font-size:0.85rem; margin:0;">Este cliente ainda não tem nenhuma área disponível (plano sem áreas, ou sem base privada).</p>';
+            return;
+        }
+        if (!data.accounts.length) {
+            box.innerHTML = '<p style="color:#64748b; font-size:0.85rem; margin:0;">Cliente sem conexão WhatsApp cadastrada ainda — cadastre uma no WhatsApp Agent primeiro.</p>';
+            return;
+        }
+
+        const accountOptions = '<option value="">Nenhuma conexão</option>' +
+            data.accounts.map(a => `<option value="${a.id}">${esc(a.label)} (${esc(a.status)})</option>`).join('');
+        box.innerHTML = data.areas.map(ar => `
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:0.5rem; padding:0.3rem 0;">
+                <span style="font-size:0.85rem;">${esc(ar.name)}${ar.custom_prompt ? ' 📝' : ''}</span>
+                <select class="form-input" style="width:auto; padding:0.3rem 0.5rem; font-size:0.8rem;"
+                        onchange="onAreaWhatsappChange(${userId}, ${ar.id}, this.value)">
+                    ${accountOptions.replace(`value="${ar.linked_account_id}"`, `value="${ar.linked_account_id}" selected`)}
+                </select>
+            </div>
+        `).join('');
+    } catch (e) {
+        box.innerHTML = '<p style="color:#f87171; font-size:0.85rem; margin:0;">Erro ao carregar áreas.</p>';
+    }
+}
+
+async function onAreaWhatsappChange(userId, areaId, accountId) {
+    try {
+        const res = await fetch(ADMIN_API + `/admin/users/${userId}/areas/${areaId}/whatsapp-account`, {
+            method: 'PUT', headers: {'Content-Type':'application/json'},
+            body: JSON.stringify({ account_id: accountId ? Number(accountId) : null })
+        });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Erro ao vincular conexão.'); loadClientAreasWhatsapp(userId); }
+    } catch (e) { alert('Erro ao vincular conexão.'); loadClientAreasWhatsapp(userId); }
 }
 
 function closeClientEditModal() { document.getElementById('clientEditModal').classList.remove('active'); }

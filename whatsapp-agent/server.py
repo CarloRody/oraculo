@@ -3,9 +3,9 @@
 WhatsApp (conta comum via QR Code, usando a Evolution API como conector).
 
 Roda separado do Oráculo (ai_oraculo_saas) — não importa nem altera nada lá.
-Só consome a API do Oráculo quando fizer sentido (ex: resposta automática via
-RAG, planejado pra depois). Por enquanto: cadastro de contas + fluxo de
-conexão/QR + conversas, primeiro passo do módulo descrito no plano.
+Só consome a API do Oráculo quando faz sentido: o bot de resposta automática
+(ai_auto_reply_enabled + conta vinculada a uma área) chama /api/chat de lá
+via HTTP, nunca lê o banco dele diretamente pra isso.
 """
 
 import datetime
@@ -14,11 +14,12 @@ import threading
 
 import psycopg2
 import psycopg2.extras
+import requests
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
 import connectors.evolution as evolution
-from config import DB_CONFIG, WHATSAPP_CONFIG
+from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG
 from connectors.evolution import EvolutionError
 from db_migrations import migrate_if_needed
 
@@ -80,7 +81,7 @@ def log_event(account_id, event, level="info", detail=None):
 
 ACCOUNT_COLUMNS = [
     "id", "label", "connection_type", "phone_number", "status",
-    "wa_session_name", "ai_auto_reply_enabled", "last_connected_at", "created_at", "user_id",
+    "wa_session_name", "ai_auto_reply_enabled", "last_connected_at", "created_at", "user_id", "area_id",
 ]
 
 
@@ -92,24 +93,30 @@ def _row_to_account(row):
     return d
 
 
-def get_accounts():
-    # LEFT JOIN com users (mesmo ai_tutor_db, mesma conexão — não é banco
-    # separado) só pra trazer o e-mail do cliente vinculado junto, sem
-    # round-trip extra pro frontend.
+def get_accounts(user_id=None):
+    # LEFT JOIN com users e areas (mesmo ai_tutor_db, mesma conexão — não são
+    # bancos separados) só pra trazer o e-mail do cliente e o nome da área
+    # vinculados junto, sem round-trip extra pro frontend.
     conn = _conn()
     try:
         cur = conn.cursor()
         cols = ", ".join(f"a.{c}" for c in ACCOUNT_COLUMNS)
+        where = "WHERE a.user_id = %s" if user_id else ""
+        params = (user_id,) if user_id else ()
         cur.execute(
-            f"""SELECT {cols}, u.email AS client_email
+            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name
                 FROM whatsapp_accounts a
                 LEFT JOIN users u ON u.id = a.user_id
-                ORDER BY a.created_at DESC"""
+                LEFT JOIN areas ar ON ar.id = a.area_id
+                {where}
+                ORDER BY a.created_at DESC""",
+            params,
         )
         rows = []
         for r in cur.fetchall():
-            d = _row_to_account(r[:-1])
-            d["client_email"] = r[-1]
+            d = _row_to_account(r[:-2])
+            d["client_email"] = r[-2]
+            d["area_name"] = r[-1]
             rows.append(d)
         return rows
     finally:
@@ -122,17 +129,19 @@ def get_account(account_id):
         cur = conn.cursor()
         cols = ", ".join(f"a.{c}" for c in ACCOUNT_COLUMNS)
         cur.execute(
-            f"""SELECT {cols}, u.email AS client_email
+            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name
                 FROM whatsapp_accounts a
                 LEFT JOIN users u ON u.id = a.user_id
+                LEFT JOIN areas ar ON ar.id = a.area_id
                 WHERE a.id = %s""",
             (account_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        d = _row_to_account(row[:-1])
-        d["client_email"] = row[-1]
+        d = _row_to_account(row[:-2])
+        d["client_email"] = row[-2]
+        d["area_name"] = row[-1]
         return d
     finally:
         conn.close()
@@ -175,6 +184,49 @@ def update_account_client(account_id, user_id):
         cur.execute("UPDATE whatsapp_accounts SET user_id = %s WHERE id = %s", (user_id, account_id))
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def set_area_link(user_id, area_id, account_id):
+    # Exclusividade por CLIENTE, não global: duas empresas diferentes no
+    # mesmo plano podem vincular números diferentes pra mesma área
+    # compartilhada. Por isso o "libera antes de setar" só mexe em contas
+    # com o mesmo user_id.
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_accounts SET area_id = NULL WHERE user_id = %s AND area_id = %s",
+            (user_id, area_id),
+        )
+        if account_id:
+            cur.execute(
+                "UPDATE whatsapp_accounts SET area_id = %s WHERE id = %s AND user_id = %s",
+                (area_id, account_id, user_id),
+            )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def unlink_area(area_id, user_ids=None):
+    # Chamado pelo ai_oraculo_saas quando uma área deixa de estar disponível
+    # (arquivada, ou removida do plano) — limpa o vínculo em whatsapp_accounts
+    # sem que o Oráculo precise escrever direto nessa tabela.
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if user_ids:
+            cur.execute(
+                "UPDATE whatsapp_accounts SET area_id = NULL WHERE area_id = %s AND user_id = ANY(%s)",
+                (area_id, user_ids),
+            )
+        else:
+            cur.execute("UPDATE whatsapp_accounts SET area_id = NULL WHERE area_id = %s", (area_id,))
+        conn.commit()
+        return cur.rowcount
     finally:
         conn.close()
 
@@ -442,7 +494,8 @@ def health():
 
 @app.route("/api/whatsapp/accounts", methods=["GET"])
 def api_list_accounts():
-    return jsonify({"accounts": get_accounts()})
+    user_id = request.args.get("user_id", type=int)
+    return jsonify({"accounts": get_accounts(user_id=user_id)})
 
 
 @app.route("/api/whatsapp/clients", methods=["GET"])
@@ -477,6 +530,39 @@ def api_update_account(account_id):
         return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
     update_account_client(account_id, data["user_id"] or None)
     return jsonify({"ok": True})
+
+
+@app.route("/api/whatsapp/area-link", methods=["PUT"])
+def api_set_area_link():
+    """Vincula (ou desvincula, account_id=null) uma área a uma conexão de um
+    cliente específico. Chamado pelo ai_oraculo_saas (cadastro de clientes),
+    nunca escrito direto na tabela pelo outro serviço."""
+    data = request.json or {}
+    user_id = data.get("user_id")
+    area_id = data.get("area_id")
+    account_id = data.get("account_id") or None
+    if not user_id or not area_id:
+        return jsonify({"ok": False, "message": "user_id e area_id são obrigatórios"}), 400
+    if account_id and not get_account(account_id):
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    set_area_link(user_id, area_id, account_id)
+    log_event(account_id, "area_link_set", detail={"user_id": user_id, "area_id": area_id})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/whatsapp/accounts/unlink-area", methods=["POST"])
+def api_unlink_area():
+    """Limpeza em cascata: chamado pelo ai_oraculo_saas quando uma área é
+    arquivada (sem user_ids, limpa em qualquer cliente) ou removida de um
+    plano específico (com user_ids, só limpa quem estava naquele plano)."""
+    data = request.json or {}
+    area_id = data.get("area_id")
+    user_ids = data.get("user_ids") or None
+    if not area_id:
+        return jsonify({"ok": False, "message": "area_id é obrigatório"}), 400
+    count = unlink_area(area_id, user_ids=user_ids)
+    log_event(None, "area_unlinked", detail={"area_id": area_id, "user_ids": user_ids, "accounts_affected": count})
+    return jsonify({"ok": True, "accounts_affected": count})
 
 
 @app.route("/api/whatsapp/accounts/<int:account_id>", methods=["DELETE"])
@@ -655,6 +741,56 @@ def api_mark_chat_read(chat_id):
     return jsonify({"ok": True})
 
 
+def _client_api_key(user_id):
+    # Leitura direta em users (mesmo ai_tutor_db, mesma conexão — mesmo padrão
+    # já usado em get_clients()); nunca escrevemos nessa tabela daqui.
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT api_key FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):
+    """Resposta automática via IA: só roda se a conta tiver auto-reply ligado
+    E estiver vinculada a uma área (o vínculo é feito no cadastro do cliente,
+    no Oráculo). Chama /api/chat de lá com a api_key do próprio cliente —
+    nunca chama com privilégio nenhum além do que o cliente já tem. Roda numa
+    thread separada (disparada pelo webhook) pra não segurar a resposta HTTP
+    do webhook enquanto o LLM processa."""
+    if not account.get("ai_auto_reply_enabled") or not account.get("area_id"):
+        return
+    if not incoming_text:
+        return
+
+    api_key = _client_api_key(account["user_id"]) if account.get("user_id") else None
+    if not api_key:
+        log_event(account["id"], "ai_auto_reply_skipped", level="warn",
+                   detail={"reason": "conta sem cliente vinculado (ou cliente sem api_key)"})
+        return
+
+    base_url = (ORACULO_API_CONFIG.get("base_url") or "http://127.0.0.1:5001").rstrip("/")
+    try:
+        resp = requests.post(
+            f"{base_url}/api/chat",
+            headers={"X-Oraculo-Key": api_key},
+            json={"message": incoming_text, "area_ids": [account["area_id"]]},
+            timeout=25,
+        )
+        resp.raise_for_status()
+        reply_text = (resp.json() or {}).get("response")
+        if not reply_text:
+            return
+        result = evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), reply_text)
+        wa_message_id = ((result or {}).get("key") or {}).get("id")
+        save_message(chat_id, account["id"], "out", reply_text, wa_message_id=wa_message_id)
+    except Exception as e:
+        log_event(account["id"], "ai_auto_reply_failed", level="error", detail={"error": str(e)})
+
+
 @app.route("/webhooks/evolution", methods=["POST"])
 def webhook_evolution():
     payload = request.json or {}
@@ -693,6 +829,9 @@ def webhook_evolution():
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
             chat_id = get_or_create_chat(account["id"], contact_id)
             save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
+            threading.Thread(
+                target=_handle_ai_auto_reply, args=(account, chat_id, wa_id, body), daemon=True
+            ).start()
 
     return jsonify({"ok": True})
 

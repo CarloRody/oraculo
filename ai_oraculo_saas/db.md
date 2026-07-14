@@ -24,6 +24,8 @@ O sistema centraliza quase tudo no **PostgreSQL**. A tabela `documents` unifica 
 | slug | VARCHAR(50) UNIQUE | URL friendly (`engenharia`) |
 | vector_ref | TEXT | Nome do índice no Vector DB (ex: `area_engenharia_v1`) |
 | status | VARCHAR(10) DEFAULT 'draft' | `active`, `draft` ou `archived` |
+| owner_user_id | INTEGER FK → users.id | NULL = área global; preenchida = base de conhecimento privada de um cliente |
+| custom_prompt | TEXT | Instruções extras da área, injetadas no prompt de `/api/chat`, `/api/agent-research` e no bot de WhatsApp |
 
 ### `documents` — Tabela Unificada de Documentos e Links Externos
 Tabela única que armazena tanto documentos físicos (PDFs/DOCX) quanto links externos (URLs). Contém um campo grande para armazenar todo o texto/link completo.

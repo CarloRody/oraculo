@@ -30,3 +30,4 @@ DB_CONFIG = {k: v for k, v in CONFIG["database"].items() if v is not None}
 
 WHATSAPP_CONFIG = CONFIG.get("whatsapp_agent") or {}
 EVOLUTION_CONFIG = CONFIG.get("evolution_api") or {}
+ORACULO_API_CONFIG = CONFIG.get("oraculo_api") or {}
