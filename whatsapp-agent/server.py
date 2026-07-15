@@ -10,6 +10,7 @@ via HTTP, nunca lê o banco dele diretamente pra isso.
 
 import datetime
 import re
+import secrets
 import threading
 import time
 
@@ -569,14 +570,72 @@ def create_consultant(account_id, contact_id, name, context, slot_duration_minut
         cur = conn.cursor()
         cur.execute(
             """INSERT INTO whatsapp_consultants
-               (account_id, contact_id, name, context, slot_duration_minutes, weekly_availability, reminder_hours_before)
-               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+               (account_id, contact_id, name, context, slot_duration_minutes, weekly_availability, reminder_hours_before, portal_token)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (account_id, contact_id, name, context, slot_duration_minutes,
-             psycopg2.extras.Json(weekly_availability) if weekly_availability else None, reminder_hours_before),
+             psycopg2.extras.Json(weekly_availability) if weekly_availability else None, reminder_hours_before,
+             secrets.token_hex(24)),
         )
         consultant_id = cur.fetchone()[0]
         conn.commit()
         return consultant_id
+    finally:
+        conn.close()
+
+
+def regenerate_portal_token(consultant_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        token = secrets.token_hex(24)
+        cur.execute("UPDATE whatsapp_consultants SET portal_token = %s WHERE id = %s", (token, consultant_id))
+        conn.commit()
+        return token if cur.rowcount else None
+    finally:
+        conn.close()
+
+
+def get_consultant_by_portal_token(token):
+    """Autenticação do portal do consultor — sem sessão/senha, o token opaco
+    (mandado por WhatsApp) É a credencial. Só resolve consultor 'active';
+    pending/declined/inactive não têm acesso mesmo com o link antigo em mãos."""
+    if not token:
+        return None
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(f"c.{col}" for col in CONSULTANT_COLUMNS)
+        cur.execute(
+            f"""SELECT {cols}, ct.wa_id, a.wa_session_name, a.label
+                FROM whatsapp_consultants c
+                JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+                JOIN whatsapp_accounts a ON a.id = c.account_id
+                WHERE c.portal_token = %s AND c.status = 'active'""",
+            (token,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = _row_to_consultant(row[:-3])
+        d["wa_id"] = row[-3]
+        d["wa_session_name"] = row[-2]
+        d["account_label"] = row[-1]
+        return d
+    finally:
+        conn.close()
+
+
+def get_active_consultant_by_wa_id(account_id, wa_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.id, c.portal_token FROM whatsapp_consultants c JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               WHERE c.account_id = %s AND ct.wa_id = %s AND c.status = 'active'""",
+            (account_id, wa_id),
+        )
+        row = cur.fetchone()
+        return {"id": row[0], "portal_token": row[1]} if row else None
     finally:
         conn.close()
 
@@ -664,6 +723,22 @@ def set_consultant_status(consultant_id, status):
         conn.close()
 
 
+def get_portal_token(consultant_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT portal_token FROM whatsapp_consultants WHERE id = %s", (consultant_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def portal_link(token):
+    base = (WHATSAPP_CONFIG.get("portal_base_url") or "http://127.0.0.1:5005").rstrip("/")
+    return f"{base}/agenda-consultor?token={token}"
+
+
 def get_consultant_by_pending_contact(account_id, wa_id):
     """Acha um consultor com confirmação pendente daquele contato — usado no
     webhook pra saber se um clique em botão é resposta ao convite de
@@ -701,7 +776,9 @@ def get_appointments(account_id, upcoming_only=True):
                 "scheduled_at", "duration_minutes", "status"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
-            r["scheduled_at"] = str(r["scheduled_at"])
+            # .astimezone() converte pra America/Sao_Paulo independente de
+            # qual offset o psycopg2 devolveu — evita horário errado na UI.
+            r["scheduled_at"] = r["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
         return rows
     finally:
         conn.close()
@@ -714,6 +791,40 @@ def cancel_appointment(appointment_id):
         cur.execute("UPDATE whatsapp_appointments SET status = 'cancelled' WHERE id = %s", (appointment_id,))
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_consultant_appointments(consultant_id):
+    """Pro portal do próprio consultor: agenda futura + um histórico curto
+    (últimos concluídos/cancelados/passados), separado do get_appointments
+    admin (que é por CONTA, não por consultor)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols_sql = "a.id, a.client_contact_id, ct.push_name, ct.wa_id, a.scheduled_at, a.duration_minutes, a.status"
+        cols = ["id", "client_contact_id", "client_name", "client_wa_id", "scheduled_at", "duration_minutes", "status"]
+
+        cur.execute(
+            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+                WHERE a.consultant_id = %s AND a.status = 'confirmed' AND a.scheduled_at >= NOW()
+                ORDER BY a.scheduled_at""",
+            (consultant_id,),
+        )
+        upcoming = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        cur.execute(
+            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+                WHERE a.consultant_id = %s AND (a.status != 'confirmed' OR a.scheduled_at < NOW())
+                ORDER BY a.scheduled_at DESC LIMIT 10""",
+            (consultant_id,),
+        )
+        history = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        for lst in (upcoming, history):
+            for r in lst:
+                r["scheduled_at"] = r["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+        return upcoming, history
     finally:
         conn.close()
 
@@ -763,7 +874,10 @@ def _reminder_loop():
     while True:
         try:
             for appt in _due_reminders():
-                when = appt["scheduled_at"].strftime("%d/%m às %H:%M")
+                # scheduled_at volta do banco com tzinfo (TIMESTAMPTZ) mas não
+                # necessariamente já em America/Sao_Paulo — .astimezone()
+                # converte certo independente de qual offset o psycopg2 deu.
+                when = appt["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%d/%m às %H:%M")
                 client_phone = _phone_from_wa_id(appt["client_wa_id"])
                 consultant_phone = _phone_from_wa_id(appt["consultant_wa_id"])
                 try:
@@ -792,6 +906,11 @@ def index():
 @app.route("/docs")
 def api_docs():
     return send_from_directory(PUBLIC_DIR, "api-docs.html")
+
+
+@app.route("/agenda-consultor")
+def consultant_portal_page():
+    return send_from_directory(PUBLIC_DIR, "consultant-portal.html")
 
 
 @app.route("/health")
@@ -1146,6 +1265,24 @@ def api_update_consultant(consultant_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/whatsapp/consultants/<int:consultant_id>/resend-portal-link", methods=["POST"])
+def api_resend_portal_link(consultant_id):
+    """Regenera o token (invalida o link antigo) e reenvia por WhatsApp —
+    cobre link perdido/vazado, sem precisar re-confirmar o cadastro todo."""
+    consultant = get_consultant(consultant_id)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
+    if consultant["status"] != "active":
+        return jsonify({"ok": False, "message": "Só é possível reenviar o link de um consultor ativo"}), 400
+    token = regenerate_portal_token(consultant_id)
+    try:
+        evolution.send_text(consultant["wa_session_name"], _phone_from_wa_id(consultant["wa_id"]),
+                             f"Aqui está o link atualizado da sua agenda: {portal_link(token)}")
+    except EvolutionError as e:
+        return jsonify({"ok": False, "message": f"Token atualizado, mas não consegui mandar por WhatsApp: {e}"}), 502
+    return jsonify({"ok": True})
+
+
 @app.route("/api/whatsapp/accounts/<int:account_id>/appointments", methods=["GET"])
 def api_list_appointments(account_id):
     if not get_account(account_id):
@@ -1156,6 +1293,113 @@ def api_list_appointments(account_id):
 @app.route("/api/whatsapp/appointments/<int:appointment_id>/cancel", methods=["POST"])
 def api_cancel_appointment(appointment_id):
     cancel_appointment(appointment_id)
+    return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Portal do consultor — autenticado por token (link mandado por WhatsApp),
+# nunca por sessão de admin. Cada rota resolve o consultor pelo token e só
+# enxerga/mexe nos dados DELE — nunca aceita account_id/consultant_id vindo
+# do cliente sem checar contra o token.
+# ---------------------------------------------------------------------------
+
+@app.route("/api/consultant-portal/<token>/me", methods=["GET"])
+def api_portal_me(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    return jsonify({
+        "name": consultant["name"],
+        "account_label": consultant["account_label"],
+        "slot_duration_minutes": consultant["slot_duration_minutes"],
+        "weekly_availability": consultant["weekly_availability"],
+    })
+
+
+@app.route("/api/consultant-portal/<token>/appointments", methods=["GET"])
+def api_portal_appointments(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    upcoming, history = get_consultant_appointments(consultant["id"])
+    return jsonify({"upcoming": upcoming, "history": history})
+
+
+@app.route("/api/consultant-portal/<token>/free-slots", methods=["GET"])
+def api_portal_free_slots(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    slots = booking_flow.compute_free_slots(consultant)
+    return jsonify({"slots": [s.isoformat() for s in slots]})
+
+
+@app.route("/api/consultant-portal/<token>/appointments", methods=["POST"])
+def api_portal_create_appointment(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    data = request.json or {}
+    phone = re.sub(r"\D", "", data.get("phone") or "")
+    name = (data.get("name") or "").strip()
+    scheduled_at_raw = data.get("scheduled_at")
+    if not phone or not scheduled_at_raw:
+        return jsonify({"ok": False, "message": "Telefone e horário são obrigatórios"}), 400
+    try:
+        scheduled_at = datetime.datetime.fromisoformat(scheduled_at_raw)
+    except ValueError:
+        return jsonify({"ok": False, "message": "Horário inválido"}), 400
+
+    wa_id = f"{phone}@s.whatsapp.net"
+    client_contact_id = get_or_create_contact(consultant["account_id"], wa_id, name or None)
+    ok = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False)
+    if not ok:
+        return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
+    return jsonify({"ok": True}), 201
+
+
+@app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/cancel", methods=["POST"])
+def api_portal_cancel_appointment(token, appointment_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    result = booking_flow.cancel_appointment_and_notify(appointment_id, consultant["id"])
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Agendamento não encontrado"}), 404
+    if result == "forbidden":
+        return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/reschedule", methods=["POST"])
+def api_portal_reschedule_appointment(token, appointment_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    data = request.json or {}
+    try:
+        new_scheduled_at = datetime.datetime.fromisoformat(data.get("new_scheduled_at") or "")
+    except ValueError:
+        return jsonify({"ok": False, "message": "Horário inválido"}), 400
+    result = booking_flow.reschedule_appointment_and_notify(appointment_id, consultant["id"], new_scheduled_at)
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Agendamento não encontrado"}), 404
+    if result == "forbidden":
+        return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    if result == "conflict":
+        return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/availability", methods=["PATCH"])
+def api_portal_update_availability(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    data = request.json or {}
+    if "weekly_availability" not in data:
+        return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
+    update_consultant(consultant["id"], {"weekly_availability": data["weekly_availability"]})
     return jsonify({"ok": True})
 
 
@@ -1278,14 +1522,27 @@ def webhook_evolution():
             save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
 
             pending_consultant_id = get_consultant_by_pending_contact(account["id"], wa_id) if selected_id else None
+            wants_portal_link = bool(body) and "minha agenda" in body.strip().lower()
+            active_consultant = get_active_consultant_by_wa_id(account["id"], wa_id) if wants_portal_link else None
+
             if pending_consultant_id and selected_id in (
                 f"consultant_confirm_{pending_consultant_id}", f"consultant_decline_{pending_consultant_id}"
             ):
                 new_status = "active" if selected_id.startswith("consultant_confirm_") else "declined"
                 set_consultant_status(pending_consultant_id, new_status)
-                reply = "Cadastro confirmado! Você já pode receber agendamentos." if new_status == "active" else "Ok, cadastro cancelado."
+                if new_status == "active":
+                    link = portal_link(get_portal_token(pending_consultant_id))
+                    reply = f"Cadastro confirmado! Você já pode receber agendamentos.\n\nAcesse sua agenda quando quiser: {link}"
+                else:
+                    reply = "Ok, cadastro cancelado."
                 try:
                     evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), reply)
+                except EvolutionError:
+                    pass
+            elif active_consultant:
+                try:
+                    evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id),
+                                         f"Sua agenda: {portal_link(active_consultant['portal_token'])}")
                 except EvolutionError:
                     pass
             elif booking_flow.handle_incoming(account, chat_id, contact_id, wa_id, body, selected_id, push_name):

@@ -314,6 +314,12 @@ MIGRATIONS = [
 
     ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS booking_state JSONB;
     """,
+
+    # 16 — portal do consultor: link único (token opaco) mandado por WhatsApp,
+    # sem login/senha — autentica as chamadas de /api/consultant-portal/<token>/...
+    """
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS portal_token VARCHAR(64) UNIQUE;
+    """,
 ]
 
 

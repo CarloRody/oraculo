@@ -112,6 +112,128 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at):
         conn.close()
 
 
+def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False):
+    """Cria o agendamento (se o horário ainda estiver livre) e avisa o
+    cliente. Usado tanto pelo fluxo self-service do cliente (notify_consultant
+    =True, ele ainda não sabe do agendamento) quanto pelo portal do próprio
+    consultor (notify_consultant=False — não faz sentido avisar quem tá
+    criando). Retorna True se criou, False se o horário já não estava livre."""
+    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at):
+        return False
+    when = scheduled_at.strftime("%d/%m às %H:%M")
+    client_phone = _phone(client_wa_id)
+    try:
+        evolution.send_text(consultant["wa_session_name"], client_phone,
+                             f"Você tem um agendamento confirmado com {consultant['name']} em {when}!")
+    except EvolutionError:
+        pass
+    if notify_consultant:
+        try:
+            evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]),
+                                 f"Novo agendamento: {client_push_name or client_phone} em {when}.")
+        except EvolutionError:
+            pass
+    return True
+
+
+def _get_appointment_full(appointment_id):
+    """Agendamento + dados do consultor/cliente já resolvidos numa consulta
+    só — usado pelas ações do portal do consultor (cancelar/remarcar), que
+    precisam de tudo isso pra montar o aviso mandado ao cliente."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT a.id, a.consultant_id, con.name, con.slot_duration_minutes, acc.wa_session_name,
+                      a.client_contact_id, ct.wa_id, ct.push_name, a.scheduled_at, a.duration_minutes, a.status
+               FROM whatsapp_appointments a
+               JOIN whatsapp_consultants con ON con.id = a.consultant_id
+               JOIN whatsapp_accounts acc ON acc.id = con.account_id
+               JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+               WHERE a.id = %s""",
+            (appointment_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = ["id", "consultant_id", "consultant_name", "slot_duration_minutes", "wa_session_name",
+                "client_contact_id", "client_wa_id", "client_push_name", "scheduled_at", "duration_minutes", "status"]
+        return dict(zip(cols, row))
+    finally:
+        conn.close()
+
+
+def cancel_appointment_and_notify(appointment_id, consultant_id):
+    """Cancela (só se pertencer ao consultor_id informado — o portal nunca
+    deixa mexer no agendamento de outro consultor) e avisa o cliente.
+    Retorna 'ok', 'not_found' ou 'forbidden'."""
+    appt = _get_appointment_full(appointment_id)
+    if not appt:
+        return "not_found"
+    if appt["consultant_id"] != consultant_id:
+        return "forbidden"
+    if appt["status"] != "confirmed":
+        return "not_found"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_appointments SET status = 'cancelled' WHERE id = %s", (appointment_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
+    try:
+        evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
+                             f"Seu agendamento com {appt['consultant_name']} em {when} foi cancelado.")
+    except EvolutionError:
+        pass
+    return "ok"
+
+
+def reschedule_appointment_and_notify(appointment_id, consultant_id, new_scheduled_at):
+    """Remarca (revalidando disponibilidade, mesma trava de concorrência do
+    agendamento novo) e avisa o cliente com o horário antigo e o novo.
+    Retorna 'ok', 'not_found', 'forbidden' ou 'conflict'."""
+    appt = _get_appointment_full(appointment_id)
+    if not appt:
+        return "not_found"
+    if appt["consultant_id"] != consultant_id:
+        return "forbidden"
+    if appt["status"] != "confirmed":
+        return "not_found"
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT pg_advisory_xact_lock(%s)", (consultant_id,))
+        end_at = new_scheduled_at + datetime.timedelta(minutes=appt["slot_duration_minutes"])
+        cur.execute(
+            """SELECT 1 FROM whatsapp_appointments
+               WHERE consultant_id = %s AND status = 'confirmed' AND id != %s
+               AND scheduled_at < %s AND (scheduled_at + make_interval(mins => duration_minutes)) > %s""",
+            (consultant_id, appointment_id, end_at, new_scheduled_at),
+        )
+        if cur.fetchone():
+            conn.rollback()
+            return "conflict"
+        cur.execute(
+            "UPDATE whatsapp_appointments SET scheduled_at = %s, reminder_sent_at = NULL WHERE id = %s",
+            (new_scheduled_at, appointment_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    old_when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
+    new_when = new_scheduled_at.strftime("%d/%m às %H:%M")
+    try:
+        evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
+                             f"Seu agendamento com {appt['consultant_name']} foi remarcado de {old_when} para {new_when}.")
+    except EvolutionError:
+        pass
+    return "ok"
+
+
 def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push_name=None):
     """Ponto de entrada chamado pelo webhook pra cada mensagem recebida (já
     depois de descartar cliques de confirmação de consultor, tratados à
@@ -183,17 +305,8 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
         scheduled_at = datetime.datetime.fromisoformat(state["scheduled_at"])
-        if not _create_appointment_if_free(consultant, contact_id, scheduled_at):
+        if not book_appointment(consultant, contact_id, wa_id, push_name, scheduled_at, notify_consultant=True):
             _send_text(account, phone, "Esse horário acabou de ser ocupado por outra pessoa. Digite \"agendar\" pra escolher outro.")
-            return True
-        when = scheduled_at.strftime("%d/%m às %H:%M")
-        _send_text(account, phone, f"Agendamento confirmado com {consultant['name']} em {when}!")
-        client_label = push_name or phone
-        try:
-            evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]),
-                                 f"Novo agendamento: {client_label} em {when}.")
-        except EvolutionError:
-            pass
         return True
 
     server.set_chat_booking_state(chat_id, None)

@@ -719,6 +719,7 @@ async function loadConsultants() {
                 ${c.context ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(c.context)}</div>` : ''}
             </div>
             <div class="account-actions">
+                ${c.status === 'active' ? `<button class="btn btn-sm" onclick="resendPortalLink(${c.id})">Reenviar link</button>` : ''}
                 ${c.status === 'active'
                     ? `<button class="btn btn-sm btn-secondary" onclick="toggleConsultantStatus(${c.id}, 'inactive')">Desativar</button>`
                     : c.status === 'inactive'
@@ -734,6 +735,13 @@ async function toggleConsultantStatus(id, status) {
         method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status })
     });
     loadConsultants();
+}
+
+async function resendPortalLink(id) {
+    const res = await fetch(API + `/api/whatsapp/consultants/${id}/resend-portal-link`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao reenviar link.');
+    alert('Link reenviado por WhatsApp (o link antigo deixou de funcionar).');
 }
 
 function appointmentStatusLabel(status) {
