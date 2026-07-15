@@ -1168,6 +1168,7 @@ async function loadModels() {
                 <p style="color:#64748b; font-size:0.85rem;">R$${m.price_input_per_million}/1M entrada • R$${m.price_output_per_million}/1M saída • markup ${m.markup_percentage}%${m.pro_high_multiplier != 1 ? ` • Pesquisa 3 PRO High: x${m.pro_high_multiplier}` : ''}</p>
                 <div style="margin-top:0.75rem;">
                     <button class="btn btn-sm" onclick='showModelModal(${JSON.stringify(m).replace(/'/g, "\\'")})'>Editar</button>
+                    <button class="btn btn-sm" onclick="duplicateModel(${m.id})">Duplicar</button>
                     <button class="btn btn-sm btn-danger" onclick="deactivateModel(${m.id}, '${esc(m.name)}')">Desativar</button>
                 </div>
             </div>
@@ -1194,6 +1195,15 @@ function showModelModal(model) {
 }
 
 function closeModelModal() { document.getElementById('modelModal').classList.remove('active'); }
+
+function duplicateModel(id) {
+    const model = allModels.find(m => m.id === id);
+    if (!model) return;
+    showModelModal(model);
+    document.getElementById('editModelId').value = '';
+    document.getElementById('modelName').value = model.name + ' (cópia)';
+    document.getElementById('modelModalTitle').textContent = 'Duplicar Modelo';
+}
 
 async function saveModel() {
     const id = document.getElementById('editModelId').value;
@@ -1260,6 +1270,7 @@ async function loadPlans() {
                 <p style="color:#64748b; font-size:0.85rem;">${areasSummary}</p>
                 <div style="margin-top:0.75rem;">
                     <button class="btn btn-sm" onclick="showPlanModal(${p.id})">Editar</button>
+                    <button class="btn btn-sm" onclick="duplicatePlan(${p.id})">Duplicar</button>
                     <button class="btn btn-sm btn-danger" onclick="deletePlan(${p.id}, '${esc(p.name)}')">Excluir</button>
                 </div>
             </div>`;
@@ -1355,6 +1366,15 @@ function showPlanModal(planId) {
 }
 
 function closePlanModal() { document.getElementById('planModal').classList.remove('active'); }
+
+function duplicatePlan(id) {
+    const plan = allPlans.find(p => p.id === id);
+    if (!plan) return;
+    showPlanModal(id);
+    document.getElementById('editPlanId').value = '';
+    document.getElementById('planName').value = plan.name + ' (cópia)';
+    document.getElementById('planModalTitle').textContent = 'Duplicar Plano';
+}
 
 async function savePlan() {
     const id = document.getElementById('editPlanId').value;
