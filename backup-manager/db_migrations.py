@@ -16,6 +16,16 @@ _SEED_FOLDERS = [
     ("Monitor Agent", "/root/.openclaw/workspace/projects/oraculo/oraculo_monitoragent"),
 ]
 
+# Pastas do monorepo que ficaram de fora do seed original — inseridas de
+# forma idempotente (por path) em toda subida, não só quando a tabela está
+# vazia, pra cobrir quem já tinha o serviço rodando antes dessas pastas
+# existirem.
+_ADDITIONAL_FOLDERS = [
+    ("Backup Manager", "/root/.openclaw/workspace/projects/oraculo/backup-manager"),
+    ("WhatsApp Agent", "/root/.openclaw/workspace/projects/oraculo/whatsapp-agent"),
+    ("Evolution API", "/root/.openclaw/workspace/projects/oraculo/evolution-api"),
+]
+
 
 def get_db():
     return psycopg2.connect(**DB_CONFIG)
@@ -56,6 +66,21 @@ def _seed_if_empty(cur):
     )
 
 
+def _seed_additional_folders(cur):
+    """Insere as pastas de _ADDITIONAL_FOLDERS que ainda não estejam
+    cadastradas (por path) — roda em toda subida, independente do estado
+    atual da tabela, sem duplicar o que já existe (seed original ou
+    cadastro manual pela UI)."""
+    for label, path in _ADDITIONAL_FOLDERS:
+        cur.execute("SELECT 1 FROM backup_targets WHERE path = %s", (path,))
+        if cur.fetchone():
+            continue
+        cur.execute(
+            "INSERT INTO backup_targets (kind, label, path) VALUES ('folder', %s, %s)",
+            (label, path),
+        )
+
+
 def migrate_if_needed():
     conn = get_db()
     try:
@@ -63,6 +88,7 @@ def migrate_if_needed():
         for sql in MIGRATIONS:
             cur.execute(sql.strip())
         _seed_if_empty(cur)
+        _seed_additional_folders(cur)
         conn.commit()
     except Exception as e:
         conn.rollback()

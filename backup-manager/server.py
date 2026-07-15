@@ -21,6 +21,13 @@ app = Flask(__name__)
 BACKUP_DIR = BACKUP_CONFIG["backup_dir"]
 BROWSE_ROOT = "/root"  # /api/browse nunca lista fora daqui
 
+# Padrões ignorados em todo backup de pasta — regeneráveis via
+# pip/npm install ou build, não precisam estar no .tar.
+FOLDER_BACKUP_EXCLUDES = [
+    ".venv", "venv", "__pycache__", "*.pyc", ".pytest_cache",
+    "node_modules", ".git", "dist", "build", "*.log",
+]
+
 BACKUP_LOCK = threading.Lock()   # evita dois backups (manual/manual ou manual/automático) rodando ao mesmo tempo
 SCHEDULE_LOCK = threading.Lock()  # protege leitura/escrita de SCHEDULE_STATE
 
@@ -68,7 +75,7 @@ def list_backups():
 
 
 def create_folder_backup(target):
-    """Tar completo (sem exclusões) da pasta do alvo cadastrado."""
+    """Tar da pasta do alvo cadastrado, ignorando FOLDER_BACKUP_EXCLUDES."""
     path = target["path"]
     if not path or not os.path.isdir(path):
         return False, f"Pasta não encontrada no servidor: {path}"
@@ -80,7 +87,8 @@ def create_folder_backup(target):
     if os.path.exists(filepath):
         os.remove(filepath)
 
-    cmd = f"tar cf {shlex.quote(filepath)} -C {shlex.quote(path)} ."
+    excludes = " ".join(f"--exclude={shlex.quote(p)}" for p in FOLDER_BACKUP_EXCLUDES)
+    cmd = f"tar cf {shlex.quote(filepath)} {excludes} -C {shlex.quote(path)} ."
     # Pastas registradas agora podem ser bem maiores que os 2 projetos de
     # código-fonte de antes (ex: /root/totvs tem 5GB) — 300s (padrão de
     # run()) não é suficiente num SBC; 1h cobre pastas bem grandes sem
