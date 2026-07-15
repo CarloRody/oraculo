@@ -11,6 +11,7 @@ via HTTP, nunca lê o banco dele diretamente pra isso.
 import datetime
 import re
 import threading
+import time
 
 import psycopg2
 import psycopg2.extras
@@ -18,6 +19,7 @@ import requests
 from flask import Flask, jsonify, request, send_from_directory
 from flask_cors import CORS
 
+import booking_flow
 import connectors.evolution as evolution
 from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG
 from connectors.evolution import EvolutionError
@@ -500,6 +502,284 @@ def mark_chat_read(chat_id):
         conn.close()
 
 
+def get_chat_booking_state(chat_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT booking_state FROM whatsapp_chats WHERE id = %s", (chat_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def set_chat_booking_state(chat_id, state):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_chats SET booking_state = %s WHERE id = %s",
+            (psycopg2.extras.Json(state) if state else None, chat_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Agenda de consultores
+# ---------------------------------------------------------------------------
+
+def plan_has_agenda(user_id):
+    # Leitura direta em plans (mesmo ai_tutor_db, mesma conexão — mesmo
+    # padrão já usado em get_clients()/_client_api_key()); nunca escrevemos
+    # nessa tabela daqui. Sem cliente vinculado à conta = sem agenda.
+    if not user_id:
+        return False
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT p.agenda_enabled FROM users u JOIN plans p ON p.id = u.plan_id WHERE u.id = %s",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return bool(row[0]) if row else False
+    finally:
+        conn.close()
+
+
+CONSULTANT_COLUMNS = [
+    "id", "account_id", "contact_id", "name", "context", "slot_duration_minutes",
+    "weekly_availability", "reminder_hours_before", "status", "confirmed_at", "created_at",
+]
+
+
+def _row_to_consultant(row):
+    d = dict(zip(CONSULTANT_COLUMNS, row))
+    for k in ("confirmed_at", "created_at"):
+        if d.get(k):
+            d[k] = str(d[k])
+    return d
+
+
+def create_consultant(account_id, contact_id, name, context, slot_duration_minutes, weekly_availability, reminder_hours_before):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_consultants
+               (account_id, contact_id, name, context, slot_duration_minutes, weekly_availability, reminder_hours_before)
+               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (account_id, contact_id, name, context, slot_duration_minutes,
+             psycopg2.extras.Json(weekly_availability) if weekly_availability else None, reminder_hours_before),
+        )
+        consultant_id = cur.fetchone()[0]
+        conn.commit()
+        return consultant_id
+    finally:
+        conn.close()
+
+
+def get_consultants(account_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(f"c.{col}" for col in CONSULTANT_COLUMNS)
+        cur.execute(
+            f"""SELECT {cols}, ct.wa_id, ct.push_name
+                FROM whatsapp_consultants c JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+                WHERE c.account_id = %s ORDER BY c.created_at DESC""",
+            (account_id,),
+        )
+        rows = []
+        for r in cur.fetchall():
+            d = _row_to_consultant(r[:-2])
+            d["wa_id"] = r[-2]
+            d["contact_name"] = r[-1]
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def get_consultant(consultant_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(f"c.{col}" for col in CONSULTANT_COLUMNS)
+        cur.execute(
+            f"""SELECT {cols}, ct.wa_id, a.wa_session_name
+                FROM whatsapp_consultants c
+                JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+                JOIN whatsapp_accounts a ON a.id = c.account_id
+                WHERE c.id = %s""",
+            (consultant_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        d = _row_to_consultant(row[:-2])
+        d["wa_id"] = row[-2]
+        d["wa_session_name"] = row[-1]
+        return d
+    finally:
+        conn.close()
+
+
+def update_consultant(consultant_id, fields):
+    if not fields:
+        return False
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        set_parts, values = [], []
+        for k, v in fields.items():
+            if k == "weekly_availability":
+                v = psycopg2.extras.Json(v) if v else None
+            set_parts.append(f"{k} = %s")
+            values.append(v)
+        values.append(consultant_id)
+        cur.execute(f"UPDATE whatsapp_consultants SET {', '.join(set_parts)} WHERE id = %s", values)
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def set_consultant_status(consultant_id, status):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if status == "active":
+            cur.execute(
+                "UPDATE whatsapp_consultants SET status = %s, confirmed_at = NOW() WHERE id = %s",
+                (status, consultant_id),
+            )
+        else:
+            cur.execute("UPDATE whatsapp_consultants SET status = %s WHERE id = %s", (status, consultant_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_consultant_by_pending_contact(account_id, wa_id):
+    """Acha um consultor com confirmação pendente daquele contato — usado no
+    webhook pra saber se um clique em botão é resposta ao convite de
+    consultor."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.id FROM whatsapp_consultants c JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               WHERE c.account_id = %s AND ct.wa_id = %s AND c.status = 'pending_confirmation'""",
+            (account_id, wa_id),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def get_appointments(account_id, upcoming_only=True):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        where_extra = "AND a2.scheduled_at >= NOW()" if upcoming_only else ""
+        cur.execute(
+            f"""SELECT a2.id, a2.consultant_id, c.name, a2.client_contact_id, ct.push_name, ct.wa_id,
+                       a2.scheduled_at, a2.duration_minutes, a2.status
+                FROM whatsapp_appointments a2
+                JOIN whatsapp_consultants c ON c.id = a2.consultant_id
+                JOIN whatsapp_contacts ct ON ct.id = a2.client_contact_id
+                WHERE c.account_id = %s {where_extra}
+                ORDER BY a2.scheduled_at""",
+            (account_id,),
+        )
+        cols = ["id", "consultant_id", "consultant_name", "client_contact_id", "client_name", "client_wa_id",
+                "scheduled_at", "duration_minutes", "status"]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            r["scheduled_at"] = str(r["scheduled_at"])
+        return rows
+    finally:
+        conn.close()
+
+
+def cancel_appointment(appointment_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_appointments SET status = 'cancelled' WHERE id = %s", (appointment_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _due_reminders():
+    """Agendamentos confirmados cujo horário de lembrete (scheduled_at menos
+    reminder_hours_before do consultor) já chegou, mas o lembrete ainda não
+    foi mandado."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT a.id, a.scheduled_at, con.name, con.reminder_hours_before, acc.wa_session_name,
+                      client_ct.wa_id, client_ct.push_name, cons_ct.wa_id
+               FROM whatsapp_appointments a
+               JOIN whatsapp_consultants con ON con.id = a.consultant_id
+               JOIN whatsapp_accounts acc ON acc.id = con.account_id
+               JOIN whatsapp_contacts client_ct ON client_ct.id = a.client_contact_id
+               JOIN whatsapp_contacts cons_ct ON cons_ct.id = con.contact_id
+               WHERE a.status = 'confirmed' AND a.reminder_sent_at IS NULL
+                 AND a.scheduled_at > NOW()
+                 AND a.scheduled_at <= NOW() + make_interval(hours => con.reminder_hours_before)"""
+        )
+        cols = ["id", "scheduled_at", "consultant_name", "reminder_hours_before", "wa_session_name",
+                "client_wa_id", "client_push_name", "consultant_wa_id"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _mark_reminder_sent(appointment_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_appointments SET reminder_sent_at = NOW() WHERE id = %s", (appointment_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _reminder_loop():
+    """Único processo em background do whatsapp-agent — não existia nenhum
+    antes desta feature (tudo mais é disparado sob demanda por webhook).
+    Polling simples (sem dependência nova tipo APScheduler): a cada 5min,
+    manda lembrete pro cliente e pro consultor de agendamentos cujo horário
+    de aviso chegou."""
+    while True:
+        try:
+            for appt in _due_reminders():
+                when = appt["scheduled_at"].strftime("%d/%m às %H:%M")
+                client_phone = _phone_from_wa_id(appt["client_wa_id"])
+                consultant_phone = _phone_from_wa_id(appt["consultant_wa_id"])
+                try:
+                    evolution.send_text(appt["wa_session_name"], client_phone,
+                                         f"Lembrete: você tem um agendamento com {appt['consultant_name']} em {when}.")
+                    evolution.send_text(appt["wa_session_name"], consultant_phone,
+                                         f"Lembrete: você tem um agendamento com {appt['client_push_name'] or client_phone} em {when}.")
+                except EvolutionError as e:
+                    log_event(None, "reminder_send_failed", level="error",
+                              detail={"appointment_id": appt["id"], "error": str(e)})
+                _mark_reminder_sent(appt["id"])
+        except Exception as e:
+            log_event(None, "reminder_loop_error", level="error", detail={"error": str(e)})
+        time.sleep(300)
+
+
 # ---------------------------------------------------------------------------
 # Rotas — página própria
 # ---------------------------------------------------------------------------
@@ -786,6 +1066,99 @@ def api_mark_chat_read(chat_id):
     return jsonify({"ok": True})
 
 
+def _send_consultant_confirmation(consultant_id):
+    """Manda o convite com botões Sim/Não pro contato confirmar que aceita
+    virar consultor — sem isso o status nunca sai de 'pending_confirmation'
+    e ele não aparece nas opções do fluxo de agendamento. Roda em thread
+    separada, erro só loga."""
+    consultant = get_consultant(consultant_id)
+    if not consultant:
+        return
+    try:
+        evolution.send_buttons(
+            consultant["wa_session_name"],
+            _phone_from_wa_id(consultant["wa_id"]),
+            "Convite para ser consultor",
+            f"Você foi cadastrado como consultor ({consultant['name']}) pra receber agendamentos por aqui. Confirma o cadastro?",
+            [
+                {"id": f"consultant_confirm_{consultant_id}", "text": "Sim, confirmar"},
+                {"id": f"consultant_decline_{consultant_id}", "text": "Não"},
+            ],
+        )
+    except EvolutionError as e:
+        log_event(consultant["account_id"], "consultant_invite_failed", level="error",
+                   detail={"error": str(e), "consultant_id": consultant_id})
+
+
+@app.route("/api/whatsapp/accounts/<int:account_id>/consultants", methods=["GET"])
+def api_list_consultants(account_id):
+    account = get_account(account_id)
+    if not account:
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    if not plan_has_agenda(account.get("user_id")):
+        return jsonify({"ok": False, "message": "Agenda não está ativada no plano deste cliente."}), 403
+    return jsonify({"consultants": get_consultants(account_id)})
+
+
+@app.route("/api/whatsapp/accounts/<int:account_id>/consultants", methods=["POST"])
+def api_create_consultant(account_id):
+    account = get_account(account_id)
+    if not account:
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    if not plan_has_agenda(account.get("user_id")):
+        return jsonify({"ok": False, "message": "Agenda não está ativada no plano deste cliente."}), 403
+
+    data = request.json or {}
+    phone = re.sub(r"\D", "", data.get("phone") or "")
+    name = (data.get("name") or "").strip()
+    if not phone or not name:
+        return jsonify({"ok": False, "message": "Telefone e nome são obrigatórios"}), 400
+
+    wa_id = f"{phone}@s.whatsapp.net"
+    contact_id = get_or_create_contact(account_id, wa_id)
+    try:
+        consultant_id = create_consultant(
+            account_id, contact_id, name,
+            data.get("context"),
+            int(data.get("slot_duration_minutes") or 30),
+            data.get("weekly_availability"),
+            int(data.get("reminder_hours_before") or 2),
+        )
+    except psycopg2.errors.UniqueViolation:
+        return jsonify({"ok": False, "message": "Esse contato já é consultor desta conta"}), 409
+
+    threading.Thread(target=_send_consultant_confirmation, args=(consultant_id,), daemon=True).start()
+    return jsonify({"ok": True, "id": consultant_id}), 201
+
+
+@app.route("/api/whatsapp/consultants/<int:consultant_id>", methods=["PATCH"])
+def api_update_consultant(consultant_id):
+    if not get_consultant(consultant_id):
+        return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
+    data = request.json or {}
+    allowed = ("name", "context", "slot_duration_minutes", "weekly_availability", "reminder_hours_before", "status")
+    fields = {k: v for k, v in data.items() if k in allowed}
+    if "status" in fields and fields["status"] not in ("active", "inactive"):
+        return jsonify({"ok": False, "message": "status só pode ser alternado entre active/inactive por aqui (confirmação inicial é feita pelo próprio consultor no WhatsApp)"}), 400
+    if not fields:
+        return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
+    update_consultant(consultant_id, fields)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/whatsapp/accounts/<int:account_id>/appointments", methods=["GET"])
+def api_list_appointments(account_id):
+    if not get_account(account_id):
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    return jsonify({"appointments": get_appointments(account_id)})
+
+
+@app.route("/api/whatsapp/appointments/<int:appointment_id>/cancel", methods=["POST"])
+def api_cancel_appointment(appointment_id):
+    cancel_appointment(appointment_id)
+    return jsonify({"ok": True})
+
+
 def _client_api_key(user_id):
     # Leitura direta em users (mesmo ai_tutor_db, mesma conexão — mesmo padrão
     # já usado em get_clients()); nunca escrevemos nessa tabela daqui.
@@ -887,14 +1260,37 @@ def webhook_evolution():
             return jsonify({"ok": True})  # mensagens enviadas por nós já são gravadas na hora do envio
         wa_id = key.get("remoteJid")
         message = data.get("message") or {}
-        body = message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
+        # Resposta de lista/botão (fluxo de agendamento e confirmação de
+        # consultor) — shape confirmado lendo evolution-api/src/utils/
+        # getConversationMessage.ts direto no servidor, não documentação.
+        selected_id = (
+            (message.get("listResponseMessage") or {}).get("singleSelectReply", {}).get("selectedRowId")
+            or (message.get("templateButtonReplyMessage") or {}).get("selectedId")
+            or (message.get("buttonsResponseMessage") or {}).get("selectedButtonId")
+        )
+        list_title = (message.get("listResponseMessage") or {}).get("title")
+        body = list_title or message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
         wa_message_id = key.get("id")
         push_name = data.get("pushName")
         if wa_id:
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
             chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
             save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
-            if account.get("area_id"):
+
+            pending_consultant_id = get_consultant_by_pending_contact(account["id"], wa_id) if selected_id else None
+            if pending_consultant_id and selected_id in (
+                f"consultant_confirm_{pending_consultant_id}", f"consultant_decline_{pending_consultant_id}"
+            ):
+                new_status = "active" if selected_id.startswith("consultant_confirm_") else "declined"
+                set_consultant_status(pending_consultant_id, new_status)
+                reply = "Cadastro confirmado! Você já pode receber agendamentos." if new_status == "active" else "Ok, cadastro cancelado."
+                try:
+                    evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), reply)
+                except EvolutionError:
+                    pass
+            elif booking_flow.handle_incoming(account, chat_id, contact_id, wa_id, body, selected_id, push_name):
+                pass  # tratado pelo fluxo de agendamento — não cai na IA nem na medição de recebida-sem-área
+            elif account.get("area_id"):
                 threading.Thread(
                     target=_handle_ai_auto_reply, args=(account, chat_id, wa_id, body), daemon=True
                 ).start()
@@ -908,6 +1304,7 @@ if __name__ == "__main__":
     migrate_if_needed()
     server_cfg = WHATSAPP_CONFIG.get("server") or {}
     threading.current_thread().name = "whatsapp-agent-main"
+    threading.Thread(target=_reminder_loop, daemon=True, name="reminder-loop").start()
     app.run(
         host=server_cfg.get("host", "0.0.0.0"),
         port=server_cfg.get("port", 5005),

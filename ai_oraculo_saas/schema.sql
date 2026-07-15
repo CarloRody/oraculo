@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS plans (
     created_at TIMESTAMPTZ DEFAULT NOW(),
     model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL, -- Modelo de IA usado nas respostas de clientes deste plano (NULL = usa config.yaml global, sem cobrança de crédito)
     charge_unrelated_received_messages BOOLEAN NOT NULL DEFAULT FALSE, -- cobra mensagens WhatsApp recebidas numa conexão sem área vinculada?
-    price_per_unrelated_message NUMERIC(10,4) -- preço dessa mensagem recebida (NULL = não cobra mesmo com o flag acima)
+    price_per_unrelated_message NUMERIC(10,4), -- preço dessa mensagem recebida (NULL = não cobra mesmo com o flag acima)
+    agenda_enabled BOOLEAN NOT NULL DEFAULT FALSE -- libera a feature de agenda de consultores no whatsapp-agent (dados da agenda ficam lá, não aqui)
 );
 
 -- 3. Tabela: plan_area_pricing (Cota + preço por área, por plano)

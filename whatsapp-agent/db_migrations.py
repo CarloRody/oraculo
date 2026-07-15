@@ -275,6 +275,45 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS ai_auto_reply_enabled BOOLEAN NOT NULL DEFAULT TRUE;
     """,
+
+    # 15 — agenda de consultores: contatos promovidos a consultor (com
+    # confirmação por WhatsApp antes de ficar ativo), disponibilidade semanal,
+    # e os agendamentos de fato. booking_state em whatsapp_chats guarda o
+    # passo atual da máquina de estados do agendamento self-service por
+    # conversa (null = fora do fluxo de agendamento).
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_consultants (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        name VARCHAR(150) NOT NULL,
+        context TEXT,
+        slot_duration_minutes INTEGER NOT NULL DEFAULT 30,
+        weekly_availability JSONB,
+        reminder_hours_before INTEGER NOT NULL DEFAULT 2,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending_confirmation'
+            CHECK (status IN ('pending_confirmation', 'active', 'declined', 'inactive')),
+        confirmed_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(account_id, contact_id)
+    );
+
+    CREATE TABLE IF NOT EXISTS whatsapp_appointments (
+        id SERIAL PRIMARY KEY,
+        consultant_id INTEGER NOT NULL REFERENCES whatsapp_consultants(id) ON DELETE CASCADE,
+        client_contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        scheduled_at TIMESTAMPTZ NOT NULL,
+        duration_minutes INTEGER NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'confirmed'
+            CHECK (status IN ('confirmed', 'cancelled', 'completed', 'no_show')),
+        reminder_sent_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_appointments_consultant_time ON whatsapp_appointments(consultant_id, scheduled_at);
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_appointments_reminder ON whatsapp_appointments(scheduled_at) WHERE reminder_sent_at IS NULL AND status = 'confirmed';
+
+    ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS booking_state JSONB;
+    """,
 ]
 
 

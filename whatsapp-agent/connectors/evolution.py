@@ -103,6 +103,50 @@ def send_text(instance_name, number, text):
     )
 
 
+def send_buttons(instance_name, number, title, description, buttons, footer=None):
+    """buttons: [{"id": "...", "text": "..."}] — vira botões do tipo 'reply'
+    (o único tipo que faz sentido pra uma resposta de sim/não/escolha; a
+    Evolution API também suporta 'copy'/'url'/'call'/'pix', não usados aqui).
+    Shape confirmado lendo evolution-api/src/api/dto/sendMessage.dto.ts
+    (classes Metadata/Button/SendButtonsDto) direto no servidor."""
+    return _request(
+        "POST",
+        f"/message/sendButtons/{instance_name}",
+        json={
+            "number": number,
+            "title": title,
+            "description": description,
+            "footer": footer,
+            "buttons": [{"type": "reply", "displayText": b["text"], "id": b["id"]} for b in buttons],
+        },
+    )
+
+
+def send_list(instance_name, number, title, description, button_text, sections, footer=None):
+    """sections: [{"title": "...", "rows": [{"id": "...", "title": "...", "description": "..."}]}].
+    WhatsApp limita a 10 linhas por lista, no total — quem chama precisa
+    respeitar esse limite. Shape confirmado em sendMessage.dto.ts (SendListDto/
+    Section/Row) direto no servidor."""
+    return _request(
+        "POST",
+        f"/message/sendList/{instance_name}",
+        json={
+            "number": number,
+            "title": title,
+            "description": description,
+            "footerText": footer,
+            "buttonText": button_text,
+            "sections": [
+                {
+                    "title": s["title"],
+                    "rows": [{"rowId": r["id"], "title": r["title"], "description": r.get("description", "")} for r in s["rows"]],
+                }
+                for s in sections
+            ],
+        },
+    )
+
+
 def logout(instance_name):
     return _request("DELETE", f"/instance/logout/{instance_name}", expected_statuses=(200, 201, 404))
 

@@ -342,6 +342,14 @@ MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_whatsapp_message_usage_user_time ON whatsapp_message_usage(user_id, created_at DESC);
     """,
+
+    # 18 — toggle de agenda de consultores por plano (feature liga/desliga,
+    # sem preço associado). Os dados de agenda em si (consultores,
+    # disponibilidade, agendamentos) moram no whatsapp-agent, que lê esta
+    # coluna direto via SQL (mesmo padrão de get_clients()/_client_api_key()).
+    """
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS agenda_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    """,
 ]
 
 

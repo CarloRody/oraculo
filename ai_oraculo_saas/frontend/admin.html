@@ -403,6 +403,12 @@
             </label>
             <input type="number" step="0.01" class="form-input" id="planUnrelatedPrice" placeholder="R$ por mensagem recebida" style="margin-top:0.4rem; max-width:220px;" disabled>
         </div>
+        <div class="form-group">
+            <label style="display:flex; align-items:center; gap:0.5rem; font-weight:normal; cursor:pointer;">
+                <input type="checkbox" id="planAgendaEnabled">
+                Ativar agenda de consultores (agendamento via WhatsApp)
+            </label>
+        </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closePlanModal()">Cancelar</button>
             <button class="btn" onclick="savePlan()">Salvar</button>
@@ -1342,6 +1348,8 @@ function showPlanModal(planId) {
     unrelatedPrice.value = plan && plan.price_per_unrelated_message != null ? plan.price_per_unrelated_message : '';
     unrelatedPrice.disabled = !chargeUnrelated.checked;
 
+    document.getElementById('planAgendaEnabled').checked = plan ? !!plan.agenda_enabled : false;
+
     renderPlanAreasTable(plan ? plan.areas : []);
     document.getElementById('planModal').classList.add('active');
 }
@@ -1370,12 +1378,13 @@ async function savePlan() {
     const charge_unrelated_received_messages = document.getElementById('planChargeUnrelated').checked;
     const unrelatedPriceVal = document.getElementById('planUnrelatedPrice').value;
     const price_per_unrelated_message = unrelatedPriceVal ? Number(unrelatedPriceVal) : null;
+    const agenda_enabled = document.getElementById('planAgendaEnabled').checked;
 
     try {
         const res = await fetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message })
+            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled })
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar plano.');

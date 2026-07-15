@@ -2246,13 +2246,14 @@ def admin_list_plans():
         cur = conn.cursor()
         cur.execute(
             """SELECT p.id, p.name, p.description, p.model_id, m.name,
-                      p.charge_unrelated_received_messages, p.price_per_unrelated_message
+                      p.charge_unrelated_received_messages, p.price_per_unrelated_message, p.agenda_enabled
                FROM plans p LEFT JOIN ai_models m ON m.id = p.model_id ORDER BY p.name"""
         )
         plans = [{
             "id": r[0], "name": r[1], "description": r[2], "model_id": r[3], "model_name": r[4],
             "charge_unrelated_received_messages": r[5],
-            "price_per_unrelated_message": float(r[6]) if r[6] is not None else None
+            "price_per_unrelated_message": float(r[6]) if r[6] is not None else None,
+            "agenda_enabled": r[7]
         } for r in cur.fetchall()]
 
         for plan in plans:
@@ -2314,6 +2315,7 @@ def admin_create_plan():
     model_id = data.get('model_id') or None
     charge_unrelated = bool(data.get('charge_unrelated_received_messages'))
     unrelated_price = data.get('price_per_unrelated_message')
+    agenda_enabled = bool(data.get('agenda_enabled'))
 
     conn = get_db_connection()
     if not conn:
@@ -2321,9 +2323,9 @@ def admin_create_plan():
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message)
-               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
-            (name, description, model_id, charge_unrelated, unrelated_price)
+            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+            (name, description, model_id, charge_unrelated, unrelated_price, agenda_enabled)
         )
         plan_id = cur.fetchone()[0]
         _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
@@ -2365,6 +2367,8 @@ def admin_update_plan(plan_id):
             fields['charge_unrelated_received_messages'] = bool(data.get('charge_unrelated_received_messages'))
         if 'price_per_unrelated_message' in data:
             fields['price_per_unrelated_message'] = data.get('price_per_unrelated_message')
+        if 'agenda_enabled' in data:
+            fields['agenda_enabled'] = bool(data.get('agenda_enabled'))
 
         if fields:
             set_clause = ", ".join(f"{k} = %s" for k in fields)
