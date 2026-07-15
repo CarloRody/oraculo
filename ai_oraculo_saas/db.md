@@ -79,6 +79,18 @@ Tabela principal para saber quanto cada usuário consome em tokens.
 | tokens_output | INTEGER | Tokens da saída (resposta gerada) |
 | timestamp | TIMESTAMPTZ DEFAULT NOW() | Quando ocorreu o uso |
 
+### `whatsapp_message_usage` — Medição de mensagens WhatsApp cobradas
+Mensagens enviadas via `/api/whatsapp/send` (API pública do cliente) ou recebidas numa conexão sem área vinculada.
+| Campo | Tipo | Descrição |
+| --- | --- | --- |
+| id | SERIAL PK | ID do registro |
+| user_id | INTEGER FK → users.id | Cliente |
+| area_id | INTEGER FK → areas.id | Área usada no envio (NULL = mensagem recebida sem área) |
+| direction | VARCHAR(10) | `sent` ou `received` |
+| price_charged | NUMERIC(10,4) | Valor debitado do saldo (NULL = contada mas não cobrada) |
+| wa_account_id | INTEGER | id da conta no whatsapp-agent (sem FK, serviço separado) |
+| created_at | TIMESTAMPTZ DEFAULT NOW() | Quando ocorreu |
+
 ---
 
 ## 2. Vector DB — ChromaDB (ou Qdrant)

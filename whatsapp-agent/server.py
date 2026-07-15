@@ -772,7 +772,7 @@ def api_start_chat(account_id):
 
     wa_message_id = ((result or {}).get("key") or {}).get("id")
     save_message(chat_id, account_id, "out", text, wa_message_id=wa_message_id)
-    return jsonify({"ok": True, "chat_id": chat_id})
+    return jsonify({"ok": True, "chat_id": chat_id, "wa_message_id": wa_message_id})
 
 
 @app.route("/api/whatsapp/chats/<int:chat_id>/read", methods=["POST"])
@@ -835,6 +835,22 @@ def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):
         log_event(account["id"], "ai_auto_reply_failed", level="error", detail={"error": str(e)})
 
 
+def _handle_unrelated_received_usage(account):
+    """Reporta pro Oráculo 1 mensagem recebida numa conexão SEM área vinculada
+    — "não relacionada às áreas selecionadas" no cadastro do cliente. O
+    Oráculo decide se isso é contado só ou também cobrado (plans.
+    charge_unrelated_received_messages). Roda em thread separada, erro só
+    loga — nunca derruba o webhook."""
+    api_key = _client_api_key(account["user_id"]) if account.get("user_id") else None
+    if not api_key:
+        return  # conta sem cliente vinculado — nada pra medir/cobrar
+    base_url = (ORACULO_API_CONFIG.get("base_url") or "http://127.0.0.1:5001").rstrip("/")
+    try:
+        requests.post(f"{base_url}/api/whatsapp/received-usage", headers={"X-Oraculo-Key": api_key}, timeout=10)
+    except Exception as e:
+        log_event(account["id"], "received_usage_report_failed", level="error", detail={"error": str(e)})
+
+
 @app.route("/webhooks/evolution", methods=["POST"])
 def webhook_evolution():
     payload = request.json or {}
@@ -873,9 +889,12 @@ def webhook_evolution():
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
             chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
             save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
-            threading.Thread(
-                target=_handle_ai_auto_reply, args=(account, chat_id, wa_id, body), daemon=True
-            ).start()
+            if account.get("area_id"):
+                threading.Thread(
+                    target=_handle_ai_auto_reply, args=(account, chat_id, wa_id, body), daemon=True
+                ).start()
+            else:
+                threading.Thread(target=_handle_unrelated_received_usage, args=(account,), daemon=True).start()
 
     return jsonify({"ok": True})
 

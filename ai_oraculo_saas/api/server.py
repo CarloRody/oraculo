@@ -734,6 +734,76 @@ def get_user_balance(user_id):
         return None
 
 
+def message_send_price(user_id, area_id):
+    """Preço em R$ por mensagem WhatsApp enviada via /api/whatsapp/send nessa
+    área, pro plano do cliente — None se não houver preço configurado
+    (chamador deve bloquear o envio nesse caso, não mandar de graça)."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT pap.price_per_message_sent
+               FROM users u JOIN plan_area_pricing pap ON pap.plan_id = u.plan_id AND pap.area_id = %s
+               WHERE u.id = %s""",
+            (area_id, user_id)
+        )
+        row = cur.fetchone()
+        conn.close()
+        return float(row[0]) if row and row[0] is not None else None
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO message_send_price: {e}")
+        return None
+
+
+def unrelated_message_pricing(user_id):
+    """(cobra?, preço) pras mensagens recebidas numa conexão WhatsApp sem
+    área vinculada, conforme o plano do cliente — (False, None) por padrão
+    (plans.charge_unrelated_received_messages começa FALSE)."""
+    conn = get_db_connection()
+    if not conn:
+        return False, None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT p.charge_unrelated_received_messages, p.price_per_unrelated_message
+               FROM users u JOIN plans p ON p.id = u.plan_id
+               WHERE u.id = %s""",
+            (user_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row:
+            return False, None
+        return bool(row[0]), (float(row[1]) if row[1] is not None else None)
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO unrelated_message_pricing: {e}")
+        return False, None
+
+
+def log_whatsapp_message_usage(user_id, area_id, direction, price_charged, wa_account_id=None):
+    """Grava uma linha de whatsapp_message_usage — nunca levanta, falha aqui
+    não deve derrubar o envio/recebimento que já aconteceu de verdade."""
+    conn = get_db_connection()
+    if not conn:
+        return
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_message_usage (user_id, area_id, direction, price_charged, wa_account_id)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (user_id, area_id, direction, price_charged, wa_account_id)
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO log_whatsapp_message_usage: {e}")
+
+
 def get_user_status(user_id):
     """'active'/'inactive' do cliente, ou None se não encontrado/erro. Cliente
     inativo é bloqueado nas APIs de pesquisa e na navegação, desligado na mão
@@ -1129,6 +1199,86 @@ Pergunta: {message}"""
             "area_ids": requested_area_ids,
             "error": str(e)
         })
+
+
+@app.route('/api/whatsapp/send', methods=['POST'])
+def api_whatsapp_send():
+    """API pública (cobrada) pro cliente mandar mensagem de WhatsApp via a
+    conexão vinculada a uma das áreas dele. Mesma autenticação de /api/chat
+    (X-Oraculo-Key). Sem preço configurado pra essa área no plano do cliente,
+    o envio é bloqueado — nunca manda de graça por omissão de configuração."""
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida ou ausente (header X-Oraculo-Key)"}), 401
+    if get_user_status(user_id) == 'inactive':
+        return jsonify({"error": "Sua conta está desativada. Entre em contato com o administrador."}), 403
+
+    data = request.get_json() or {}
+    area_id = data.get('area_id')
+    phone = (data.get('phone') or '').strip()
+    message = (data.get('message') or '').strip()
+    if not area_id or not phone or not message:
+        return jsonify({"error": "Campos 'area_id', 'phone' e 'message' são obrigatórios"}), 400
+
+    if area_id not in _client_area_ids(user_id):
+        return jsonify({"error": "Essa área não está disponível para este cliente"}), 400
+
+    price = message_send_price(user_id, area_id)
+    if price is None:
+        return jsonify({"error": "Envio de mensagens via API não está configurado para esta área. Fale com o administrador."}), 403
+
+    current_balance = get_user_balance(user_id)
+    if current_balance is not None and current_balance <= 0:
+        return jsonify({
+            "error": "Seus créditos acabaram.",
+            "credit_status": {"balance": round(current_balance, 4), "depleted": True, "recent": get_recent_consumption(user_id)}
+        }), 402
+
+    accounts_result = _call_whatsapp_agent('GET', '/api/whatsapp/accounts', params={"user_id": user_id}) or {}
+    account = next((a for a in (accounts_result.get("accounts") or []) if a.get("area_id") == area_id), None)
+    if not account:
+        return jsonify({"error": "Nenhuma conexão WhatsApp vinculada a esta área para este cliente."}), 400
+
+    send_result = _call_whatsapp_agent('POST', f'/api/whatsapp/accounts/{account["id"]}/chats/start',
+                                        json={"phone": phone, "text": message})
+    if not send_result or not send_result.get("ok"):
+        log_whatsapp_message_usage(user_id, area_id, 'sent', None, wa_account_id=account["id"])
+        return jsonify({"error": "Não foi possível enviar a mensagem — conexão WhatsApp indisponível ou erro no envio."}), 502
+
+    new_balance = apply_credit_transaction(
+        user_id, -price, 'consumption', f"WhatsApp — mensagem enviada via API ({_area_name(area_id)})"
+    )
+    log_whatsapp_message_usage(user_id, area_id, 'sent', price, wa_account_id=account["id"])
+
+    credit_status = None
+    if new_balance is not None:
+        credit_status = {"balance": round(new_balance, 4), "depleted": new_balance <= 0}
+        if credit_status["depleted"]:
+            credit_status["recent"] = get_recent_consumption(user_id)
+
+    return jsonify({"ok": True, "status": "sent", "chat_id": send_result.get("chat_id"), "credit_status": credit_status})
+
+
+@app.route('/api/whatsapp/received-usage', methods=['POST'])
+def api_whatsapp_received_usage():
+    """Chamado servidor-a-servidor pelo whatsapp-agent (nunca pelo navegador)
+    quando chega uma mensagem numa conexão SEM área vinculada — conta sempre,
+    cobra só se o plano do cliente tiver isso ligado. Mesma autenticação
+    X-Oraculo-Key das rotas públicas, mas usada internamente com a api_key do
+    próprio cliente (ver whatsapp-agent's _client_api_key)."""
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida ou ausente"}), 401
+
+    should_charge, price = unrelated_message_pricing(user_id)
+    price_charged = None
+    if should_charge and price is not None:
+        new_balance = apply_credit_transaction(user_id, -price, 'consumption', "WhatsApp — mensagem recebida fora de área")
+        if new_balance is not None:
+            price_charged = price
+
+    log_whatsapp_message_usage(user_id, None, 'received', price_charged)
+    return jsonify({"ok": True, "charged": price_charged is not None})
 
 
 @app.route('/api/agent-research', methods=['POST'])
@@ -2059,6 +2209,33 @@ def admin_set_client_area_whatsapp(user_id, area_id):
     return jsonify({"ok": True})
 
 
+@app.route('/admin/users/<int:user_id>/whatsapp-usage', methods=['GET'])
+def admin_user_whatsapp_usage(user_id):
+    """Resumo de mensagens WhatsApp cobradas/contadas do cliente no mês
+    corrente — enviadas via /api/whatsapp/send e recebidas fora de área.
+    Visão de auditoria simples, sem paginar o log linha a linha."""
+    conn = get_db_connection()
+    if not conn:
+        return jsonify({"error": "Banco indisponível"}), 500
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT direction, count(*), COALESCE(SUM(price_charged), 0), count(*) FILTER (WHERE price_charged IS NOT NULL)
+               FROM whatsapp_message_usage
+               WHERE user_id = %s AND created_at >= date_trunc('month', now())
+               GROUP BY direction""",
+            (user_id,)
+        )
+        summary = {"sent": {"count": 0, "charged_count": 0, "total": 0.0}, "received": {"count": 0, "charged_count": 0, "total": 0.0}}
+        for direction, count, total, charged_count in cur.fetchall():
+            summary[direction] = {"count": count, "charged_count": charged_count, "total": float(total)}
+        conn.close()
+        return jsonify(summary)
+    except Exception as e:
+        if conn: conn.close()
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route('/admin/plans', methods=['GET'])
 def admin_list_plans():
     """Lista planos com a tabela de preço por área e quantos clientes usam cada um."""
@@ -2068,14 +2245,19 @@ def admin_list_plans():
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT p.id, p.name, p.description, p.model_id, m.name
+            """SELECT p.id, p.name, p.description, p.model_id, m.name,
+                      p.charge_unrelated_received_messages, p.price_per_unrelated_message
                FROM plans p LEFT JOIN ai_models m ON m.id = p.model_id ORDER BY p.name"""
         )
-        plans = [{"id": r[0], "name": r[1], "description": r[2], "model_id": r[3], "model_name": r[4]} for r in cur.fetchall()]
+        plans = [{
+            "id": r[0], "name": r[1], "description": r[2], "model_id": r[3], "model_name": r[4],
+            "charge_unrelated_received_messages": r[5],
+            "price_per_unrelated_message": float(r[6]) if r[6] is not None else None
+        } for r in cur.fetchall()]
 
         for plan in plans:
             cur.execute(
-                """SELECT pap.area_id, a.name, pap.monthly_token_quota, pap.price_per_1k_tokens
+                """SELECT pap.area_id, a.name, pap.monthly_token_quota, pap.price_per_1k_tokens, pap.price_per_message_sent
                    FROM plan_area_pricing pap JOIN areas a ON a.id = pap.area_id
                    WHERE pap.plan_id = %s ORDER BY a.name""",
                 (plan["id"],)
@@ -2083,7 +2265,8 @@ def admin_list_plans():
             plan["areas"] = [{
                 "area_id": r[0], "area_name": r[1],
                 "monthly_token_quota": r[2],
-                "price_per_1k_tokens": float(r[3]) if r[3] is not None else None
+                "price_per_1k_tokens": float(r[3]) if r[3] is not None else None,
+                "price_per_message_sent": float(r[4]) if r[4] is not None else None
             } for r in cur.fetchall()]
             cur.execute("SELECT count(*) FROM users WHERE plan_id = %s", (plan["id"],))
             plan["user_count"] = cur.fetchone()[0]
@@ -2113,9 +2296,9 @@ def _replace_plan_area_pricing(cur, plan_id, areas):
             continue
         new_area_ids.add(area_id)
         cur.execute(
-            """INSERT INTO plan_area_pricing (plan_id, area_id, monthly_token_quota, price_per_1k_tokens)
-               VALUES (%s, %s, %s, %s)""",
-            (plan_id, area_id, a.get('monthly_token_quota'), a.get('price_per_1k_tokens'))
+            """INSERT INTO plan_area_pricing (plan_id, area_id, monthly_token_quota, price_per_1k_tokens, price_per_message_sent)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (plan_id, area_id, a.get('monthly_token_quota'), a.get('price_per_1k_tokens'), a.get('price_per_message_sent'))
         )
     return previous_area_ids - new_area_ids
 
@@ -2129,6 +2312,8 @@ def admin_create_plan():
         return jsonify({"error": "Nome é obrigatório"}), 400
     description = data.get('description')
     model_id = data.get('model_id') or None
+    charge_unrelated = bool(data.get('charge_unrelated_received_messages'))
+    unrelated_price = data.get('price_per_unrelated_message')
 
     conn = get_db_connection()
     if not conn:
@@ -2136,8 +2321,9 @@ def admin_create_plan():
     try:
         cur = conn.cursor()
         cur.execute(
-            "INSERT INTO plans (name, description, model_id) VALUES (%s, %s, %s) RETURNING id",
-            (name, description, model_id)
+            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message)
+               VALUES (%s, %s, %s, %s, %s) RETURNING id""",
+            (name, description, model_id, charge_unrelated, unrelated_price)
         )
         plan_id = cur.fetchone()[0]
         _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
@@ -2175,6 +2361,10 @@ def admin_update_plan(plan_id):
             fields['description'] = data.get('description')
         if 'model_id' in data:
             fields['model_id'] = data.get('model_id') or None
+        if 'charge_unrelated_received_messages' in data:
+            fields['charge_unrelated_received_messages'] = bool(data.get('charge_unrelated_received_messages'))
+        if 'price_per_unrelated_message' in data:
+            fields['price_per_unrelated_message'] = data.get('price_per_unrelated_message')
 
         if fields:
             set_clause = ", ".join(f"{k} = %s" for k in fields)

@@ -319,6 +319,29 @@ MIGRATIONS = [
     """
     ALTER TABLE areas ADD COLUMN IF NOT EXISTS custom_prompt TEXT;
     """,
+
+    # 17 — API pública de WhatsApp cobrada (cliente manda mensagem via API,
+    # usando a conexão vinculada à área) + medição de mensagens recebidas em
+    # conexões sem área vinculada. price_per_message_sent é por (plano, área)
+    # — mesma granularidade de price_per_1k_tokens; sem preço configurado =
+    # envio bloqueado (checado em /api/whatsapp/send, não aqui). Preço/opção
+    # de cobrar recebidas-sem-área fica em plans (não tem área pra pendurar).
+    """
+    ALTER TABLE plan_area_pricing ADD COLUMN IF NOT EXISTS price_per_message_sent NUMERIC(10,4);
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS charge_unrelated_received_messages BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS price_per_unrelated_message NUMERIC(10,4);
+
+    CREATE TABLE IF NOT EXISTS whatsapp_message_usage (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        area_id INTEGER REFERENCES areas(id) ON DELETE SET NULL,
+        direction VARCHAR(10) NOT NULL CHECK (direction IN ('sent', 'received')),
+        price_charged NUMERIC(10,4),
+        wa_account_id INTEGER,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_whatsapp_message_usage_user_time ON whatsapp_message_usage(user_id, created_at DESC);
+    """,
 ]
 
 

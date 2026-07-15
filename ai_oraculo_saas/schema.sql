@@ -41,7 +41,9 @@ CREATE TABLE IF NOT EXISTS plans (
     name VARCHAR(100) NOT NULL UNIQUE,
     description TEXT,
     created_at TIMESTAMPTZ DEFAULT NOW(),
-    model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL -- Modelo de IA usado nas respostas de clientes deste plano (NULL = usa config.yaml global, sem cobrança de crédito)
+    model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL, -- Modelo de IA usado nas respostas de clientes deste plano (NULL = usa config.yaml global, sem cobrança de crédito)
+    charge_unrelated_received_messages BOOLEAN NOT NULL DEFAULT FALSE, -- cobra mensagens WhatsApp recebidas numa conexão sem área vinculada?
+    price_per_unrelated_message NUMERIC(10,4) -- preço dessa mensagem recebida (NULL = não cobra mesmo com o flag acima)
 );
 
 -- 3. Tabela: plan_area_pricing (Cota + preço por área, por plano)
@@ -51,7 +53,21 @@ CREATE TABLE IF NOT EXISTS plan_area_pricing (
     area_id INTEGER REFERENCES areas(id) ON DELETE CASCADE,
     monthly_token_quota INTEGER, -- Cota mensal de tokens (NULL = sem limite)
     price_per_1k_tokens NUMERIC(10,4), -- Taxa em R$ por 1000 tokens (NULL = custo não configurado)
+    price_per_message_sent NUMERIC(10,4), -- Taxa em R$ por mensagem WhatsApp enviada via /api/whatsapp/send nesta área (NULL = envio bloqueado)
     UNIQUE(plan_id, area_id)
+);
+
+-- 3.5. Tabela: whatsapp_message_usage (medição de mensagens WhatsApp cobradas
+-- via API pública ou recebidas fora de área — separado de usage_logs porque a
+-- unidade é "mensagem", não token)
+CREATE TABLE IF NOT EXISTS whatsapp_message_usage (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+    area_id INTEGER REFERENCES areas(id) ON DELETE SET NULL, -- NULL = mensagem recebida sem área
+    direction VARCHAR(10) NOT NULL CHECK (direction IN ('sent', 'received')),
+    price_charged NUMERIC(10,4), -- NULL = contada mas não cobrada
+    wa_account_id INTEGER, -- id da conta no whatsapp-agent (sem FK — serviço/tabela separados)
+    created_at TIMESTAMPTZ DEFAULT NOW()
 );
 
 -- 4. Tabela: users
