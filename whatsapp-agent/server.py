@@ -336,7 +336,11 @@ def get_or_create_contact(account_id, wa_id, push_name=None):
         conn.close()
 
 
-def get_or_create_chat(account_id, contact_id):
+def get_or_create_chat(account_id, contact_id, default_auto_reply=True):
+    # default_auto_reply vem de whatsapp_accounts.ai_auto_reply_enabled — é o
+    # valor com que TODA conversa nova daquela conta começa (conta de
+    # auto-atendimento = default True, conta particular = default False);
+    # depois disso o toggle é por conversa, independente da conta.
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -348,9 +352,9 @@ def get_or_create_chat(account_id, contact_id):
         if row:
             return row[0]
         cur.execute(
-            """INSERT INTO whatsapp_chats (account_id, chat_type, contact_id)
-               VALUES (%s, 'contact', %s) RETURNING id""",
-            (account_id, contact_id),
+            """INSERT INTO whatsapp_chats (account_id, chat_type, contact_id, ai_auto_reply_enabled)
+               VALUES (%s, 'contact', %s, %s) RETURNING id""",
+            (account_id, contact_id, default_auto_reply),
         )
         chat_id = cur.fetchone()[0]
         conn.commit()
@@ -364,7 +368,7 @@ def get_chat(chat_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT c.id, c.account_id, c.contact_id, ct.wa_id, a.wa_session_name
+            """SELECT c.id, c.account_id, c.contact_id, ct.wa_id, a.wa_session_name, c.ai_auto_reply_enabled
                FROM whatsapp_chats c
                JOIN whatsapp_contacts ct ON ct.id = c.contact_id
                JOIN whatsapp_accounts a ON a.id = c.account_id
@@ -374,7 +378,29 @@ def get_chat(chat_id):
         row = cur.fetchone()
         if not row:
             return None
-        return dict(zip(["id", "account_id", "contact_id", "wa_id", "wa_session_name"], row))
+        return dict(zip(["id", "account_id", "contact_id", "wa_id", "wa_session_name", "ai_auto_reply_enabled"], row))
+    finally:
+        conn.close()
+
+
+def set_chat_auto_reply(chat_id, enabled):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_chats SET ai_auto_reply_enabled = %s WHERE id = %s", (enabled, chat_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def update_account_auto_reply_default(account_id, enabled):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_accounts SET ai_auto_reply_enabled = %s WHERE id = %s", (enabled, account_id))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -416,7 +442,7 @@ def list_chats(account_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT c.id, c.unread_count, c.is_pinned, c.last_message_at, c.last_message_preview,
-                      ct.name, ct.push_name, ct.wa_id
+                      ct.name, ct.push_name, ct.wa_id, c.ai_auto_reply_enabled
                FROM whatsapp_chats c
                JOIN whatsapp_contacts ct ON ct.id = c.contact_id
                WHERE c.account_id = %s AND c.is_archived = FALSE
@@ -424,7 +450,7 @@ def list_chats(account_id):
             (account_id,),
         )
         cols = ["id", "unread_count", "is_pinned", "last_message_at", "last_message_preview",
-                "contact_name", "push_name", "wa_id"]
+                "contact_name", "push_name", "wa_id", "ai_auto_reply_enabled"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
             if r.get("last_message_at"):
@@ -526,9 +552,12 @@ def api_update_account(account_id):
     if not get_account(account_id):
         return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
     data = request.json or {}
-    if "user_id" not in data:
+    if "user_id" not in data and "ai_auto_reply_enabled" not in data:
         return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
-    update_account_client(account_id, data["user_id"] or None)
+    if "user_id" in data:
+        update_account_client(account_id, data["user_id"] or None)
+    if "ai_auto_reply_enabled" in data:
+        update_account_auto_reply_default(account_id, bool(data["ai_auto_reply_enabled"]))
     return jsonify({"ok": True})
 
 
@@ -679,6 +708,17 @@ def api_list_chats(account_id):
     return jsonify({"chats": list_chats(account_id)})
 
 
+@app.route("/api/whatsapp/chats/<int:chat_id>", methods=["PATCH"])
+def api_update_chat(chat_id):
+    if not get_chat(chat_id):
+        return jsonify({"ok": False, "message": "Conversa não encontrada"}), 404
+    data = request.json or {}
+    if "ai_auto_reply_enabled" not in data:
+        return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
+    set_chat_auto_reply(chat_id, bool(data["ai_auto_reply_enabled"]))
+    return jsonify({"ok": True})
+
+
 @app.route("/api/whatsapp/chats/<int:chat_id>/messages", methods=["GET"])
 def api_list_messages(chat_id):
     before_id = request.args.get("before_id", type=int)
@@ -723,7 +763,7 @@ def api_start_chat(account_id):
 
     wa_id = f"{phone}@s.whatsapp.net"
     contact_id = get_or_create_contact(account_id, wa_id)
-    chat_id = get_or_create_chat(account_id, contact_id)
+    chat_id = get_or_create_chat(account_id, contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
 
     try:
         result = evolution.send_text(account["wa_session_name"], phone, text)
@@ -755,15 +795,19 @@ def _client_api_key(user_id):
 
 
 def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):
-    """Resposta automática via IA: só roda se a conta tiver auto-reply ligado
-    E estiver vinculada a uma área (o vínculo é feito no cadastro do cliente,
-    no Oráculo). Chama /api/chat de lá com a api_key do próprio cliente —
-    nunca chama com privilégio nenhum além do que o cliente já tem. Roda numa
-    thread separada (disparada pelo webhook) pra não segurar a resposta HTTP
-    do webhook enquanto o LLM processa."""
-    if not account.get("ai_auto_reply_enabled") or not account.get("area_id"):
-        return
+    """Resposta automática via IA: só roda se a CONVERSA tiver auto-reply
+    ligado (whatsapp_chats.ai_auto_reply_enabled — toggle por conversa, não
+    mais por conta) E a conta estiver vinculada a uma área (o vínculo é feito
+    no cadastro do cliente, no Oráculo). whatsapp_accounts.ai_auto_reply_enabled
+    só define o valor com que toda conversa NOVA começa (get_or_create_chat);
+    a partir daí quem manda é o toggle da conversa. Chama /api/chat de lá com
+    a api_key do próprio cliente — nunca chama com privilégio nenhum além do
+    que o cliente já tem. Roda numa thread separada (disparada pelo webhook)
+    pra não segurar a resposta HTTP do webhook enquanto o LLM processa."""
     if not incoming_text:
+        return
+    chat = get_chat(chat_id)
+    if not chat or not chat.get("ai_auto_reply_enabled") or not account.get("area_id"):
         return
 
     api_key = _client_api_key(account["user_id"]) if account.get("user_id") else None
@@ -827,7 +871,7 @@ def webhook_evolution():
         push_name = data.get("pushName")
         if wa_id:
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
-            chat_id = get_or_create_chat(account["id"], contact_id)
+            chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
             save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
             threading.Thread(
                 target=_handle_ai_auto_reply, args=(account, chat_id, wa_id, body), daemon=True

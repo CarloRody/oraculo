@@ -266,6 +266,15 @@ MIGRATIONS = [
         updated_at TIMESTAMPTZ DEFAULT NOW()
     );
     """,
+
+    # 14 — resposta automática por CONVERSA, não só por conta. A conta define
+    # o padrão com que toda conversa nova começa (ai_auto_reply_enabled em
+    # whatsapp_accounts vira só isso: um valor-padrão, não mais um gate
+    # absoluto) — permite ter conexões de auto-atendimento (padrão ligado) e
+    # conexões particulares (padrão desligado, só liga conversa por conversa).
+    """
+    ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS ai_auto_reply_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+    """,
 ]
 
 

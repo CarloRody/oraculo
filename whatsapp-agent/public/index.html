@@ -291,6 +291,12 @@ async function renderAccounts() {
                     <a href="#" onclick="openClientModal(${a.id}, ${a.user_id ?? 'null'}); return false;" style="color:#60a5fa; margin-left:0.4rem;">editar</a>
                 </div>
                 ${a.area_name ? `<div style="font-size:0.78rem; color:#64748b;">📁 ${esc(a.area_name)} <span style="color:#94a3b8;">(vínculo gerenciado no cadastro do cliente, no Oráculo)</span></div>` : ''}
+                <label style="font-size:0.78rem; color:#64748b; display:flex; align-items:center; gap:0.35rem; margin-top:0.15rem; cursor:pointer;">
+                    <input type="checkbox" ${a.ai_auto_reply_enabled ? 'checked' : ''} onchange="setAccountAutoReplyDefault(${a.id}, this.checked)">
+                    ${a.ai_auto_reply_enabled
+                        ? '🤖 Auto-atendimento — novas conversas já começam com resposta automática'
+                        : '🔒 Conexão particular — novas conversas começam sem resposta automática'}
+                </label>
             </div>
             <div class="account-actions">
                 ${a.status === 'connected'
@@ -369,6 +375,14 @@ async function disconnectAccount(id) {
     await renderAccounts();
 }
 
+async function setAccountAutoReplyDefault(id, enabled) {
+    await fetch(API + `/api/whatsapp/accounts/${id}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ ai_auto_reply_enabled: enabled })
+    });
+    await renderAccounts();
+}
+
 async function connectAccount(id) {
     document.getElementById('qrStatusText').textContent = 'Gerando QR Code...';
     document.getElementById('qrImage').src = '';
@@ -422,6 +436,7 @@ function closeQrModal() {
 let chatsInited = false;
 let currentAccountId = null;
 let currentChatId = null;
+let currentChats = [];
 let chatListTimer = null;
 let messagesTimer = null;
 
@@ -457,22 +472,52 @@ async function refreshChatList() {
     const res = await fetch(API + `/api/whatsapp/accounts/${currentAccountId}/chats`);
     const data = await res.json();
     const chats = data.chats || [];
+    currentChats = chats;
     const el = document.getElementById('chatList');
     if (!chats.length) {
         el.innerHTML = '<p class="empty" style="padding:1rem;">Nenhuma conversa ainda.</p>';
         return;
     }
     el.innerHTML = chats.map(c => `
-        <div class="chat-list-item ${c.id === currentChatId ? 'active' : ''}" onclick="openChat(${c.id}, '${esc(c.display_name).replace(/'/g, "\\'")}')">
-            <div class="name">${esc(c.display_name)}${c.unread_count > 0 ? `<span class="unread-badge">${c.unread_count}</span>` : ''}</div>
+        <div class="chat-list-item ${c.id === currentChatId ? 'active' : ''}" onclick="openChat(${c.id})">
+            <div class="name">
+                ${c.ai_auto_reply_enabled ? '🤖 ' : ''}${esc(c.display_name)}${c.unread_count > 0 ? `<span class="unread-badge">${c.unread_count}</span>` : ''}
+            </div>
             <div class="preview">${esc(c.last_message_preview || '')}</div>
         </div>
     `).join('');
+    renderChatPanelHeader();
 }
 
-async function openChat(chatId, displayName) {
+function renderChatPanelHeader() {
+    const header = document.getElementById('chatPanelHeader');
+    if (!currentChatId) { header.textContent = 'Selecione uma conversa'; return; }
+    const chat = currentChats.find(c => c.id === currentChatId);
+    const name = chat ? chat.display_name : '';
+    const enabled = chat ? !!chat.ai_auto_reply_enabled : false;
+    header.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
+            <span>${esc(name)}</span>
+            <label style="font-size:0.75rem; color:#94a3b8; font-weight:normal; display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
+                <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
+                Resposta automática nesta conversa
+            </label>
+        </div>
+    `;
+}
+
+async function toggleChatAutoReply(chatId, enabled) {
+    await fetch(API + `/api/whatsapp/chats/${chatId}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ ai_auto_reply_enabled: enabled })
+    });
+    const chat = currentChats.find(c => c.id === chatId);
+    if (chat) chat.ai_auto_reply_enabled = enabled;
+}
+
+async function openChat(chatId) {
     currentChatId = chatId;
-    document.getElementById('chatPanelHeader').textContent = displayName;
+    renderChatPanelHeader();
     await refreshChatList();
     await loadMessages();
     await fetch(API + `/api/whatsapp/chats/${chatId}/read`, { method: 'POST' });
