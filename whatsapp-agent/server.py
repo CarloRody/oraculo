@@ -509,6 +509,11 @@ def index():
     return send_from_directory(PUBLIC_DIR, "index.html")
 
 
+@app.route("/docs")
+def api_docs():
+    return send_from_directory(PUBLIC_DIR, "api-docs.html")
+
+
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "service": "whatsapp-agent"})

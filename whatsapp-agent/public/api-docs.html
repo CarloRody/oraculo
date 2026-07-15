@@ -1,0 +1,261 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API de WhatsApp — Documentação | Oráculo</title>
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: #0a1628;
+        color: #e0e0e0;
+        line-height: 1.6;
+        padding: 2rem;
+    }
+    .wrap { max-width: 840px; margin: 0 auto; }
+    h1 {
+        background: linear-gradient(135deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 1.9rem;
+        margin-bottom: 0.25rem;
+    }
+    .subtitle { color: #64748b; margin-bottom: 2rem; font-size: 0.95rem; }
+    .subtitle a { color: #60a5fa; }
+    h2 {
+        color: #f8fafc;
+        font-size: 1.25rem;
+        margin: 2.5rem 0 1rem;
+        padding-bottom: 0.5rem;
+        border-bottom: 1px solid #334155;
+    }
+    h3 { color: #f8fafc; font-size: 1rem; margin: 1.5rem 0 0.6rem; }
+    p { margin-bottom: 0.9rem; color: #cbd5e1; }
+    code {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 4px;
+        padding: 0.1rem 0.4rem;
+        font-family: 'Consolas', 'Monaco', monospace;
+        font-size: 0.88em;
+        color: #a5b4fc;
+    }
+    pre {
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 1rem 1.2rem;
+        overflow-x: auto;
+        margin: 0.75rem 0 1.25rem;
+        font-family: 'Consolas', 'Monaco', monospace;
+        font-size: 0.85rem;
+        line-height: 1.5;
+    }
+    pre code { background: none; border: none; padding: 0; color: #e0e0e0; }
+    .method {
+        display: inline-block;
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        color: #fff;
+        font-weight: 700;
+        font-size: 0.8rem;
+        padding: 0.2rem 0.6rem;
+        border-radius: 4px;
+        margin-right: 0.5rem;
+    }
+    .endpoint {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 8px;
+        padding: 1rem 1.2rem;
+        margin-bottom: 1rem;
+        font-family: 'Consolas', 'Monaco', monospace;
+        font-size: 0.95rem;
+    }
+    table { width: 100%; border-collapse: collapse; margin: 0.75rem 0 1.5rem; font-size: 0.9rem; }
+    th, td { text-align: left; padding: 0.55rem 0.75rem; border-bottom: 1px solid #1a2744; }
+    th { color: #94a3b8; font-weight: 600; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 0.03em; }
+    td { color: #cbd5e1; }
+    td code, th code { font-size: 0.85em; }
+    .badge {
+        display: inline-block;
+        padding: 0.15rem 0.55rem;
+        border-radius: 10px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        font-family: 'Consolas', 'Monaco', monospace;
+    }
+    .badge-ok { background: #1f4a2d; color: #4ade80; }
+    .badge-err { background: #4a1f27; color: #f87171; }
+    .note {
+        background: #1e2a3a;
+        border-left: 3px solid #60a5fa;
+        border-radius: 4px;
+        padding: 0.8rem 1rem;
+        margin: 1rem 0;
+        font-size: 0.88rem;
+        color: #94a3b8;
+    }
+    a.back { display: inline-block; margin-top: 3rem; color: #60a5fa; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>📱 API de WhatsApp</h1>
+<p class="subtitle">Envio automatizado de mensagens WhatsApp via API, com cobrança por mensagem descontada do seu saldo. Veja também o <a href="/">painel de administração</a>.</p>
+
+<h2>Autenticação</h2>
+<p>Todas as chamadas usam a mesma chave de acesso já utilizada nas demais APIs do Oráculo (ex: <code>/api/chat</code>), enviada no cabeçalho:</p>
+<pre><code>X-Oraculo-Key: SUA_CHAVE_DE_ACESSO</code></pre>
+<p>Sua chave de acesso é fornecida pelo administrador do Oráculo. Cada requisição é identificada e cobrada na conta dessa chave.</p>
+
+<div class="note">
+    <strong>Base URL:</strong> este endpoint fica no serviço principal do Oráculo (não no serviço de WhatsApp) — use o mesmo endereço que você já usa pra <code>/api/chat</code>, por exemplo <code>https://SEU-DOMINIO-ORACULO</code>.
+</div>
+
+<h2>Enviar mensagem</h2>
+<div class="endpoint"><span class="method">POST</span>/api/whatsapp/send</div>
+
+<p>Envia uma mensagem de texto pelo número de WhatsApp vinculado à área informada. A conexão usada é resolvida automaticamente a partir do vínculo área ↔ conexão configurado no seu cadastro (feito pelo administrador). Cada envio bem-sucedido é cobrado e descontado do seu saldo, conforme o preço configurado no seu plano para essa área.</p>
+
+<h3>Parâmetros do corpo (JSON)</h3>
+<table>
+    <thead><tr><th>Campo</th><th>Tipo</th><th>Obrigatório</th><th>Descrição</th></tr></thead>
+    <tbody>
+        <tr><td><code>area_id</code></td><td>integer</td><td>Sim</td><td>ID da área vinculada à conexão que vai enviar a mensagem</td></tr>
+        <tr><td><code>phone</code></td><td>string</td><td>Sim</td><td>Número de destino, só dígitos, com código do país (ex: <code>5511999999999</code>)</td></tr>
+        <tr><td><code>message</code></td><td>string</td><td>Sim</td><td>Texto da mensagem a ser enviada</td></tr>
+    </tbody>
+</table>
+
+<h3>Exemplo de requisição</h3>
+<pre><code>POST /api/whatsapp/send HTTP/1.1
+Host: SEU-DOMINIO-ORACULO
+X-Oraculo-Key: SUA_CHAVE_DE_ACESSO
+Content-Type: application/json
+
+{
+  "area_id": 3,
+  "phone": "5511999999999",
+  "message": "Olá! Seu pedido foi confirmado."
+}</code></pre>
+
+<h3>Resposta de sucesso <span class="badge badge-ok">200 OK</span></h3>
+<pre><code>{
+  "ok": true,
+  "status": "sent",
+  "chat_id": 42,
+  "credit_status": {
+    "balance": 123.4500,
+    "depleted": false
+  }
+}</code></pre>
+<table>
+    <thead><tr><th>Campo</th><th>Descrição</th></tr></thead>
+    <tbody>
+        <tr><td><code>status</code></td><td>Sempre <code>"sent"</code> em caso de sucesso — indica que a mensagem foi aceita e enviada. Não há confirmação de entrega/leitura nesta versão da API.</td></tr>
+        <tr><td><code>chat_id</code></td><td>ID interno da conversa, útil se você quiser consultar o histórico depois</td></tr>
+        <tr><td><code>credit_status.balance</code></td><td>Seu saldo em R$ após o débito desta mensagem</td></tr>
+        <tr><td><code>credit_status.depleted</code></td><td><code>true</code> quando o saldo chegou a zero ou menos após esta mensagem</td></tr>
+    </tbody>
+</table>
+
+<h3>Respostas de erro</h3>
+<table>
+    <thead><tr><th>Código</th><th>Situação</th></tr></thead>
+    <tbody>
+        <tr><td><span class="badge badge-err">400</span></td><td>Parâmetro obrigatório faltando, área não disponível para sua chave, ou nenhuma conexão WhatsApp vinculada a essa área</td></tr>
+        <tr><td><span class="badge badge-err">401</span></td><td>Chave de acesso ausente ou inválida</td></tr>
+        <tr><td><span class="badge badge-err">402</span></td><td>Seus créditos acabaram</td></tr>
+        <tr><td><span class="badge badge-err">403</span></td><td>Conta desativada, ou envio de mensagens não configurado (sem preço definido) para essa área — fale com o administrador</td></tr>
+        <tr><td><span class="badge badge-err">502</span></td><td>Falha ao enviar — conexão WhatsApp indisponível no momento. Nada foi cobrado.</td></tr>
+    </tbody>
+</table>
+<p>Toda resposta de erro segue o formato:</p>
+<pre><code>{ "error": "descrição legível do problema" }</code></pre>
+
+<h2>Exemplo de uso em PHP</h2>
+<p>Usa apenas cURL, sem dependências externas:</p>
+<pre><code>&lt;?php
+
+$apiKey  = 'SUA_CHAVE_DE_ACESSO';
+$baseUrl = 'https://SEU-DOMINIO-ORACULO';
+
+/**
+ * Envia uma mensagem de WhatsApp via API do Oráculo.
+ * Lança RuntimeException em caso de falha (rede ou erro retornado pela API).
+ */
+function enviarMensagemWhatsapp(string $baseUrl, string $apiKey, int $areaId, string $telefone, string $mensagem): array
+{
+    $payload = json_encode([
+        'area_id' => $areaId,
+        'phone'   => $telefone,
+        'message' => $mensagem,
+    ]);
+
+    $ch = curl_init(rtrim($baseUrl, '/') . '/api/whatsapp/send');
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST           => true,
+        CURLOPT_POSTFIELDS     => $payload,
+        CURLOPT_HTTPHEADER     => [
+            'Content-Type: application/json',
+            'X-Oraculo-Key: ' . $apiKey,
+        ],
+        CURLOPT_TIMEOUT        => 30,
+    ]);
+
+    $responseBody = curl_exec($ch);
+    $httpCode     = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $curlError    = curl_error($ch);
+    curl_close($ch);
+
+    if ($curlError) {
+        throw new RuntimeException("Erro de conexão: {$curlError}");
+    }
+
+    $data = json_decode($responseBody, true);
+
+    if ($httpCode !== 200) {
+        $erro = $data['error'] ?? 'Erro desconhecido';
+        throw new RuntimeException("Falha ao enviar mensagem ({$httpCode}): {$erro}");
+    }
+
+    return $data;
+}
+
+// Uso:
+try {
+    $resultado = enviarMensagemWhatsapp(
+        $baseUrl,
+        $apiKey,
+        3,                      // area_id
+        '5511999999999',       // telefone (DDI + DDD + número, só dígitos)
+        'Olá! Seu pedido foi confirmado.'
+    );
+
+    echo "Mensagem enviada com sucesso. chat_id: {$resultado['chat_id']}\n";
+
+    if (!empty($resultado['credit_status'])) {
+        $saldo = number_format($resultado['credit_status']['balance'], 2, ',', '.');
+        echo "Saldo restante: R$ {$saldo}\n";
+
+        if ($resultado['credit_status']['depleted']) {
+            echo "Atenção: seus créditos acabaram — recarregue para continuar enviando.\n";
+        }
+    }
+} catch (RuntimeException $e) {
+    echo "Erro ao enviar mensagem: " . $e->getMessage() . "\n";
+}
+</code></pre>
+
+<div class="note">
+    Cada chamada bem-sucedida é cobrada conforme o preço por mensagem configurado para a área usada. Se você receber erro <code>403</code> dizendo que o envio não está configurado, ou <code>402</code> de créditos esgotados, entre em contato com o administrador do Oráculo.
+</div>
+
+<a class="back" href="/">← Voltar ao painel</a>
+
+</div>
+</body>
+</html>
