@@ -1198,6 +1198,19 @@ def api_mark_chat_read(chat_id):
     return jsonify({"ok": True})
 
 
+def _send_consultant_invite_message(consultant):
+    evolution.send_buttons(
+        consultant["wa_session_name"],
+        _phone_from_wa_id(consultant["wa_id"]),
+        "Convite para ser consultor",
+        f"Você foi cadastrado como consultor ({consultant['name']}) pra receber agendamentos por aqui. Confirma o cadastro?",
+        [
+            {"id": f"consultant_confirm_{consultant['id']}", "text": "Sim, confirmar"},
+            {"id": f"consultant_decline_{consultant['id']}", "text": "Não"},
+        ],
+    )
+
+
 def _send_consultant_confirmation(consultant_id):
     """Manda o convite com botões Sim/Não pro contato confirmar que aceita
     virar consultor — sem isso o status nunca sai de 'pending_confirmation'
@@ -1207,16 +1220,7 @@ def _send_consultant_confirmation(consultant_id):
     if not consultant:
         return
     try:
-        evolution.send_buttons(
-            consultant["wa_session_name"],
-            _phone_from_wa_id(consultant["wa_id"]),
-            "Convite para ser consultor",
-            f"Você foi cadastrado como consultor ({consultant['name']}) pra receber agendamentos por aqui. Confirma o cadastro?",
-            [
-                {"id": f"consultant_confirm_{consultant_id}", "text": "Sim, confirmar"},
-                {"id": f"consultant_decline_{consultant_id}", "text": "Não"},
-            ],
-        )
+        _send_consultant_invite_message(consultant)
     except EvolutionError as e:
         log_event(consultant["account_id"], "consultant_invite_failed", level="error",
                    detail={"error": str(e), "consultant_id": consultant_id})
@@ -1301,6 +1305,23 @@ def api_resend_portal_link(consultant_id):
                              f"Aqui está o link atualizado da sua agenda: {portal_link(token)}")
     except EvolutionError as e:
         return jsonify({"ok": False, "message": f"Token atualizado, mas não consegui mandar por WhatsApp: {e}"}), 502
+    return jsonify({"ok": True})
+
+
+@app.route("/api/whatsapp/consultants/<int:consultant_id>/resend-invite", methods=["POST"])
+def api_resend_consultant_invite(consultant_id):
+    """Reenvia o convite inicial de confirmação (botões Sim/Não) — cobre o caso
+    da primeira mensagem não ter chegado. Só faz sentido com confirmação pendente;
+    depois de confirmado/recusado, quem reenvia é o fluxo de portal (resend-portal-link)."""
+    consultant = get_consultant(consultant_id)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
+    if consultant["status"] != "pending_confirmation":
+        return jsonify({"ok": False, "message": "Só é possível reenviar convite para consultor aguardando confirmação"}), 400
+    try:
+        _send_consultant_invite_message(consultant)
+    except EvolutionError as e:
+        return jsonify({"ok": False, "message": f"Não consegui reenviar por WhatsApp: {e}"}), 502
     return jsonify({"ok": True})
 
 

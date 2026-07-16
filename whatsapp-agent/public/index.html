@@ -561,10 +561,13 @@ function renderChatPanelHeader() {
     header.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
             <span>${esc(name)}</span>
-            <label style="font-size:0.75rem; color:#94a3b8; font-weight:normal; display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
-                <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
-                Resposta automática nesta conversa
-            </label>
+            <div style="display:flex; align-items:center; gap:0.75rem;">
+                <button class="btn btn-sm" onclick="openConsultantModalFromChat()">+ Consultor</button>
+                <label style="font-size:0.75rem; color:#94a3b8; font-weight:normal; display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
+                    <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
+                    Resposta automática nesta conversa
+                </label>
+            </div>
         </div>
     `;
 }
@@ -724,6 +727,7 @@ async function loadConsultants() {
             <div class="account-actions">
                 <button class="btn btn-sm" onclick="editConsultant(${c.id})">Editar</button>
                 ${c.status === 'active' ? `<button class="btn btn-sm" onclick="resendPortalLink(${c.id})">Reenviar link</button>` : ''}
+                ${c.status === 'pending_confirmation' ? `<button class="btn btn-sm" onclick="resendConsultantInvite(${c.id})">Reenviar convite</button>` : ''}
                 ${c.status === 'active'
                     ? `<button class="btn btn-sm btn-secondary" onclick="toggleConsultantStatus(${c.id}, 'inactive')">Desativar</button>`
                     : c.status === 'inactive'
@@ -756,6 +760,13 @@ async function resendPortalLink(id) {
     const data = await res.json();
     if (!res.ok) return alert(data.message || 'Erro ao reenviar link.');
     alert('Link reenviado por WhatsApp (o link antigo deixou de funcionar).');
+}
+
+async function resendConsultantInvite(id) {
+    const res = await fetch(API + `/api/whatsapp/consultants/${id}/resend-invite`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao reenviar convite.');
+    alert('Convite reenviado por WhatsApp.');
 }
 
 function appointmentStatusLabel(status) {
@@ -816,6 +827,16 @@ function openConsultantModal(consultant) {
     `;
     }).join('');
     document.getElementById('consultantModal').classList.add('active');
+}
+
+function openConsultantModalFromChat() {
+    if (!currentChatId) return;
+    const chat = currentChats.find(c => c.id === currentChatId);
+    if (!chat) return;
+    currentAgendaAccountId = currentAccountId;
+    openConsultantModal();
+    document.getElementById('consultantPhone').value = (chat.wa_id || '').split('@')[0];
+    document.getElementById('consultantName').value = chat.display_name !== chat.wa_id ? chat.display_name : '';
 }
 
 function editConsultant(id) {
