@@ -18,6 +18,8 @@
         .account-btn { padding: 0.5rem 1.1rem; font-size: 0.85rem; border-radius: 6px; border: none; cursor: pointer; font-weight: 600; }
         .account-btn.login { background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: white; }
         .account-btn.logout { background: #334155; color: #e2e8f0; }
+        .account-btn.help { background: transparent; border: 1px solid #334155; color: #94a3b8; text-decoration: none; display: inline-block; }
+        .account-btn.help:hover { border-color: #60a5fa; color: #60a5fa; }
 
         .cards-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1.5rem; margin-bottom: 3rem; }
         .card { background: #1e293b; border-radius: 12px; padding: 2rem; text-decoration: none; color: inherit; transition: transform 0.2s, box-shadow 0.2s; border: 1px solid #334155; display: block; }
@@ -42,6 +44,7 @@
         <div class="account-bar">
             <span class="account-status" id="account-status">Não conectado</span>
             <span>
+                <a class="account-btn help" href="ajuda.html" target="_blank" rel="noopener">❓ Ajuda</a>
                 <button class="account-btn login" id="loginBtn" onclick="doLogin()">Entrar</button>
                 <button class="account-btn logout" id="logoutBtn" onclick="doLogout()" style="display:none;">Sair</button>
             </span>
