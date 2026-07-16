@@ -706,6 +706,19 @@ def update_consultant(consultant_id, fields):
         conn.close()
 
 
+def delete_consultant(consultant_id):
+    """Apaga o consultor. whatsapp_appointments.consultant_id é ON DELETE
+    CASCADE — os agendamentos dele somem junto (avisado na UI antes de confirmar)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whatsapp_consultants WHERE id = %s", (consultant_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def set_consultant_status(consultant_id, status):
     conn = _conn()
     try:
@@ -1265,6 +1278,14 @@ def api_update_consultant(consultant_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/whatsapp/consultants/<int:consultant_id>", methods=["DELETE"])
+def api_delete_consultant(consultant_id):
+    if not get_consultant(consultant_id):
+        return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
+    delete_consultant(consultant_id)
+    return jsonify({"ok": True})
+
+
 @app.route("/api/whatsapp/consultants/<int:consultant_id>/resend-portal-link", methods=["POST"])
 def api_resend_portal_link(consultant_id):
     """Regenera o token (invalida o link antigo) e reenvia por WhatsApp —
@@ -1500,9 +1521,6 @@ def webhook_evolution():
 
     elif event == "messages.upsert":
         key = data.get("key") or {}
-        if key.get("fromMe"):
-            return jsonify({"ok": True})  # mensagens enviadas por nós já são gravadas na hora do envio
-        wa_id = key.get("remoteJid")
         message = data.get("message") or {}
         # Resposta de lista/botão (fluxo de agendamento e confirmação de
         # consultor) — shape confirmado lendo evolution-api/src/utils/
@@ -1512,6 +1530,14 @@ def webhook_evolution():
             or (message.get("templateButtonReplyMessage") or {}).get("selectedId")
             or (message.get("buttonsResponseMessage") or {}).get("selectedButtonId")
         )
+        if key.get("fromMe") and not selected_id:
+            # eco de texto solto que a gente mesmo mandou (já gravado no envio) —
+            # descarta. Resposta de lista/botão passa mesmo com fromMe=true: o bot
+            # nunca gera esse tipo de mensagem sozinho, só existe quando um humano
+            # toca uma opção — inclusive em chat consigo mesmo (conta = consultor),
+            # onde toda mensagem vem fromMe=true por natureza do self-chat do WhatsApp.
+            return jsonify({"ok": True})
+        wa_id = key.get("remoteJid")
         list_title = (message.get("listResponseMessage") or {}).get("title")
         body = list_title or message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
         wa_message_id = key.get("id")

@@ -222,7 +222,8 @@
 <!-- Modal Novo Consultor -->
 <div class="modal-overlay" id="consultantModal">
     <div class="modal" style="max-width:520px; text-align:left;">
-        <h3>+ Consultor</h3>
+        <h3 id="consultantModalTitle">+ Consultor</h3>
+        <input type="hidden" id="editConsultantId">
         <div class="form-group">
             <label>Telefone (com DDI, só números)</label>
             <input type="text" class="form-input" id="consultantPhone" placeholder="5511999999999">
@@ -251,7 +252,7 @@
         </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeConsultantModal()">Cancelar</button>
-            <button class="btn" onclick="submitConsultant()">Convidar por WhatsApp</button>
+            <button class="btn" id="consultantSubmitBtn" onclick="submitConsultant()">Convidar por WhatsApp</button>
         </div>
     </div>
 </div>
@@ -658,6 +659,7 @@ async function submitStartChat() {
 
 // ---- Agenda ----
 let currentAgendaAccountId = null;
+let allConsultants = [];
 const WEEKDAYS = [['mon','Seg'], ['tue','Ter'], ['wed','Qua'], ['thu','Qui'], ['fri','Sex'], ['sat','Sáb'], ['sun','Dom']];
 
 function consultantStatusLabel(status) {
@@ -707,6 +709,7 @@ async function loadConsultants() {
     }
     notice.style.display = 'none';
     const consultants = data.consultants || [];
+    allConsultants = consultants;
     if (!consultants.length) {
         el.innerHTML = '<p class="empty">Nenhum consultor cadastrado ainda.</p>';
         return;
@@ -719,15 +722,26 @@ async function loadConsultants() {
                 ${c.context ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(c.context)}</div>` : ''}
             </div>
             <div class="account-actions">
+                <button class="btn btn-sm" onclick="editConsultant(${c.id})">Editar</button>
                 ${c.status === 'active' ? `<button class="btn btn-sm" onclick="resendPortalLink(${c.id})">Reenviar link</button>` : ''}
                 ${c.status === 'active'
                     ? `<button class="btn btn-sm btn-secondary" onclick="toggleConsultantStatus(${c.id}, 'inactive')">Desativar</button>`
                     : c.status === 'inactive'
                         ? `<button class="btn btn-sm" onclick="toggleConsultantStatus(${c.id}, 'active')">Reativar</button>`
                         : ''}
+                <button class="btn btn-sm btn-danger" onclick="deleteConsultant(${c.id}, '${esc(c.name)}')">Excluir</button>
             </div>
         </div>
     `).join('');
+}
+
+async function deleteConsultant(id, name) {
+    if (!confirm(`Excluir o consultor "${name}"? Os agendamentos dele também serão apagados. Essa ação não pode ser desfeita.`)) return;
+    const res = await fetch(API + `/api/whatsapp/consultants/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao excluir consultor.');
+    loadConsultants();
+    loadAppointments();
 }
 
 async function toggleConsultantStatus(id, status) {
@@ -778,30 +792,47 @@ async function cancelAppointmentRow(id) {
     loadAppointments();
 }
 
-function openConsultantModal() {
+function openConsultantModal(consultant) {
     if (!currentAgendaAccountId) return alert('Selecione uma conta primeiro.');
-    document.getElementById('consultantPhone').value = '';
-    document.getElementById('consultantName').value = '';
-    document.getElementById('consultantContext').value = '';
-    document.getElementById('consultantSlotDuration').value = '30';
-    document.getElementById('consultantReminderHours').value = '2';
-    document.getElementById('consultantAvailabilityRows').innerHTML = WEEKDAYS.map(([key, label]) => `
+    const availability = (consultant && consultant.weekly_availability) || {};
+    document.getElementById('editConsultantId').value = consultant ? consultant.id : '';
+    document.getElementById('consultantModalTitle').textContent = consultant ? 'Editar Consultor' : '+ Consultor';
+    document.getElementById('consultantSubmitBtn').textContent = consultant ? 'Salvar' : 'Convidar por WhatsApp';
+    document.getElementById('consultantPhone').value = consultant ? (consultant.wa_id || '').replace('@s.whatsapp.net', '') : '';
+    document.getElementById('consultantPhone').disabled = !!consultant;
+    document.getElementById('consultantName').value = consultant ? consultant.name : '';
+    document.getElementById('consultantContext').value = consultant ? (consultant.context || '') : '';
+    document.getElementById('consultantSlotDuration').value = consultant ? consultant.slot_duration_minutes : '30';
+    document.getElementById('consultantReminderHours').value = consultant ? consultant.reminder_hours_before : '2';
+    document.getElementById('consultantAvailabilityRows').innerHTML = WEEKDAYS.map(([key, label]) => {
+        const period = (availability[key] || [])[0] || null;
+        return `
         <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.3rem;">
-            <label style="width:70px; font-size:0.85rem; color:#cbd5e1;"><input type="checkbox" id="avail_${key}_on"> ${label}</label>
-            <input type="time" class="form-input" id="avail_${key}_start" value="09:00" style="width:auto;">
+            <label style="width:70px; font-size:0.85rem; color:#cbd5e1;"><input type="checkbox" id="avail_${key}_on" ${period ? 'checked' : ''}> ${label}</label>
+            <input type="time" class="form-input" id="avail_${key}_start" value="${period ? period[0] : '09:00'}" style="width:auto;">
             <span style="color:#64748b;">às</span>
-            <input type="time" class="form-input" id="avail_${key}_end" value="18:00" style="width:auto;">
+            <input type="time" class="form-input" id="avail_${key}_end" value="${period ? period[1] : '18:00'}" style="width:auto;">
         </div>
-    `).join('');
+    `;
+    }).join('');
     document.getElementById('consultantModal').classList.add('active');
 }
 
-function closeConsultantModal() { document.getElementById('consultantModal').classList.remove('active'); }
+function editConsultant(id) {
+    const consultant = allConsultants.find(c => c.id === id);
+    if (!consultant) return;
+    openConsultantModal(consultant);
+}
+
+function closeConsultantModal() {
+    document.getElementById('consultantModal').classList.remove('active');
+    document.getElementById('consultantPhone').disabled = false;
+}
 
 async function submitConsultant() {
-    const phone = document.getElementById('consultantPhone').value.trim();
+    const editId = document.getElementById('editConsultantId').value;
     const name = document.getElementById('consultantName').value.trim();
-    if (!phone || !name) return alert('Telefone e nome são obrigatórios.');
+    if (!name) return alert('Nome é obrigatório.');
 
     const weekly_availability = {};
     WEEKDAYS.forEach(([key]) => {
@@ -812,6 +843,26 @@ async function submitConsultant() {
         }
     });
 
+    if (editId) {
+        const payload = {
+            name,
+            context: document.getElementById('consultantContext').value.trim() || null,
+            slot_duration_minutes: Number(document.getElementById('consultantSlotDuration').value) || 30,
+            reminder_hours_before: Number(document.getElementById('consultantReminderHours').value) || 2,
+            weekly_availability,
+        };
+        const res = await fetch(API + `/api/whatsapp/consultants/${editId}`, {
+            method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.message || 'Erro ao salvar consultor.');
+        closeConsultantModal();
+        loadConsultants();
+        return;
+    }
+
+    const phone = document.getElementById('consultantPhone').value.trim();
+    if (!phone) return alert('Telefone é obrigatório.');
     const payload = {
         phone, name,
         context: document.getElementById('consultantContext').value.trim() || null,
