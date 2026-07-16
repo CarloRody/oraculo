@@ -637,7 +637,8 @@ def resolve_llm_config_for_user(user_id):
                 cur.execute(
                     """SELECT m.id, m.base_url, m.api_key, m.model_name, m.temperature,
                               m.max_tokens, m.timeout_seconds, m.price_input_per_million,
-                              m.price_output_per_million, m.markup_percentage, m.pro_high_multiplier
+                              m.price_output_per_million, m.markup_percentage, m.pro_high_multiplier,
+                              p.whatsapp_context_tokens, p.pesquisa_context_tokens
                        FROM users u JOIN plans p ON p.id = u.plan_id
                        JOIN ai_models m ON m.id = p.model_id
                        WHERE u.id = %s AND m.status = 'active'""",
@@ -656,6 +657,8 @@ def resolve_llm_config_for_user(user_id):
                         "price_output_per_million": float(row[8]),
                         "markup_percentage": float(row[9]),
                         "pro_high_multiplier": float(row[10]),
+                        "whatsapp_context_tokens": row[11],
+                        "pesquisa_context_tokens": row[12],
                     }
             except Exception as e:
                 if conn: conn.close()
@@ -965,11 +968,59 @@ def build_rag_context(context_chunks, requested_area_ids):
     return full_context_text, context_sources, chunk_counts_by_area, billing_area_ids
 
 
-def call_llm_agent(llm_cfg, system_prompt, user_prompt):
+def _trim_history_to_budget(history, max_tokens):
+    """Recebe uma lista cronológica [{"role","content"}, ...] e devolve a
+    cauda mais recente que cabe em max_tokens (soma de trás pra frente, para
+    antes de estourar). max_tokens None/0/negativo = sem contexto."""
+    if not history or not max_tokens or max_tokens <= 0:
+        return []
+    kept = []
+    used = 0
+    for msg in reversed(history):
+        t = count_tokens(msg.get("content") or "")
+        if used + t > max_tokens:
+            break
+        kept.append(msg)
+        used += t
+    kept.reverse()
+    return kept
+
+
+def _fetch_session_history(user_id, area_id):
+    """Mensagens da sessão de hoje (mesmo recorte usado por log_chat_message
+    — user_id + area_id + dia) em ordem cronológica, pra servir de contexto
+    de conversa em /api/chat e /api/agent-research."""
+    if not user_id:
+        return []
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT m.role, m.content FROM messages m
+               JOIN sessions s ON s.id = m.session_id
+               WHERE s.user_id = %s AND s.area_id = %s AND s.created_at::date = CURRENT_DATE
+               ORDER BY m.timestamp ASC""",
+            (user_id, area_id)
+        )
+        rows = cur.fetchall()
+        conn.close()
+        return [{"role": r[0], "content": r[1]} for r in rows]
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO _fetch_session_history: {e}")
+        return []
+
+
+def call_llm_agent(llm_cfg, system_prompt, user_prompt, history=None):
     """Chama o LLM (base_url/model/parâmetros do llm_cfg resolvido pra esse
     cliente/plano) e devolve (texto, tokens_input, tokens_output). Usa o
     'usage' do gateway (exato) quando disponível, senão estima via tiktoken
-    (count_tokens). Compartilhado por /api/chat e /api/agent-research."""
+    (count_tokens). Compartilhado por /api/chat e /api/agent-research.
+    `history` (opcional) é uma lista [{"role","content"}, ...] de conversa
+    anterior, inserida entre o system prompt e a pergunta atual."""
+    history = history or []
     llm_headers = {"Authorization": f"Bearer {llm_cfg['api_key']}"} if llm_cfg.get("api_key") else {}
     llm_response = _http_requests.post(
         llm_cfg["base_url"],
@@ -977,6 +1028,7 @@ def call_llm_agent(llm_cfg, system_prompt, user_prompt):
             "model": llm_cfg["model"],
             "messages": [
                 {"role": "system", "content": system_prompt},
+                *history,
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": llm_cfg["temperature"],
@@ -993,7 +1045,8 @@ def call_llm_agent(llm_cfg, system_prompt, user_prompt):
     tokens_input = usage.get("prompt_tokens")
     tokens_output = usage.get("completion_tokens")
     if tokens_input is None or tokens_output is None:
-        tokens_input = count_tokens(system_prompt + user_prompt)
+        history_text = "".join(h.get("content") or "" for h in history)
+        tokens_input = count_tokens(system_prompt + history_text + user_prompt)
         tokens_output = count_tokens(text)
     return text, tokens_input, tokens_output
 
@@ -1061,6 +1114,11 @@ def chat():
     message = data.get('message', '')
     requested_area_ids = resolve_area_ids(data)
     user_id = resolve_user_from_request()
+
+    # source="whatsapp" identifica chamadas do whatsapp-agent (_handle_ai_auto_reply)
+    # — qualquer outro valor/ausência é o chat/pesquisa do site (chat.html).
+    # Cada um usa o orçamento de contexto separado do plano (ver llm_cfg abaixo).
+    source = data.get('source') if data.get('source') == 'whatsapp' else 'pesquisa'
 
     # Conta desativada na mão pelo admin (independente de saldo/plano/modelo)
     # — bloqueio mais fundamental, checado antes de tudo mais.
@@ -1147,10 +1205,22 @@ def chat():
 
 Pergunta: {message}"""
 
+        # Contexto de conversa anterior, dentro do orçamento de tokens do
+        # plano do cliente (separado entre WhatsApp e Pesquisas). WhatsApp
+        # manda o histórico bruto da conversa no corpo da requisição;
+        # Pesquisas reaproveita a sessão de hoje já gravada em sessions/messages.
+        if source == 'whatsapp':
+            context_budget = llm_cfg.get('whatsapp_context_tokens')
+            history = _trim_history_to_budget(data.get('history') or [], context_budget)
+        else:
+            context_budget = llm_cfg.get('pesquisa_context_tokens')
+            raw_history = _fetch_session_history(user_id, authorized_area_ids[0]) if user_id and authorized_area_ids else []
+            history = _trim_history_to_budget(raw_history, context_budget)
+
         # Chama LLM — base_url/model/parâmetros vêm do modelo do plano do
         # cliente (llm_cfg, roteamento real) ou do LLM_CONFIG global se o
         # cliente não tiver plano/modelo associado.
-        response_text, tokens_input, tokens_output = call_llm_agent(llm_cfg, system_prompt, user_prompt)
+        response_text, tokens_input, tokens_output = call_llm_agent(llm_cfg, system_prompt, user_prompt, history=history)
 
         session_id = log_chat_message(user_id, billing_area_ids, message, response_text, tokens_input, tokens_output)
         if billing_area_ids:
@@ -1333,6 +1403,13 @@ def agent_research():
             }), 402
 
     try:
+        # Contexto de conversa anterior (sessão de hoje) — mesma fonte de
+        # /api/chat, aplicado aos Agentes 1 e 2 (que interpretam a pergunta
+        # bruta); o Agente 3 comparador não precisa, já trabalha em cima das
+        # duas respostas geradas nesta mesma chamada.
+        raw_history = _fetch_session_history(user_id, authorized_area_ids[0]) if user_id and authorized_area_ids else []
+        history = _trim_history_to_budget(raw_history, llm_cfg.get('pesquisa_context_tokens'))
+
         # ---- Agente 1: Documentação Oficial (RAG) ----
         context_chunks = search_similar(message, area_ids=authorized_area_ids, top_k=50)
         full_context_text, official_sources, chunk_counts_by_area, billing_area_ids = build_rag_context(context_chunks, requested_area_ids)
@@ -1367,7 +1444,7 @@ def agent_research():
 {'=' * 60}
 
 Pergunta: {message}"""
-        official_answer, tin1, tout1 = call_llm_agent(llm_cfg, official_system_prompt, official_user_prompt)
+        official_answer, tin1, tout1 = call_llm_agent(llm_cfg, official_system_prompt, official_user_prompt, history=history)
 
         # ---- Agente 2: Busca na Internet (SearXNG) ----
         # Inclui o nome da área (ex: nome do produto/módulo) na query de busca —
@@ -1396,7 +1473,7 @@ Pergunta: {message}"""
 {'=' * 60}
 
 Pergunta: {message}"""
-        web_answer, tin2, tout2 = call_llm_agent(llm_cfg, web_system_prompt, web_user_prompt)
+        web_answer, tin2, tout2 = call_llm_agent(llm_cfg, web_system_prompt, web_user_prompt, history=history)
         web_sources = [{"title": r["title"], "url": r["url"]} for r in web_results]
 
         # ---- Agente 3: Comparador ----
@@ -2246,14 +2323,17 @@ def admin_list_plans():
         cur = conn.cursor()
         cur.execute(
             """SELECT p.id, p.name, p.description, p.model_id, m.name,
-                      p.charge_unrelated_received_messages, p.price_per_unrelated_message, p.agenda_enabled
+                      p.charge_unrelated_received_messages, p.price_per_unrelated_message, p.agenda_enabled,
+                      p.whatsapp_context_tokens, p.pesquisa_context_tokens
                FROM plans p LEFT JOIN ai_models m ON m.id = p.model_id ORDER BY p.name"""
         )
         plans = [{
             "id": r[0], "name": r[1], "description": r[2], "model_id": r[3], "model_name": r[4],
             "charge_unrelated_received_messages": r[5],
             "price_per_unrelated_message": float(r[6]) if r[6] is not None else None,
-            "agenda_enabled": r[7]
+            "agenda_enabled": r[7],
+            "whatsapp_context_tokens": r[8],
+            "pesquisa_context_tokens": r[9]
         } for r in cur.fetchall()]
 
         for plan in plans:
@@ -2316,6 +2396,8 @@ def admin_create_plan():
     charge_unrelated = bool(data.get('charge_unrelated_received_messages'))
     unrelated_price = data.get('price_per_unrelated_message')
     agenda_enabled = bool(data.get('agenda_enabled'))
+    whatsapp_context_tokens = data.get('whatsapp_context_tokens')
+    pesquisa_context_tokens = data.get('pesquisa_context_tokens')
 
     conn = get_db_connection()
     if not conn:
@@ -2323,9 +2405,9 @@ def admin_create_plan():
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled)
-               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-            (name, description, model_id, charge_unrelated, unrelated_price, agenda_enabled)
+            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled, whatsapp_context_tokens, pesquisa_context_tokens)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (name, description, model_id, charge_unrelated, unrelated_price, agenda_enabled, whatsapp_context_tokens, pesquisa_context_tokens)
         )
         plan_id = cur.fetchone()[0]
         _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
@@ -2369,6 +2451,10 @@ def admin_update_plan(plan_id):
             fields['price_per_unrelated_message'] = data.get('price_per_unrelated_message')
         if 'agenda_enabled' in data:
             fields['agenda_enabled'] = bool(data.get('agenda_enabled'))
+        if 'whatsapp_context_tokens' in data:
+            fields['whatsapp_context_tokens'] = data.get('whatsapp_context_tokens')
+        if 'pesquisa_context_tokens' in data:
+            fields['pesquisa_context_tokens'] = data.get('pesquisa_context_tokens')
 
         if fields:
             set_clause = ", ".join(f"{k} = %s" for k in fields)

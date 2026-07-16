@@ -409,6 +409,14 @@
                 Ativar agenda de consultores (agendamento via WhatsApp)
             </label>
         </div>
+        <div class="form-group">
+            <label>Contexto de conversa — WhatsApp (tokens, vazio = sem contexto)</label>
+            <input type="number" min="0" step="1" class="form-input" id="planWhatsappContext" placeholder="Ex: 1000" style="max-width:220px;">
+        </div>
+        <div class="form-group">
+            <label>Contexto de conversa — Pesquisas (tokens, vazio = sem contexto)</label>
+            <input type="number" min="0" step="1" class="form-input" id="planPesquisaContext" placeholder="Ex: 1000" style="max-width:220px;">
+        </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closePlanModal()">Cancelar</button>
             <button class="btn" onclick="savePlan()">Salvar</button>
@@ -1361,6 +1369,9 @@ function showPlanModal(planId) {
 
     document.getElementById('planAgendaEnabled').checked = plan ? !!plan.agenda_enabled : false;
 
+    document.getElementById('planWhatsappContext').value = plan && plan.whatsapp_context_tokens != null ? plan.whatsapp_context_tokens : '';
+    document.getElementById('planPesquisaContext').value = plan && plan.pesquisa_context_tokens != null ? plan.pesquisa_context_tokens : '';
+
     renderPlanAreasTable(plan ? plan.areas : []);
     document.getElementById('planModal').classList.add('active');
 }
@@ -1399,12 +1410,16 @@ async function savePlan() {
     const unrelatedPriceVal = document.getElementById('planUnrelatedPrice').value;
     const price_per_unrelated_message = unrelatedPriceVal ? Number(unrelatedPriceVal) : null;
     const agenda_enabled = document.getElementById('planAgendaEnabled').checked;
+    const whatsappContextVal = document.getElementById('planWhatsappContext').value;
+    const whatsapp_context_tokens = whatsappContextVal ? Number(whatsappContextVal) : null;
+    const pesquisaContextVal = document.getElementById('planPesquisaContext').value;
+    const pesquisa_context_tokens = pesquisaContextVal ? Number(pesquisaContextVal) : null;
 
     try {
         const res = await fetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled })
+            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled, whatsapp_context_tokens, pesquisa_context_tokens })
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar plano.');

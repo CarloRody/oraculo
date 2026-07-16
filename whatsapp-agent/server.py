@@ -1480,12 +1480,23 @@ def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):
                    detail={"reason": "conta sem cliente vinculado (ou cliente sem api_key)"})
         return
 
+    # Últimas mensagens da conversa (a mais recente é a própria incoming_text,
+    # já salva por save_message antes desta função ser chamada — descartada
+    # aqui porque já vai separada no campo "message"). O corte pro orçamento
+    # de tokens do plano do cliente acontece do lado do ai_oraculo_saas, que
+    # é quem conhece o plano; aqui só manda um teto generoso de mensagens brutas.
+    history = [
+        {"role": "user" if m["direction"] == "in" else "assistant", "content": m["body"]}
+        for m in list_messages(chat_id, limit=21)[:-1]
+        if m.get("message_type") == "text" and m.get("body")
+    ]
+
     base_url = (ORACULO_API_CONFIG.get("base_url") or "http://127.0.0.1:5001").rstrip("/")
     try:
         resp = requests.post(
             f"{base_url}/api/chat",
             headers={"X-Oraculo-Key": api_key},
-            json={"message": incoming_text, "area_ids": [account["area_id"]]},
+            json={"message": incoming_text, "area_ids": [account["area_id"]], "source": "whatsapp", "history": history},
             timeout=25,
         )
         resp.raise_for_status()

@@ -350,6 +350,16 @@ MIGRATIONS = [
     """
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS agenda_enabled BOOLEAN NOT NULL DEFAULT FALSE;
     """,
+
+    # 19 — orçamento de contexto de conversa (memória) por plano, em tokens.
+    # NULL/0 = sem contexto (comportamento de sempre). Separado entre
+    # WhatsApp e Pesquisas porque são conversas de natureza diferente
+    # (WhatsApp manda o histórico bruto da conversa; Pesquisas reaproveita
+    # a sessão do dia já gravada em sessions/messages).
+    """
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS whatsapp_context_tokens INTEGER;
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS pesquisa_context_tokens INTEGER;
+    """,
 ]
 
 
