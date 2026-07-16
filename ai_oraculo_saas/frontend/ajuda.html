@@ -1,0 +1,334 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Central de Ajuda — Como usar o Oráculo</title>
+<meta name="description" content="Guia completo do Oráculo: como se cadastrar, fazer login, entender seu saldo, recarregar créditos e tirar dúvidas sobre o atendimento.">
+<style>
+    * { margin:0; padding:0; box-sizing:border-box; }
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: #0a1628;
+        color: #e0e0e0;
+        line-height: 1.65;
+    }
+    a { text-decoration:none; color:#60a5fa; }
+    .wrap { max-width: 880px; margin: 0 auto; padding: 0 1.25rem; }
+    .gradient-text {
+        background: linear-gradient(135deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+    }
+    .btn {
+        display: inline-block;
+        padding: 0.8rem 1.6rem;
+        border-radius: 8px;
+        font-weight: 600;
+        font-size: 0.95rem;
+        cursor: pointer;
+        border: none;
+        transition: transform 0.15s ease, box-shadow 0.15s ease, opacity 0.15s ease;
+    }
+    .btn-primary {
+        background: linear-gradient(135deg, #22c55e, #16a34a);
+        color: #fff;
+        box-shadow: 0 4px 14px rgba(34,197,94,0.35);
+    }
+    .btn-primary:hover { transform: translateY(-2px); }
+    .btn-secondary { background: transparent; color:#60a5fa; border:1px solid #334155; }
+    .btn-secondary:hover { border-color:#60a5fa; }
+
+    /* ---- Header ---- */
+    header.hero {
+        padding: 3.5rem 0 2.5rem;
+        text-align: center;
+        border-bottom: 1px solid #1a2744;
+        background: radial-gradient(ellipse at top, rgba(96,165,250,0.10), transparent 60%);
+    }
+    .brand { font-size:1rem; font-weight:700; letter-spacing:0.06em; color:#94a3b8; text-transform:uppercase; margin-bottom:1.25rem; }
+    header.hero h1 { font-size: clamp(1.7rem, 4.5vw, 2.6rem); font-weight:800; max-width:700px; margin:0 auto 1rem; }
+    header.hero p.sub { color:#94a3b8; max-width:560px; margin:0 auto 1.75rem; font-size:1.02rem; }
+    .hero-ctas { display:flex; gap:1rem; justify-content:center; flex-wrap:wrap; }
+
+    /* ---- Nav rápida ---- */
+    nav.quicknav {
+        position: sticky; top: 0; z-index: 50;
+        background: rgba(10,22,40,0.96);
+        backdrop-filter: blur(6px);
+        border-bottom: 1px solid #1a2744;
+        overflow-x: auto;
+        white-space: nowrap;
+    }
+    nav.quicknav .wrap { display:flex; gap:0.35rem; padding: 0.7rem 1.25rem; max-width:880px; }
+    nav.quicknav a {
+        color:#94a3b8; font-size:0.85rem; padding:0.4rem 0.75rem; border-radius:999px;
+        border:1px solid transparent;
+    }
+    nav.quicknav a:hover { color:#60a5fa; border-color:#334155; }
+
+    /* ---- Conteúdo ---- */
+    section { padding: 3rem 0; border-bottom: 1px solid #1a2744; }
+    section:last-of-type { border-bottom:none; }
+    .section-eyebrow { color:#a78bfa; font-size:0.8rem; font-weight:700; text-transform:uppercase; letter-spacing:0.05em; margin-bottom:0.5rem; }
+    h2 { font-size: clamp(1.35rem, 3vw, 1.75rem); font-weight:800; color:#f8fafc; margin-bottom:1rem; }
+    h3 { font-size: 1.05rem; font-weight:700; color:#f8fafc; margin: 1.5rem 0 0.5rem; }
+    p { color:#cbd5e1; margin-bottom:0.9rem; }
+    p.lead { color:#e0e0e0; font-size:1.05rem; }
+    ul, ol { color:#cbd5e1; margin: 0 0 1rem 1.3rem; }
+    li { margin-bottom:0.45rem; }
+    strong { color:#f8fafc; }
+
+    .steps-list { counter-reset: step; list-style:none; margin-left:0; }
+    .steps-list li {
+        counter-increment: step;
+        position: relative;
+        padding-left: 2.6rem;
+        margin-bottom: 1.1rem;
+        color:#cbd5e1;
+    }
+    .steps-list li::before {
+        content: counter(step);
+        position: absolute; left:0; top:-0.1rem;
+        width: 1.9rem; height:1.9rem;
+        border-radius: 8px;
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        color:#fff; font-weight:800; font-size:0.9rem;
+        display:flex; align-items:center; justify-content:center;
+    }
+
+    .card { background:#1e293b; border:1px solid #334155; border-radius:12px; padding:1.5rem 1.75rem; margin-bottom:1rem; }
+    .card h3 { margin-top:0; }
+
+    .callout {
+        background: #1f3a4a;
+        border: 1px solid #2c5a72;
+        border-radius: 10px;
+        padding: 1rem 1.25rem;
+        font-size: 0.92rem;
+        color: #bfe0f0;
+        margin: 1rem 0;
+    }
+    .callout strong { color:#60a5fa; }
+
+    .badge-row { display:flex; gap:0.5rem; flex-wrap:wrap; margin: 0.75rem 0 1.25rem; }
+    .badge {
+        font-size:0.78rem; font-weight:600; padding:0.3rem 0.7rem; border-radius:999px;
+        background:#0f172a; border:1px solid #334155; color:#94a3b8;
+    }
+
+    details {
+        background:#1e293b; border:1px solid #334155; border-radius:10px;
+        padding: 0.9rem 1.1rem; margin-bottom:0.75rem;
+    }
+    details summary { cursor:pointer; font-weight:600; color:#f8fafc; font-size:0.98rem; }
+    details p { margin-top:0.7rem; margin-bottom:0; }
+
+    .cta-final { text-align:center; padding: 3.5rem 0; }
+    .cta-final h2 { margin-bottom:0.75rem; }
+    .cta-final p { max-width:480px; margin:0 auto 1.5rem; }
+
+    footer { padding: 2rem 0; text-align:center; color:#64748b; font-size:0.85rem; }
+    footer a { color:#94a3b8; }
+
+    .wa-float {
+        position: fixed; bottom: 1.5rem; right: 1.5rem;
+        background: #22c55e; color:#fff;
+        width: 58px; height: 58px; border-radius: 50%;
+        display:flex; align-items:center; justify-content:center;
+        box-shadow: 0 6px 20px rgba(34,197,94,0.45);
+        z-index: 100; font-size: 1.6rem;
+        transition: transform 0.15s ease;
+    }
+    .wa-float:hover { transform: scale(1.08); }
+
+    @media (max-width: 640px) {
+        header.hero { padding: 2.5rem 0 2rem; }
+        section { padding: 2.25rem 0; }
+    }
+</style>
+</head>
+<body>
+
+<header class="hero">
+    <div class="wrap">
+        <div class="brand">🔮 Oráculo — Central de Ajuda</div>
+        <h1>Tudo o que você precisa saber para <span class="gradient-text">usar o Oráculo</span></h1>
+        <p class="sub">Um guia completo sobre como funciona o atendimento: cadastro, login, saldo, recarga e o que fazer em cada situação.</p>
+        <div class="hero-ctas">
+            <a class="btn btn-primary wa-link" data-msg="Olá! Estou com uma dúvida sobre como usar o Oráculo." href="#">💬 Falar no WhatsApp</a>
+            <a class="btn btn-secondary" href="#comecar">Como começar</a>
+        </div>
+    </div>
+</header>
+
+<nav class="quicknav">
+    <div class="wrap">
+        <a href="#o-que-e">O que é</a>
+        <a href="#comecar">Cadastro</a>
+        <a href="#login">Login</a>
+        <a href="#painel">Seu painel</a>
+        <a href="#saldo">Saldo</a>
+        <a href="#recarga">Recarga</a>
+        <a href="#whatsapp">WhatsApp</a>
+        <a href="#faq">Dúvidas</a>
+    </div>
+</nav>
+
+<section id="o-que-e">
+    <div class="wrap">
+        <div class="section-eyebrow">Visão geral</div>
+        <h2>O que é o Oráculo</h2>
+        <p class="lead">O Oráculo é um assistente de IA que responde perguntas com base no conhecimento da sua empresa — documentos, links e informações que você (ou a gente) organiza em "áreas" temáticas. Ele pode ser usado por um painel de chat próprio e, se o seu plano incluir, também dentro do WhatsApp da sua empresa.</p>
+        <p>Cada resposta é gerada só com base no que foi indexado nas áreas escolhidas, e sempre mostra as fontes usadas — nada de resposta genérica desconectada do seu negócio.</p>
+    </div>
+</section>
+
+<section id="comecar">
+    <div class="wrap">
+        <div class="section-eyebrow">Primeiro contato</div>
+        <h2>Como funciona o cadastro</h2>
+        <p>Hoje o cadastro não é automático — ele é feito diretamente com a gente, para garantir que sua área de conhecimento e seu plano fiquem configurados do jeito certo desde o início.</p>
+        <ol class="steps-list">
+            <li><strong>Fale com a gente pelo WhatsApp</strong> e explique o que sua empresa precisa: uma base de conhecimento para consulta, resposta automática no WhatsApp, agenda de horários, ou uma combinação disso.</li>
+            <li><strong>Sua conta é criada</strong>: definimos junto o plano, criamos a(s) área(s) de conhecimento da sua empresa e configuramos o que for necessário (conexão de WhatsApp, agenda, etc).</li>
+            <li><strong>Você recebe uma chave de acesso pessoal</strong> (um código único) — é ela que autentica você no sistema. Não existe cadastro de usuário e senha tradicional.</li>
+            <li><strong>Pronto</strong> — com a chave em mãos, seu acesso já está liberado.</li>
+        </ol>
+        <div class="callout">
+            <strong>Por que não é automático?</strong> Cada cliente tem uma área de conhecimento própria e um plano configurado sob medida. Montar isso junto com você, desde o início, evita retrabalho e garante que a IA responda exatamente sobre o que interessa para o seu negócio.
+        </div>
+    </div>
+</section>
+
+<section id="login">
+    <div class="wrap">
+        <div class="section-eyebrow">Acesso</div>
+        <h2>Como fazer login</h2>
+        <ol class="steps-list">
+            <li>Abra a página principal do sistema.</li>
+            <li>Clique no botão <strong>"Entrar"</strong>, no canto superior.</li>
+            <li>Cole a chave de acesso que você recebeu da gente.</li>
+        </ol>
+        <p>A chave fica salva no seu navegador, então você não precisa colar de novo toda vez que voltar. Para sair (por exemplo, num computador compartilhado), use o botão <strong>"Sair"</strong> — isso só remove a chave desse navegador; sua conta continua ativa normalmente.</p>
+        <div class="callout"><strong>Esqueceu ou perdeu sua chave?</strong> Sem problema — fale com a gente pelo WhatsApp que reenviamos.</div>
+    </div>
+</section>
+
+<section id="painel">
+    <div class="wrap">
+        <div class="section-eyebrow">No dia a dia</div>
+        <h2>O que você encontra no seu painel</h2>
+
+        <h3>💬 Chat com a IA</h3>
+        <p>Escolha qual área de conhecimento você quer consultar (ou converse com todas de uma vez) e faça perguntas em linguagem natural, como faria com uma pessoa da equipe. Cada resposta traz as fontes usadas, para você conferir de onde veio a informação.</p>
+
+        <h3>📚 Minha Base de Conhecimento</h3>
+        <p>Aqui você acompanha seu saldo e o histórico completo de créditos, e também pode adicionar seus próprios documentos (PDF, TXT) ou links externos para que a IA aprenda especificamente sobre o seu negócio — sem precisar pedir ajuda pra gente. O processamento é automático: cada item mostra o status (pendente → processando → indexado) até ficar disponível nas respostas do chat.</p>
+        <div class="badge-row">
+            <span class="badge">Upload de arquivo</span>
+            <span class="badge">Link externo</span>
+            <span class="badge">Status em tempo real</span>
+            <span class="badge">Saldo e histórico</span>
+        </div>
+    </div>
+</section>
+
+<section id="saldo">
+    <div class="wrap">
+        <div class="section-eyebrow">Cobrança</div>
+        <h2>Como funciona o saldo</h2>
+        <p class="lead">O Oráculo funciona por saldo pré-pago — sem mensalidade fixa surpresa, sem fatura no fim do mês.</p>
+        <ul>
+            <li>Cada pergunta consome uma quantidade de <strong>tokens</strong> (a unidade de processamento de texto da IA), convertida em R$ e debitada do seu saldo.</li>
+            <li>Se o seu plano incluir WhatsApp, mensagens enviadas automaticamente (e mensagens recebidas fora de uma área vinculada, caso essa cobrança esteja ativa no seu plano) também debitam do mesmo saldo.</li>
+            <li>Você acompanha o saldo em tempo real: no topo do chat e na tela "Minha Base de Conhecimento", com o histórico detalhado de cada movimentação (depósito, consumo ou ajuste).</li>
+            <li>Quando o saldo chega a zero, um aviso aparece e as respostas automáticas pausam até a recarga — você nunca é cobrado além do que tem disponível.</li>
+        </ul>
+    </div>
+</section>
+
+<section id="recarga">
+    <div class="wrap">
+        <div class="section-eyebrow">Recarga</div>
+        <h2>Como recarregar seu saldo</h2>
+        <p>A recarga também é feita diretamente com a gente: chame no WhatsApp, combine o valor e a forma de pagamento, e o crédito é aplicado na sua conta assim que confirmado — geralmente na hora.</p>
+        <div class="callout">Hoje não existe um checkout automático dentro do sistema. É uma escolha proposital nesta fase, para manter o processo simples e sem burocracia de gateway de pagamento — e para garantir que qualquer dúvida sobre valores seja esclarecida diretamente com a gente.</div>
+    </div>
+</section>
+
+<section id="whatsapp">
+    <div class="wrap">
+        <div class="section-eyebrow">Se o seu plano incluir</div>
+        <h2>Oráculo no WhatsApp da sua empresa</h2>
+        <p>Dependendo do seu plano, o mesmo conhecimento que alimenta o chat também pode responder direto no WhatsApp da sua empresa:</p>
+        <ul>
+            <li><strong>Resposta automática seletiva</strong> — você decide, conversa por conversa, quem fica no automático e quem continua sendo atendido pela sua equipe.</li>
+            <li><strong>Envio automatizado de mensagens</strong> — sua empresa pode disparar avisos e mensagens via API, cobrado por mensagem enviada e debitado do mesmo saldo.</li>
+            <li><strong>Agenda por WhatsApp</strong> — seus clientes marcam, cancelam e remarcam horário sozinhos, direto pelo WhatsApp, sem app externo.</li>
+        </ul>
+        <p>Quer ativar algum desses recursos ou saber se o seu plano já inclui? Fale com a gente pelo WhatsApp.</p>
+    </div>
+</section>
+
+<section id="faq">
+    <div class="wrap">
+        <div class="section-eyebrow">Perguntas frequentes</div>
+        <h2>Dúvidas comuns</h2>
+
+        <details>
+            <summary>Minha empresa pode ter mais de uma área de conhecimento?</summary>
+            <p>Sim. Cada área pode ter sua própria cota de uso e configuração, e dá para combinar áreas privadas (exclusivas da sua empresa) com áreas específicas para diferentes assuntos ou setores.</p>
+        </details>
+        <details>
+            <summary>Meus documentos ficam visíveis para outros clientes?</summary>
+            <p>Não. Sua área privada é isolada — só o conteúdo que você (ou a gente) adicionar nela é usado para responder às suas perguntas.</p>
+        </details>
+        <details>
+            <summary>Posso cancelar quando quiser?</summary>
+            <p>Sim, sem contrato de fidelidade. É só falar com a gente pelo WhatsApp.</p>
+        </details>
+        <details>
+            <summary>A IA pode responder algo errado?</summary>
+            <p>A IA responde apenas com base no que foi indexado nas áreas escolhidas, e toda resposta mostra as fontes usadas para você conferir. Se perceber algo incorreto ou desatualizado, nos avise — ajustamos o conteúdo indexado.</p>
+        </details>
+        <details>
+            <summary>Esqueci minha chave de acesso, e agora?</summary>
+            <p>Sem problema, fale com a gente pelo WhatsApp que reenviamos a sua chave.</p>
+        </details>
+        <details>
+            <summary>Como sei quanto ainda tenho de saldo?</summary>
+            <p>O saldo aparece em tempo real no topo do chat e na tela "Minha Base de Conhecimento", junto com o histórico completo de cada movimentação.</p>
+        </details>
+    </div>
+</section>
+
+<section class="cta-final">
+    <div class="wrap">
+        <h2>Ainda com dúvida?</h2>
+        <p>Fale com a gente agora pelo WhatsApp — respondemos rapidinho.</p>
+        <a class="btn btn-primary wa-link" data-msg="Olá! Estou com uma dúvida sobre como usar o Oráculo." href="#">💬 Falar no WhatsApp</a>
+    </div>
+</section>
+
+<footer>
+    <div class="wrap">
+        🔮 Oráculo — Central de Ajuda · <a href="vendas.html">Conheça o Oráculo</a>
+    </div>
+</footer>
+
+<a class="wa-float wa-link" data-msg="Olá! Estou com uma dúvida sobre como usar o Oráculo." href="#" aria-label="Falar no WhatsApp" title="Falar no WhatsApp">💬</a>
+
+<script>
+    const WA_NUMBER = "5537999150351";
+    document.querySelectorAll('.wa-link').forEach(function (el) {
+        const msg = el.getAttribute('data-msg') || '';
+        el.href = 'https://wa.me/' + WA_NUMBER + '?text=' + encodeURIComponent(msg);
+        el.target = '_blank';
+        el.rel = 'noopener';
+    });
+</script>
+
+</body>
+</html>
