@@ -25,6 +25,8 @@ import connectors.evolution as evolution
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 TRIGGER_WORDS = ("agendar", "marcar horário", "marcar horario")
 WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+YES_WORDS = {"sim", "s", "confirmar", "confirmo", "yes", "1"}
+NO_WORDS = {"não", "nao", "n", "cancelar", "no", "2"}
 
 
 def _conn():
@@ -38,6 +40,29 @@ def _phone(wa_id):
 def _is_trigger(text):
     t = (text or "").strip().lower()
     return any(w in t for w in TRIGGER_WORDS)
+
+
+def parse_yes_no(text):
+    """Fallback de texto pra quando o botão nativo do WhatsApp (viewOnceMessage/
+    nativeFlowMessage, formato usado por evolution.send_buttons) não é exibido
+    no aparelho do destinatário — usado tanto aqui quanto em server.py pra
+    confirmação de cadastro de consultor. None = não reconheceu como sim/nem."""
+    t = (text or "").strip().lower()
+    if t in YES_WORDS:
+        return True
+    if t in NO_WORDS:
+        return False
+    return None
+
+
+def _parse_index(text, options):
+    """Fallback de texto pra resposta de lista (send_list) — 'digite o número
+    da opção'. 1-based na mensagem, devolve o índice 0-based em options."""
+    t = (text or "").strip()
+    if not t.isdigit() or not options:
+        return None
+    i = int(t) - 1
+    return i if 0 <= i < len(options) else None
 
 
 def compute_free_slots(consultant, days_ahead=14, limit=10):
@@ -252,19 +277,25 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         consultants = [c for c in server.get_consultants(account["id"]) if c["status"] == "active"]
         if not consultants:
             return False
-        _send_consultant_list(account, wa_id, consultants)
-        server.set_chat_booking_state(chat_id, {"step": "choosing_consultant"})
+        option_ids = _send_consultant_list(account, wa_id, consultants)
+        server.set_chat_booking_state(chat_id, {"step": "choosing_consultant", "options": option_ids})
         return True
 
     step = state.get("step")
     phone = _phone(wa_id)
 
     if step == "choosing_consultant":
-        if not selected_id or not selected_id.startswith("consultant_"):
+        consultant_id = None
+        if selected_id and selected_id.startswith("consultant_"):
+            consultant_id = int(selected_id.split("_")[1])
+        else:
+            idx = _parse_index(text, state.get("options"))
+            if idx is not None:
+                consultant_id = state["options"][idx]
+        if consultant_id is None:
             server.set_chat_booking_state(chat_id, None)
             _send_text(account, phone, "Não entendi. Digite \"agendar\" pra começar de novo.")
             return True
-        consultant_id = int(selected_id.split("_")[1])
         consultant = server.get_consultant(consultant_id)
         if not consultant or consultant["account_id"] != account["id"] or consultant["status"] != "active":
             server.set_chat_booking_state(chat_id, None)
@@ -275,17 +306,23 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             server.set_chat_booking_state(chat_id, None)
             _send_text(account, phone, f"{consultant['name']} não tem horários livres nos próximos dias. Tente de novo mais tarde.")
             return True
-        _send_slot_list(account, wa_id, consultant, slots)
-        server.set_chat_booking_state(chat_id, {"step": "choosing_slot", "consultant_id": consultant_id})
+        option_isos = _send_slot_list(account, wa_id, consultant, slots)
+        server.set_chat_booking_state(chat_id, {"step": "choosing_slot", "consultant_id": consultant_id, "options": option_isos})
         return True
 
     if step == "choosing_slot":
-        if not selected_id or not selected_id.startswith("slot_"):
+        iso = None
+        if selected_id and selected_id.startswith("slot_"):
+            _, _consultant_id_str, iso = selected_id.split("_", 2)
+        else:
+            idx = _parse_index(text, state.get("options"))
+            if idx is not None:
+                iso = state["options"][idx]
+        if iso is None:
             server.set_chat_booking_state(chat_id, None)
             _send_text(account, phone, "Não entendi. Digite \"agendar\" pra começar de novo.")
             return True
-        _, consultant_id_str, iso = selected_id.split("_", 2)
-        consultant = server.get_consultant(int(consultant_id_str))
+        consultant = server.get_consultant(state["consultant_id"])
         if not consultant:
             server.set_chat_booking_state(chat_id, None)
             _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
@@ -296,8 +333,15 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         return True
 
     if step == "confirming":
+        if selected_id in ("booking_confirm_yes", "booking_confirm_no"):
+            confirmed = selected_id == "booking_confirm_yes"
+        else:
+            confirmed = parse_yes_no(text)
+            if confirmed is None:
+                _send_text(account, phone, "Não entendi. Responda SIM ou NÃO (ou toque num dos botões).")
+                return True  # mantém o estado — dá outra chance em vez de cancelar
         server.set_chat_booking_state(chat_id, None)
-        if selected_id != "booking_confirm_yes":
+        if not confirmed:
             _send_text(account, phone, "Agendamento cancelado. Digite \"agendar\" pra começar de novo.")
             return True
         consultant = server.get_consultant(state["consultant_id"])
@@ -321,19 +365,31 @@ def _send_text(account, phone, text):
 
 
 def _send_consultant_list(account, wa_id, consultants):
+    """Manda a lista interativa (pode não renderizar em todo aparelho — ver
+    plano de fallback) e também a enumeração em texto puro, pra quem não
+    consegue tocar na lista poder simplesmente digitar o número. Devolve os
+    IDs na mesma ordem mostrada, pra handle_incoming resolver a resposta
+    numérica guardada em booking_state["options"]."""
+    consultants = consultants[:10]
+    numbered = "\n".join(f"{i+1}. {c['name']}" for i, c in enumerate(consultants))
     sections = [{
         "title": "Consultores disponíveis",
         "rows": [{"id": f"consultant_{c['id']}", "title": c["name"], "description": (c.get("context") or "")[:70]}
-                  for c in consultants[:10]],
+                  for c in consultants],
     }]
     try:
         evolution.send_list(account["wa_session_name"], _phone(wa_id), "Agendamento",
-                             "Escolha um consultor:", "Ver consultores", sections)
+                             f"Escolha um consultor (toque na lista ou digite o número):\n\n{numbered}",
+                             "Ver consultores", sections)
     except EvolutionError:
         pass
+    return [c["id"] for c in consultants]
 
 
 def _send_slot_list(account, wa_id, consultant, slots):
+    """Mesma lógica de _send_consultant_list — devolve os horários (ISO) na
+    ordem mostrada."""
+    numbered = "\n".join(f"{i+1}. {s.strftime('%a %d/%m %H:%M')}" for i, s in enumerate(slots))
     sections = [{
         "title": "Horários disponíveis",
         "rows": [{"id": f"slot_{consultant['id']}_{s.isoformat()}", "title": s.strftime("%a %d/%m %H:%M"), "description": ""}
@@ -341,9 +397,11 @@ def _send_slot_list(account, wa_id, consultant, slots):
     }]
     try:
         evolution.send_list(account["wa_session_name"], _phone(wa_id), "Agendamento",
-                             f"Escolha um horário com {consultant['name']}:", "Ver horários", sections)
+                             f"Escolha um horário com {consultant['name']} (toque na lista ou digite o número):\n\n{numbered}",
+                             "Ver horários", sections)
     except EvolutionError:
         pass
+    return [s.isoformat() for s in slots]
 
 
 def _send_confirm_buttons(account, wa_id, consultant, scheduled_at):
@@ -351,7 +409,8 @@ def _send_confirm_buttons(account, wa_id, consultant, scheduled_at):
     try:
         evolution.send_buttons(
             account["wa_session_name"], _phone(wa_id), "Confirmar agendamento",
-            f"Confirma agendamento com {consultant['name']} em {when}?",
+            f"Confirma agendamento com {consultant['name']} em {when}? "
+            f"Toque num botão acima ou responda SIM ou NÃO.",
             [{"id": "booking_confirm_yes", "text": "Sim, confirmar"}, {"id": "booking_confirm_no", "text": "Não"}],
         )
     except EvolutionError:

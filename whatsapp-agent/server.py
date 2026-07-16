@@ -1203,7 +1203,8 @@ def _send_consultant_invite_message(consultant):
         consultant["wa_session_name"],
         _phone_from_wa_id(consultant["wa_id"]),
         "Convite para ser consultor",
-        f"Você foi cadastrado como consultor ({consultant['name']}) pra receber agendamentos por aqui. Confirma o cadastro?",
+        f"Você foi cadastrado como consultor ({consultant['name']}) pra receber agendamentos por aqui. "
+        f"Confirma o cadastro? Toque num botão acima ou responda SIM ou NÃO.",
         [
             {"id": f"consultant_confirm_{consultant['id']}", "text": "Sim, confirmar"},
             {"id": f"consultant_decline_{consultant['id']}", "text": "Não"},
@@ -1579,14 +1580,25 @@ def webhook_evolution():
             chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
             save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
 
-            pending_consultant_id = get_consultant_by_pending_contact(account["id"], wa_id) if selected_id else None
+            # pending_consultant_id roda sempre (não só quando há selected_id) —
+            # a resposta de confirmação aceita tanto tocar no botão quanto
+            # digitar sim/não (fallback pro caso do botão nativo não renderizar
+            # no aparelho do destinatário, ver plano). answer=None (nem botão
+            # nem sim/não reconhecido) cai no fluxo normal mais abaixo.
+            pending_consultant_id = get_consultant_by_pending_contact(account["id"], wa_id)
+            answer = None
+            if selected_id == f"consultant_confirm_{pending_consultant_id}":
+                answer = True
+            elif selected_id == f"consultant_decline_{pending_consultant_id}":
+                answer = False
+            elif pending_consultant_id and not selected_id:
+                answer = booking_flow.parse_yes_no(body)
+
             wants_portal_link = bool(body) and "minha agenda" in body.strip().lower()
             active_consultant = get_active_consultant_by_wa_id(account["id"], wa_id) if wants_portal_link else None
 
-            if pending_consultant_id and selected_id in (
-                f"consultant_confirm_{pending_consultant_id}", f"consultant_decline_{pending_consultant_id}"
-            ):
-                new_status = "active" if selected_id.startswith("consultant_confirm_") else "declined"
+            if pending_consultant_id and answer is not None:
+                new_status = "active" if answer else "declined"
                 set_consultant_status(pending_consultant_id, new_status)
                 if new_status == "active":
                     link = portal_link(get_portal_token(pending_consultant_id))
