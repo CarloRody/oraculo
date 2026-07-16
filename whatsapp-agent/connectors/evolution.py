@@ -108,43 +108,43 @@ def send_buttons(instance_name, number, title, description, buttons, footer=None
     (o único tipo que faz sentido pra uma resposta de sim/não/escolha; a
     Evolution API também suporta 'copy'/'url'/'call'/'pix', não usados aqui).
     Shape confirmado lendo evolution-api/src/api/dto/sendMessage.dto.ts
-    (classes Metadata/Button/SendButtonsDto) direto no servidor."""
-    return _request(
-        "POST",
-        f"/message/sendButtons/{instance_name}",
-        json={
-            "number": number,
-            "title": title,
-            "description": description,
-            "footer": footer,
-            "buttons": [{"type": "reply", "displayText": b["text"], "id": b["id"]} for b in buttons],
-        },
-    )
+    (classes Metadata/Button/SendButtonsDto) direto no servidor.
+    `footer` só entra no payload quando tem valor — o DTO valida como
+    string opcional, e null explícito (o que aconteceria mandando a chave
+    sempre) é rejeitado pela validação ('footer is not of a type(s) string')."""
+    payload = {
+        "number": number,
+        "title": title,
+        "description": description,
+        "buttons": [{"type": "reply", "displayText": b["text"], "id": b["id"]} for b in buttons],
+    }
+    if footer:
+        payload["footer"] = footer
+    return _request("POST", f"/message/sendButtons/{instance_name}", json=payload)
 
 
 def send_list(instance_name, number, title, description, button_text, sections, footer=None):
     """sections: [{"title": "...", "rows": [{"id": "...", "title": "...", "description": "..."}]}].
     WhatsApp limita a 10 linhas por lista, no total — quem chama precisa
     respeitar esse limite. Shape confirmado em sendMessage.dto.ts (SendListDto/
-    Section/Row) direto no servidor."""
-    return _request(
-        "POST",
-        f"/message/sendList/{instance_name}",
-        json={
-            "number": number,
-            "title": title,
-            "description": description,
-            "footerText": footer,
-            "buttonText": button_text,
-            "sections": [
-                {
-                    "title": s["title"],
-                    "rows": [{"rowId": r["id"], "title": r["title"], "description": r.get("description", "")} for r in s["rows"]],
-                }
-                for s in sections
-            ],
-        },
-    )
+    Section/Row) direto no servidor. `footerText` só entra no payload quando
+    tem valor — mesmo motivo de send_buttons acima."""
+    payload = {
+        "number": number,
+        "title": title,
+        "description": description,
+        "buttonText": button_text,
+        "sections": [
+            {
+                "title": s["title"],
+                "rows": [{"rowId": r["id"], "title": r["title"], "description": r.get("description", "")} for r in s["rows"]],
+            }
+            for s in sections
+        ],
+    }
+    if footer:
+        payload["footerText"] = footer
+    return _request("POST", f"/message/sendList/{instance_name}", json=payload)
 
 
 def logout(instance_name):
