@@ -104,11 +104,11 @@ function statusBadge(status) {
 
 async function loadAreas() {
     try {
-        const res = await fetch(`${API}/api/areas`);
+        const res = await fetch(`${API}/admin/areas`);
         const data = await res.json();
         if (!data.areas) return;
         const optionsHtml = '<option value="">Selecione uma área...</option>' +
-            data.areas.map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
+            data.areas.filter(a => a.status === 'active').map(a => `<option value="${a.id}">${esc(a.name)}</option>`).join('');
         document.getElementById('areaId').innerHTML = optionsHtml;
         document.getElementById('areaIdFile').innerHTML = optionsHtml;
     } catch (err) {
