@@ -1,3 +1,5 @@
+> ⚠️ O roadmap deste arquivo está desatualizado (marca como pendente recursos já implementados) e não cobre o crawler de árvore de conhecimento nem a fila de revisão de versões. Documentação atual: [`docs/02-monitoramento-automatico.md`](../docs/02-monitoramento-automatico.md).
+
 # Monitor Agent — Dashboard de Monitoramento Externo
 
 Serviço independente que monitora URLs externas e integra mudanças ao RAG do AI Tutor SaaS. Zero alterações no Tutor.

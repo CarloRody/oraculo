@@ -1,3 +1,5 @@
+> ⚠️ Este arquivo é um plano de projeto antigo, desatualizado em relação ao código atual. Para documentação técnica confiável, veja [`docs/`](../docs/README.md) na raiz do monorepo.
+
 # AI Tutor SaaS — Project Plan
 
 ## 🎯 Objetivo

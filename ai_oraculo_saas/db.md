@@ -1,3 +1,5 @@
+> ⚠️ Este arquivo está desatualizado (cobre 7 das 14 tabelas atuais e descreve um vector DB externo nunca implementado). Schema real e atual: [`schema.sql`](schema.sql) e [`docs/01-conhecimento-e-chat.md`](../docs/01-conhecimento-e-chat.md).
+
 # 🗄️ Estrutura do Banco de Dados — AI Tutor SaaS (Final e Unificada)
 
 ## Visão Geral
