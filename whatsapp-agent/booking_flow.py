@@ -11,9 +11,24 @@ ver docs internas do Python sobre import parcial de módulo em ciclo.
 Horários de disponibilidade (weekly_availability) são interpretados no fuso
 America/Sao_Paulo — não há como configurar isso por enquanto (não foi pedido),
 mas é o único lugar que precisaria mudar se algum dia for necessário.
+
+Pensado pro caso de uso de uma clínica médica: quem está do outro lado pode
+estar com pressa, nervoso ou com dificuldade de digitar. Por isso:
+- toda comparação de texto passa por _normalize (sem acento, minúsculo) e
+  aceita pequeno erro de digitação via _fuzzy_match (difflib, stdlib);
+- "cancelar"/"ajuda" funcionam a qualquer momento do fluxo, sem perder o
+  progresso no caso de "ajuda";
+- um erro de digitação na lista não cancela mais o fluxo de cara — dá até
+  3 tentativas, reenviando a lista;
+- mensagens com sinal de urgência ("urgente", "o quanto antes"...) entram
+  num modo que mostra um aviso de segurança fixo (procurar 192/pronto-socorro
+  em caso de emergência grave — não tentamos detectar sintoma nenhum) e
+  oferece só os 1-2 horários mais próximos, em vez de lista longa.
 """
 
 import datetime
+import difflib
+import unicodedata
 from zoneinfo import ZoneInfo
 
 import psycopg2
@@ -23,10 +38,32 @@ from connectors.evolution import EvolutionError
 import connectors.evolution as evolution
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
-TRIGGER_WORDS = ("agendar", "marcar horário", "marcar horario")
 WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-YES_WORDS = {"sim", "s", "confirmar", "confirmo", "yes", "1"}
-NO_WORDS = {"não", "nao", "n", "cancelar", "no", "2"}
+WEEKDAY_NAMES_PT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
+
+TRIGGER_PHRASES = ("marcar horario", "marcar consulta", "preciso de atendimento")
+TRIGGER_WORDS = ("agendar", "consulta", "atendimento", "horario")
+URGENCY_PHRASES = ("o quanto antes", "hoje mesmo", "mal estar", "passando mal")
+URGENCY_WORDS = ("urgente", "urgencia", "emergencia", "socorro")
+CANCEL_WORDS = ("cancelar", "sair", "parar", "desistir")
+HELP_PHRASES = ("nao entendi",)
+HELP_WORDS = ("ajuda", "menu", "atendente")
+
+YES_WORDS = {"sim", "s", "confirmar", "confirmo", "yes", "1", "pode ser", "claro", "ok", "beleza", "blz", "isso"}
+NO_WORDS = {"nao", "n", "cancelar", "no", "2", "nao quero", "deixa pra la", "nao posso"}
+
+_NUMBER_WORDS = {
+    "um": 1, "uma": 1, "primeiro": 1, "primeira": 1,
+    "dois": 2, "segundo": 2, "segunda": 2,
+    "tres": 3, "terceiro": 3, "terceira": 3,
+    "quatro": 4, "quarto": 4, "quarta": 4,
+    "cinco": 5, "quinto": 5, "quinta": 5,
+    "seis": 6, "sexto": 6, "sexta": 6,
+    "sete": 7, "setimo": 7, "setima": 7,
+    "oito": 8, "oitavo": 8, "oitava": 8,
+    "nove": 9, "nono": 9, "nona": 9,
+    "dez": 10, "decimo": 10, "decima": 10,
+}
 
 
 def _conn():
@@ -37,32 +74,93 @@ def _phone(wa_id):
     return (wa_id or "").split("@")[0]
 
 
-def _is_trigger(text):
+def _normalize(text):
+    """Minúsculo, sem acento, sem espaço nas pontas — base pra toda
+    comparação de texto tolerante a erro deste módulo."""
     t = (text or "").strip().lower()
-    return any(w in t for w in TRIGGER_WORDS)
+    t = unicodedata.normalize("NFKD", t)
+    return "".join(ch for ch in t if not unicodedata.combining(ch))
+
+
+def _fuzzy_match(text, candidates, cutoff=0.75):
+    """Compara text (já normalizado) contra uma lista de palavras/frases-alvo,
+    tolerando pequeno erro de digitação (1-2 letras trocadas/faltando).
+    Devolve o candidato mais parecido ou None."""
+    if not text or not candidates:
+        return None
+    matches = difflib.get_close_matches(text, candidates, n=1, cutoff=cutoff)
+    return matches[0] if matches else None
+
+
+def _matches_any(text, phrases=(), words=()):
+    t = _normalize(text)
+    if any(p in t for p in phrases):
+        return True
+    if not words:
+        return False
+    tokens = t.split()
+    return any(_fuzzy_match(tok, words) for tok in tokens)
+
+
+def _is_trigger(text):
+    return _matches_any(text, TRIGGER_PHRASES, TRIGGER_WORDS)
+
+
+def _is_urgent(text):
+    return _matches_any(text, URGENCY_PHRASES, URGENCY_WORDS)
+
+
+def _is_cancel(text):
+    return _matches_any(text, words=CANCEL_WORDS)
+
+
+def _is_help(text):
+    return _matches_any(text, HELP_PHRASES, HELP_WORDS)
 
 
 def parse_yes_no(text):
     """Fallback de texto pra quando o botão nativo do WhatsApp (viewOnceMessage/
     nativeFlowMessage, formato usado por evolution.send_buttons) não é exibido
     no aparelho do destinatário — usado tanto aqui quanto em server.py pra
-    confirmação de cadastro de consultor. None = não reconheceu como sim/nem."""
-    t = (text or "").strip().lower()
+    confirmação de cadastro de consultor. Aceita variações coloquiais e
+    pequeno erro de digitação nas palavras mais longas (evita tolerância a
+    erro nos atalhos de 1 letra, tipo "s"/"n", pra não dar falso positivo).
+    None = não reconheceu como sim/não."""
+    t = _normalize(text)
     if t in YES_WORDS:
         return True
     if t in NO_WORDS:
         return False
+    safe_yes = [w for w in YES_WORDS if len(w) > 2]
+    safe_no = [w for w in NO_WORDS if len(w) > 2]
+    if _fuzzy_match(t, safe_yes, cutoff=0.8):
+        return True
+    if _fuzzy_match(t, safe_no, cutoff=0.8):
+        return False
     return None
 
 
-def _parse_index(text, options):
-    """Fallback de texto pra resposta de lista (send_list) — 'digite o número
-    da opção'. 1-based na mensagem, devolve o índice 0-based em options."""
-    t = (text or "").strip()
-    if not t.isdigit() or not options:
+def _parse_index(text, options, names=None):
+    """Fallback de texto pra resposta de lista — 'digite o número da opção'.
+    Aceita o dígito puro (com pontuação/espaço ao redor, ex: '1)', '1.'), por
+    extenso ('um', 'primeiro'...), e — quando names é passado (lista de nomes
+    na mesma ordem de options, usado na escolha de consultor) — o nome
+    digitado, mesmo com erro de digitação, via correspondência aproximada.
+    1-based na mensagem, devolve o índice 0-based em options."""
+    if not options:
         return None
-    i = int(t) - 1
-    return i if 0 <= i < len(options) else None
+    t = _normalize(text).strip(" .)-")
+    if t.isdigit():
+        i = int(t) - 1
+        return i if 0 <= i < len(options) else None
+    if t in _NUMBER_WORDS:
+        i = _NUMBER_WORDS[t] - 1
+        return i if 0 <= i < len(options) else None
+    if names:
+        match = _fuzzy_match(t, [n for n in names if n], cutoff=0.7)
+        if match is not None:
+            return names.index(match)
+    return None
 
 
 def compute_free_slots(consultant, days_ahead=14, limit=10):
@@ -277,6 +375,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
     import server  # tardio — ver docstring do módulo
 
     state = server.get_chat_booking_state(chat_id)
+    phone = _phone(wa_id)
 
     if state is None:
         if not _is_trigger(text):
@@ -286,12 +385,29 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         consultants = [c for c in server.get_consultants(account["id"]) if c["status"] == "active"]
         if not consultants:
             return False
-        option_ids = _send_consultant_list(account, wa_id, consultants)
-        server.set_chat_booking_state(chat_id, {"step": "choosing_consultant", "options": option_ids})
+        urgent = _is_urgent(text)
+        option_ids = _send_consultant_list(account, wa_id, consultants, urgent=urgent)
+        server.set_chat_booking_state(chat_id, {"step": "choosing_consultant", "options": option_ids, "urgent": urgent})
+        return True
+
+    # Comandos globais de "cancelar"/"ajuda" — só interceptam quando já existe
+    # uma conversa de agendamento em andamento, e só pra respostas digitadas
+    # (um clique de botão/lista nunca deve ser confundido com esses comandos).
+    if not selected_id and _is_cancel(text):
+        server.set_chat_booking_state(chat_id, None)
+        _send_text(account, phone, "Sem problema, cancelei o agendamento por aqui. Quando quiser, é só me chamar de novo e digitar \"agendar\".")
+        return True
+    if not selected_id and _is_help(text):
+        new_state = _resend_current_step(account, wa_id, state)
+        if new_state is None:
+            server.set_chat_booking_state(chat_id, None)
+            _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
+        else:
+            server.set_chat_booking_state(chat_id, new_state)
         return True
 
     step = state.get("step")
-    phone = _phone(wa_id)
+    urgent = bool(state.get("urgent"))
 
     if step == "choosing_consultant":
         consultant_id = None
@@ -299,24 +415,26 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             consultant_id = int(selected_id.split("_")[1])
         else:
             idx = _parse_index(text, state.get("options"))
+            if idx is None:
+                names = [(server.get_consultant(cid) or {}).get("name", "") for cid in state.get("options", [])]
+                idx = _parse_index(text, state.get("options"), names=names)
             if idx is not None:
                 consultant_id = state["options"][idx]
         if consultant_id is None:
-            server.set_chat_booking_state(chat_id, None)
-            _send_text(account, phone, "Não entendi. Digite \"agendar\" pra começar de novo.")
+            _retry_or_give_up(account, chat_id, wa_id, phone, state)
             return True
         consultant = server.get_consultant(consultant_id)
         if not consultant or consultant["account_id"] != account["id"] or consultant["status"] != "active":
             server.set_chat_booking_state(chat_id, None)
             _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
-        slots = compute_free_slots(consultant)
+        slots = compute_free_slots(consultant, limit=2 if urgent else 10)
         if not slots:
             server.set_chat_booking_state(chat_id, None)
             _send_text(account, phone, f"{consultant['name']} não tem horários livres nos próximos dias. Tente de novo mais tarde.")
             return True
         option_isos = _send_slot_list(account, wa_id, consultant, slots)
-        server.set_chat_booking_state(chat_id, {"step": "choosing_slot", "consultant_id": consultant_id, "options": option_isos})
+        server.set_chat_booking_state(chat_id, {"step": "choosing_slot", "consultant_id": consultant_id, "options": option_isos, "urgent": urgent})
         return True
 
     if step == "choosing_slot":
@@ -328,8 +446,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             if idx is not None:
                 iso = state["options"][idx]
         if iso is None:
-            server.set_chat_booking_state(chat_id, None)
-            _send_text(account, phone, "Não entendi. Digite \"agendar\" pra começar de novo.")
+            _retry_or_give_up(account, chat_id, wa_id, phone, state)
             return True
         consultant = server.get_consultant(state["consultant_id"])
         if not consultant:
@@ -338,7 +455,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             return True
         scheduled_at = datetime.datetime.fromisoformat(iso)
         _send_confirm_buttons(account, wa_id, consultant, scheduled_at)
-        server.set_chat_booking_state(chat_id, {"step": "confirming", "consultant_id": consultant["id"], "scheduled_at": iso})
+        server.set_chat_booking_state(chat_id, {"step": "confirming", "consultant_id": consultant["id"], "scheduled_at": iso, "urgent": urgent})
         return True
 
     if step == "confirming":
@@ -366,6 +483,63 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
     return False
 
 
+def _retry_or_give_up(account, chat_id, wa_id, phone, state):
+    """Chamado quando a resposta do passo atual (choosing_consultant ou
+    choosing_slot) não foi reconhecida. Em vez de cancelar o fluxo de cara
+    (comportamento antigo), reenvia a lista até 3 tentativas — só desiste
+    depois disso, sem avisar ninguém da clínica (decisão do usuário)."""
+    import server
+
+    attempts = state.get("attempts", 0) + 1
+    if attempts >= 3:
+        server.set_chat_booking_state(chat_id, None)
+        _send_text(account, phone, "Vamos com calma — digite \"agendar\" quando puder tentar de novo.")
+        return
+    new_state = _resend_current_step(account, wa_id, state)
+    if new_state is None:
+        server.set_chat_booking_state(chat_id, None)
+        _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
+        return
+    new_state["attempts"] = attempts
+    server.set_chat_booking_state(chat_id, new_state)
+
+
+def _resend_current_step(account, wa_id, state):
+    """Reenvia a lista/pergunta do passo atual sem perder o progresso —
+    usado tanto pelo comando "ajuda" quanto pelo retry de entrada inválida.
+    Devolve o novo booking_state (pode trazer options recalculadas, ex:
+    horários que já não estão mais livres) ou None se o consultor sumiu."""
+    import server
+
+    step = state.get("step")
+    urgent = bool(state.get("urgent"))
+    if step == "choosing_consultant":
+        consultants = []
+        for cid in state.get("options", []):
+            c = server.get_consultant(cid)
+            if c:
+                consultants.append(c)
+        if not consultants:
+            return None
+        option_ids = _send_consultant_list(account, wa_id, consultants, urgent=urgent, reminder=True)
+        return {"step": "choosing_consultant", "options": option_ids, "urgent": urgent}
+    if step == "choosing_slot":
+        consultant = server.get_consultant(state.get("consultant_id"))
+        if not consultant:
+            return None
+        slots = compute_free_slots(consultant, limit=2 if urgent else 10)
+        option_isos = _send_slot_list(account, wa_id, consultant, slots, reminder=True)
+        return {"step": "choosing_slot", "consultant_id": consultant["id"], "options": option_isos, "urgent": urgent}
+    if step == "confirming":
+        consultant = server.get_consultant(state.get("consultant_id"))
+        if not consultant:
+            return None
+        scheduled_at = datetime.datetime.fromisoformat(state["scheduled_at"])
+        _send_confirm_buttons(account, wa_id, consultant, scheduled_at)
+        return state
+    return None
+
+
 def _send_text(account, phone, text):
     try:
         evolution.send_text(account["wa_session_name"], phone, text)
@@ -373,7 +547,7 @@ def _send_text(account, phone, text):
         pass
 
 
-def _send_consultant_list(account, wa_id, consultants):
+def _send_consultant_list(account, wa_id, consultants, urgent=False, reminder=False):
     """Texto puro, não lista interativa (send_list) — a Evolution API/Baileys
     desta versão quebra ao montar o listMessage ('TypeError: this.isZero is
     not a function', erro de baixo nível na serialização do protobuf, dentro
@@ -382,24 +556,53 @@ def _send_consultant_list(account, wa_id, consultants):
     send_text): só o texto numerado, que já era o fallback pra quem não
     conseguia tocar na lista, agora é o único caminho. Devolve os IDs na
     mesma ordem mostrada, pra handle_incoming resolver a resposta numérica
-    guardada em booking_state["options"]."""
+    guardada em booking_state["options"].
+
+    Mostra a especialidade (campo `context` do consultor) junto do nome,
+    quando cadastrada — ajuda a escolher certo sem precisar adivinhar,
+    principalmente quem está com pressa."""
     consultants = consultants[:10]
-    numbered = "\n".join(f"{i+1}. {c['name']}" for i, c in enumerate(consultants))
+    lines = [
+        f"{i+1}. {c['name']}" + (f" — {c['context']}" if c.get("context") else "")
+        for i, c in enumerate(consultants)
+    ]
+    numbered = "\n".join(lines)
+    if reminder:
+        intro = "Não consegui entender 🙏 Aqui está a lista de novo, é só digitar o número:"
+    elif urgent:
+        intro = "Vamos te encaixar o quanto antes. Escolha um profissional, digite o número:"
+    else:
+        intro = "Escolha um consultor, digite o número:"
+    parts = []
+    if urgent:
+        parts.append(
+            "⚠️ Se isso for uma emergência grave (dor forte no peito, falta de ar, "
+            "sangramento intenso, desmaio), ligue 192 (SAMU) ou vá direto ao "
+            "pronto-socorro mais próximo."
+        )
+    parts.append(intro)
+    parts.append(numbered)
     try:
-        evolution.send_text(account["wa_session_name"], _phone(wa_id),
-                             f"Escolha um consultor, digite o número:\n\n{numbered}")
+        evolution.send_text(account["wa_session_name"], _phone(wa_id), "\n\n".join(parts))
     except EvolutionError:
         pass
     return [c["id"] for c in consultants]
 
 
-def _send_slot_list(account, wa_id, consultant, slots):
+def _send_slot_list(account, wa_id, consultant, slots, reminder=False):
     """Mesma lógica de _send_consultant_list — devolve os horários (ISO) na
-    ordem mostrada."""
-    numbered = "\n".join(f"{i+1}. {s.strftime('%a %d/%m %H:%M')}" for i, s in enumerate(slots))
+    ordem mostrada. Dia da semana sempre em português (WEEKDAY_NAMES_PT), pra
+    não depender do locale configurado no processo do servidor (%a do
+    strftime sairia em inglês se o locale não for pt_BR)."""
+    lines = [
+        f"{i+1}. {WEEKDAY_NAMES_PT[s.weekday()]} {s.strftime('%d/%m %H:%M')}"
+        for i, s in enumerate(slots)
+    ]
+    numbered = "\n".join(lines)
+    intro = ("Não consegui entender 🙏 Aqui está a lista de novo, é só digitar o número:" if reminder
+             else f"Escolha um horário com {consultant['name']}, digite o número:")
     try:
-        evolution.send_text(account["wa_session_name"], _phone(wa_id),
-                             f"Escolha um horário com {consultant['name']}, digite o número:\n\n{numbered}")
+        evolution.send_text(account["wa_session_name"], _phone(wa_id), f"{intro}\n\n{numbered}")
     except EvolutionError:
         pass
     return [s.isoformat() for s in slots]
