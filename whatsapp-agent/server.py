@@ -1199,16 +1199,16 @@ def api_mark_chat_read(chat_id):
 
 
 def _send_consultant_invite_message(consultant):
-    evolution.send_buttons(
+    """Texto puro, não botão (send_buttons) — o WhatsApp Web/Desktop não sabe
+    exibir o formato de botão nativo que a Evolution API usa (viewOnceMessage/
+    nativeFlowMessage) e mostra 'Não foi possível carregar a mensagem' pra
+    quem recebe por lá. O webhook já aceita SIM/NÃO digitado (era o fallback
+    de texto do botão, agora é o único caminho)."""
+    evolution.send_text(
         consultant["wa_session_name"],
         _phone_from_wa_id(consultant["wa_id"]),
-        "Convite para ser consultor",
         f"Você foi cadastrado como consultor ({consultant['name']}) pra receber agendamentos por aqui. "
-        f"Confirma o cadastro? Toque num botão acima ou responda SIM ou NÃO.",
-        [
-            {"id": f"consultant_confirm_{consultant['id']}", "text": "Sim, confirmar"},
-            {"id": f"consultant_decline_{consultant['id']}", "text": "Não"},
-        ],
+        f"Confirma o cadastro? Responda SIM ou NÃO.",
     )
 
 
