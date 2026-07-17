@@ -154,7 +154,16 @@ function renderShell(me) {
         <div class="card">
             <h2>Minha disponibilidade</h2>
             <div id="availabilityRows"></div>
-            <button class="btn btn-block" onclick="saveAvailability()">Salvar disponibilidade</button>
+            <h3 style="font-size:0.9rem; color:#f8fafc; margin:1.2rem 0 0.5rem;">Datas avulsas <span style="font-weight:normal; color:#64748b; font-size:0.78rem;">(libera um horário fora do padrão semanal, numa data específica)</span></h3>
+            <div id="extraDatesRows"></div>
+            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.5rem;">
+                <input type="date" class="form-input" id="newExtraDate" style="flex:1; min-width:140px;">
+                <input type="time" class="form-input" id="newExtraStart" value="09:00" style="width:auto;">
+                <span style="color:#64748b;">–</span>
+                <input type="time" class="form-input" id="newExtraEnd" value="18:00" style="width:auto;">
+                <button class="btn btn-sm" onclick="addExtraDate()">+ Adicionar</button>
+            </div>
+            <button class="btn btn-block" style="margin-top:1.2rem;" onclick="saveAvailability()">Salvar disponibilidade</button>
         </div>
         <div class="card">
             <details>
@@ -172,6 +181,9 @@ function renderShell(me) {
     renderAvailabilityRows(me.weekly_availability || {});
 }
 
+const WEEKDAY_KEY_SET = new Set(WEEKDAYS.map(([k]) => k));
+let extraDates = [];
+
 function renderAvailabilityRows(availability) {
     document.getElementById('availabilityRows').innerHTML = WEEKDAYS.map(([key, label]) => {
         const range = (availability[key] || [])[0];
@@ -183,6 +195,47 @@ function renderAvailabilityRows(availability) {
             <input type="time" class="form-input" id="avail_${key}_end" value="${range ? range[1] : '18:00'}">
         </div>`;
     }).join('');
+
+    extraDates = [];
+    Object.keys(availability).forEach(key => {
+        if (WEEKDAY_KEY_SET.has(key)) return;
+        (availability[key] || []).forEach(([start, end]) => extraDates.push({ date: key, start, end }));
+    });
+    extraDates.sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+    renderExtraDatesRows();
+}
+
+function fmtExtraDate(iso) {
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+}
+
+function renderExtraDatesRows() {
+    document.getElementById('extraDatesRows').innerHTML = !extraDates.length
+        ? '<p class="empty" style="padding:0.2rem 0;">Nenhuma data avulsa cadastrada.</p>'
+        : extraDates.map((d, i) => `
+            <div class="day-row">
+                <span style="flex:1; font-size:0.85rem; color:#cbd5e1;">${fmtExtraDate(d.date)} · ${d.start}–${d.end}</span>
+                <button class="btn btn-sm btn-danger" onclick="removeExtraDate(${i})">Remover</button>
+            </div>
+        `).join('');
+}
+
+function addExtraDate() {
+    const date = document.getElementById('newExtraDate').value;
+    const start = document.getElementById('newExtraStart').value;
+    const end = document.getElementById('newExtraEnd').value;
+    if (!date) return alert('Escolha uma data.');
+    if (start >= end) return alert('Horário de início precisa ser antes do fim.');
+    extraDates.push({ date, start, end });
+    extraDates.sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+    document.getElementById('newExtraDate').value = '';
+    renderExtraDatesRows();
+}
+
+function removeExtraDate(index) {
+    extraDates.splice(index, 1);
+    renderExtraDatesRows();
 }
 
 async function saveAvailability() {
@@ -191,6 +244,10 @@ async function saveAvailability() {
         if (document.getElementById(`avail_${key}_on`).checked) {
             weekly_availability[key] = [[document.getElementById(`avail_${key}_start`).value, document.getElementById(`avail_${key}_end`).value]];
         }
+    });
+    extraDates.forEach(d => {
+        if (!weekly_availability[d.date]) weekly_availability[d.date] = [];
+        weekly_availability[d.date].push([d.start, d.end]);
     });
     try {
         await api('/availability', { method: 'PATCH', body: JSON.stringify({ weekly_availability }) });

@@ -295,6 +295,17 @@
             <label>Disponibilidade semanal <span style="font-weight:normal; color:#64748b;">(horário local, um período por dia)</span></label>
             <div id="consultantAvailabilityRows"></div>
         </div>
+        <div class="form-group">
+            <label>Datas avulsas <span style="font-weight:normal; color:#64748b;">(libera um horário fora do padrão semanal, numa data específica)</span></label>
+            <div id="consultantExtraDatesRows"></div>
+            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.5rem;">
+                <input type="date" class="form-input" id="consultantNewExtraDate" style="flex:1; min-width:140px;">
+                <input type="time" class="form-input" id="consultantNewExtraStart" value="09:00" style="width:auto;">
+                <span style="color:#64748b;">–</span>
+                <input type="time" class="form-input" id="consultantNewExtraEnd" value="18:00" style="width:auto;">
+                <button class="btn btn-sm" onclick="addConsultantExtraDate()" type="button">+ Adicionar</button>
+            </div>
+        </div>
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closeConsultantModal()">Cancelar</button>
             <button class="btn" id="consultantSubmitBtn" onclick="submitConsultant()">Convidar por WhatsApp</button>
@@ -713,6 +724,41 @@ async function submitStartChat() {
 let currentAgendaAccountId = null;
 let allConsultants = [];
 const WEEKDAYS = [['mon','Seg'], ['tue','Ter'], ['wed','Qua'], ['thu','Qui'], ['fri','Sex'], ['sat','Sáb'], ['sun','Dom']];
+const WEEKDAY_KEY_SET = new Set(WEEKDAYS.map(([k]) => k));
+let consultantExtraDates = [];
+
+function fmtExtraDate(iso) {
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+}
+
+function renderConsultantExtraDates() {
+    document.getElementById('consultantExtraDatesRows').innerHTML = !consultantExtraDates.length
+        ? '<p style="color:#64748b; font-size:0.82rem; padding:0.2rem 0;">Nenhuma data avulsa cadastrada.</p>'
+        : consultantExtraDates.map((d, i) => `
+            <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.3rem;">
+                <span style="flex:1; font-size:0.85rem; color:#cbd5e1;">${fmtExtraDate(d.date)} · ${d.start}–${d.end}</span>
+                <button class="btn btn-sm btn-danger" onclick="removeConsultantExtraDate(${i})" type="button">Remover</button>
+            </div>
+        `).join('');
+}
+
+function addConsultantExtraDate() {
+    const date = document.getElementById('consultantNewExtraDate').value;
+    const start = document.getElementById('consultantNewExtraStart').value;
+    const end = document.getElementById('consultantNewExtraEnd').value;
+    if (!date) return alert('Escolha uma data.');
+    if (start >= end) return alert('Horário de início precisa ser antes do fim.');
+    consultantExtraDates.push({ date, start, end });
+    consultantExtraDates.sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+    document.getElementById('consultantNewExtraDate').value = '';
+    renderConsultantExtraDates();
+}
+
+function removeConsultantExtraDate(index) {
+    consultantExtraDates.splice(index, 1);
+    renderConsultantExtraDates();
+}
 
 function consultantStatusLabel(status) {
     return {
@@ -880,6 +926,15 @@ function openConsultantModal(consultant) {
         </div>
     `;
     }).join('');
+
+    consultantExtraDates = [];
+    Object.keys(availability).forEach(key => {
+        if (WEEKDAY_KEY_SET.has(key)) return;
+        (availability[key] || []).forEach(([start, end]) => consultantExtraDates.push({ date: key, start, end }));
+    });
+    consultantExtraDates.sort((a, b) => a.date.localeCompare(b.date) || a.start.localeCompare(b.start));
+    renderConsultantExtraDates();
+
     document.getElementById('consultantModal').classList.add('active');
 }
 
@@ -916,6 +971,10 @@ async function submitConsultant() {
             const end = document.getElementById(`avail_${key}_end`).value;
             weekly_availability[key] = [[start, end]];
         }
+    });
+    consultantExtraDates.forEach(d => {
+        if (!weekly_availability[d.date]) weekly_availability[d.date] = [];
+        weekly_availability[d.date].push([d.start, d.end]);
     });
 
     if (editId) {

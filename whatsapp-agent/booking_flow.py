@@ -68,7 +68,13 @@ def _parse_index(text, options):
 def compute_free_slots(consultant, days_ahead=14, limit=10):
     """Próximos horários livres do consultor, cruzando weekly_availability
     (JSONB, ex: {"mon": [["09:00","12:00"]]}) com os agendamentos já
-    confirmados. Retorna datetimes com timezone (America/Sao_Paulo)."""
+    confirmados. Retorna datetimes com timezone (America/Sao_Paulo).
+
+    weekly_availability também aceita chaves de data ISO ("2026-08-15") ao
+    lado das chaves de dia da semana — datas avulsas, cadastradas pelo
+    consultor pra liberar um horário fora do padrão semanal normal. Os dois
+    tipos de chave se SOMAM (uma data avulsa nunca substitui o padrão da
+    semana, só adiciona mais intervalo naquele dia)."""
     availability = consultant.get("weekly_availability") or {}
     if not availability:
         return []
@@ -91,7 +97,8 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
     day = now.date()
     for _ in range(days_ahead):
         key = WEEKDAY_KEYS[day.weekday()]
-        for start_str, end_str in availability.get(key, []):
+        ranges = list(availability.get(key, [])) + list(availability.get(day.isoformat(), []))
+        for start_str, end_str in ranges:
             start_h, start_m = map(int, start_str.split(":"))
             end_h, end_m = map(int, end_str.split(":"))
             slot_start = datetime.datetime.combine(day, datetime.time(start_h, start_m), tzinfo=LOCAL_TZ)
