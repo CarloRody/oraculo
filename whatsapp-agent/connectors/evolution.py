@@ -127,23 +127,25 @@ def send_list(instance_name, number, title, description, button_text, sections, 
     """sections: [{"title": "...", "rows": [{"id": "...", "title": "...", "description": "..."}]}].
     WhatsApp limita a 10 linhas por lista, no total — quem chama precisa
     respeitar esse limite. Shape confirmado em sendMessage.dto.ts (SendListDto/
-    Section/Row) direto no servidor. `footerText` só entra no payload quando
-    tem valor — mesmo motivo de send_buttons acima."""
+    Section/Row) direto no servidor. Ao contrário de send_buttons, aqui
+    `footerText` é OBRIGATÓRIO pro validador da Evolution API ('instance
+    requires property "footerText"') — sempre mandamos um valor. Cada linha
+    também precisa de description não-vazia ('The "description" cannot be
+    empty') — quem chama deve garantir isso (nunca "")."""
     payload = {
         "number": number,
         "title": title,
         "description": description,
         "buttonText": button_text,
+        "footerText": footer or "Oráculo",
         "sections": [
             {
                 "title": s["title"],
-                "rows": [{"rowId": r["id"], "title": r["title"], "description": r.get("description", "")} for r in s["rows"]],
+                "rows": [{"rowId": r["id"], "title": r["title"], "description": r.get("description") or "Toque para escolher"} for r in s["rows"]],
             }
             for s in sections
         ],
     }
-    if footer:
-        payload["footerText"] = footer
     return _request("POST", f"/message/sendList/{instance_name}", json=payload)
 
 
