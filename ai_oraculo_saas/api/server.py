@@ -986,10 +986,13 @@ def _trim_history_to_budget(history, max_tokens):
     return kept
 
 
-def _fetch_session_history(user_id, area_id):
-    """Mensagens da sessão de hoje (mesmo recorte usado por log_chat_message
-    — user_id + area_id + dia) em ordem cronológica, pra servir de contexto
-    de conversa em /api/chat e /api/agent-research."""
+def _fetch_session_history(user_id):
+    """Mensagens de hoje, de qualquer área, em ordem cronológica — área é só
+    metadado de cobrança por pergunta (log_chat_message salva cada sessão sob
+    a área com mais chunks relevantes daquela pergunta específica, que pode
+    mudar a cada pergunta), então o histórico de conversa não pode depender
+    de duas perguntas seguidas caírem na mesma área. Serve de contexto pra
+    /api/chat e /api/agent-research."""
     if not user_id:
         return []
     conn = get_db_connection()
@@ -1000,9 +1003,9 @@ def _fetch_session_history(user_id, area_id):
         cur.execute(
             """SELECT m.role, m.content FROM messages m
                JOIN sessions s ON s.id = m.session_id
-               WHERE s.user_id = %s AND s.area_id = %s AND s.created_at::date = CURRENT_DATE
+               WHERE s.user_id = %s AND s.created_at::date = CURRENT_DATE
                ORDER BY m.timestamp ASC""",
-            (user_id, area_id)
+            (user_id,)
         )
         rows = cur.fetchall()
         conn.close()
@@ -1222,7 +1225,7 @@ Pergunta: {message}"""
             history = _trim_history_to_budget(data.get('history') or [], context_budget)
         else:
             context_budget = llm_cfg.get('pesquisa_context_tokens')
-            raw_history = _fetch_session_history(user_id, authorized_area_ids[0]) if user_id and authorized_area_ids else []
+            raw_history = _fetch_session_history(user_id) if user_id else []
             history = _trim_history_to_budget(raw_history, context_budget)
 
         # Chama LLM — base_url/model/parâmetros vêm do modelo do plano do
@@ -1415,7 +1418,7 @@ def agent_research():
         # /api/chat, aplicado aos Agentes 1 e 2 (que interpretam a pergunta
         # bruta); o Agente 3 comparador não precisa, já trabalha em cima das
         # duas respostas geradas nesta mesma chamada.
-        raw_history = _fetch_session_history(user_id, authorized_area_ids[0]) if user_id and authorized_area_ids else []
+        raw_history = _fetch_session_history(user_id) if user_id else []
         history = _trim_history_to_budget(raw_history, llm_cfg.get('pesquisa_context_tokens'))
 
         # ---- Agente 1: Documentação Oficial (RAG) ----
