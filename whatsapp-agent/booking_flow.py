@@ -367,22 +367,20 @@ def _send_text(account, phone, text):
 
 
 def _send_consultant_list(account, wa_id, consultants):
-    """Manda a lista interativa (pode não renderizar em todo aparelho — ver
-    plano de fallback) e também a enumeração em texto puro, pra quem não
-    consegue tocar na lista poder simplesmente digitar o número. Devolve os
-    IDs na mesma ordem mostrada, pra handle_incoming resolver a resposta
-    numérica guardada em booking_state["options"]."""
+    """Texto puro, não lista interativa (send_list) — a Evolution API/Baileys
+    desta versão quebra ao montar o listMessage ('TypeError: this.isZero is
+    not a function', erro de baixo nível na serialização do protobuf, dentro
+    do próprio Baileys) mesmo com um payload válido — a mensagem nem chega a
+    sair. Mesma decisão já tomada pro convite de consultor (send_buttons →
+    send_text): só o texto numerado, que já era o fallback pra quem não
+    conseguia tocar na lista, agora é o único caminho. Devolve os IDs na
+    mesma ordem mostrada, pra handle_incoming resolver a resposta numérica
+    guardada em booking_state["options"]."""
     consultants = consultants[:10]
     numbered = "\n".join(f"{i+1}. {c['name']}" for i, c in enumerate(consultants))
-    sections = [{
-        "title": "Consultores disponíveis",
-        "rows": [{"id": f"consultant_{c['id']}", "title": c["name"], "description": (c.get("context") or "")[:70]}
-                  for c in consultants],
-    }]
     try:
-        evolution.send_list(account["wa_session_name"], _phone(wa_id), "Agendamento",
-                             f"Escolha um consultor (toque na lista ou digite o número):\n\n{numbered}",
-                             "Ver consultores", sections)
+        evolution.send_text(account["wa_session_name"], _phone(wa_id),
+                             f"Escolha um consultor, digite o número:\n\n{numbered}")
     except EvolutionError:
         pass
     return [c["id"] for c in consultants]
@@ -392,15 +390,9 @@ def _send_slot_list(account, wa_id, consultant, slots):
     """Mesma lógica de _send_consultant_list — devolve os horários (ISO) na
     ordem mostrada."""
     numbered = "\n".join(f"{i+1}. {s.strftime('%a %d/%m %H:%M')}" for i, s in enumerate(slots))
-    sections = [{
-        "title": "Horários disponíveis",
-        "rows": [{"id": f"slot_{consultant['id']}_{s.isoformat()}", "title": s.strftime("%a %d/%m %H:%M"), "description": ""}
-                  for s in slots],
-    }]
     try:
-        evolution.send_list(account["wa_session_name"], _phone(wa_id), "Agendamento",
-                             f"Escolha um horário com {consultant['name']} (toque na lista ou digite o número):\n\n{numbered}",
-                             "Ver horários", sections)
+        evolution.send_text(account["wa_session_name"], _phone(wa_id),
+                             f"Escolha um horário com {consultant['name']}, digite o número:\n\n{numbered}")
     except EvolutionError:
         pass
     return [s.isoformat() for s in slots]
