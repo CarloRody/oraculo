@@ -125,6 +125,12 @@
         <!-- Manutenção -->
         <h2 class="section-title">Manutenção</h2>
         <div class="cards-grid">
+            <a href="#" id="areaClienteLink" class="card card-external">
+                <span class="card-icon">&#128100;</span>
+                <h3>Área do Cliente</h3>
+                <p>Contas de WhatsApp, conversas, agenda de consultores e extrato de consumo do cliente conectado.</p>
+            </a>
+
             <a href="#" id="monitorLink" class="card card-external">
                 <span class="card-icon">&#128752;</span>
                 <h3>Monitor Agent</h3>
@@ -236,6 +242,7 @@ function setupMaintenanceLinks() {
     // origem e limpa da URL. Sem chave salva = admin, link continua limpo.
     const key = getStoredApiKey();
     const suffix = key ? `?k=${encodeURIComponent(key)}` : '';
+    document.getElementById('areaClienteLink').href = `${window.location.protocol}//${HOST}:5005/area-cliente${suffix}`;
     document.getElementById('monitorLink').href = `${window.location.protocol}//${HOST}:5003/${suffix}`;
     document.getElementById('backupLink').href = `${window.location.protocol}//${HOST}:5004/${suffix}`;
 }

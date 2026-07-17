@@ -63,6 +63,24 @@ def _phone_from_wa_id(wa_id):
     return (wa_id or "").split("@")[0]
 
 
+def resolve_client_from_request():
+    """Resolve users.id a partir do header X-Oraculo-Key — mesma chave usada
+    em /api/chat no ai_oraculo_saas, validada aqui direto contra a tabela
+    users (mesmo Postgres, ai_tutor_db). Nunca aceitar user_id vindo do
+    corpo/query de uma requisição do cliente."""
+    api_key = request.headers.get("X-Oraculo-Key")
+    if not api_key:
+        return None
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id FROM users WHERE api_key = %s AND status = 'active'", (api_key,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
 def log_event(account_id, event, level="info", detail=None):
     conn = _conn()
     try:
@@ -926,6 +944,11 @@ def consultant_portal_page():
     return send_from_directory(PUBLIC_DIR, "consultant-portal.html")
 
 
+@app.route("/area-cliente")
+def client_portal_page():
+    return send_from_directory(PUBLIC_DIR, "area-cliente.html")
+
+
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "service": "whatsapp-agent"})
@@ -1337,6 +1360,214 @@ def api_list_appointments(account_id):
 def api_cancel_appointment(appointment_id):
     cancel_appointment(appointment_id)
     return jsonify({"ok": True})
+
+
+# ---------------------------------------------------------------------------
+# Área do cliente — autenticada por X-Oraculo-Key (mesma chave do
+# ai_oraculo_saas, resolvida por resolve_client_from_request()). Cada rota
+# confere que o account_id/chat_id/consultant_id/appointment_id da URL
+# pertence ao user_id resolvido ANTES de delegar pra mesma view admin que já
+# existe — nunca aceita esses ids do cliente sem checar a posse primeiro.
+# ---------------------------------------------------------------------------
+
+def _require_client():
+    user_id = resolve_client_from_request()
+    if not user_id:
+        return None, (jsonify({"ok": False, "message": "Chave de acesso inválida"}), 401)
+    return user_id, None
+
+
+def _not_found(msg="Não encontrado"):
+    return jsonify({"ok": False, "message": msg}), 404
+
+
+def _account_owner(account_id):
+    account = get_account(account_id)
+    return account.get("user_id") if account else None
+
+
+def _chat_owner(chat_id):
+    chat = get_chat(chat_id)
+    return _account_owner(chat["account_id"]) if chat else None
+
+
+def _consultant_owner(consultant_id):
+    consultant = get_consultant(consultant_id)
+    return _account_owner(consultant["account_id"]) if consultant else None
+
+
+def _appointment_owner(appointment_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT c.account_id FROM whatsapp_appointments a
+               JOIN whatsapp_consultants c ON c.id = a.consultant_id
+               WHERE a.id = %s""",
+            (appointment_id,),
+        )
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+# ---- Contas: só leitura + conectar (criar conexão continua sendo só admin) ----
+
+@app.route("/api/client-portal/accounts", methods=["GET"])
+def cp_list_accounts():
+    user_id, err = _require_client()
+    if err: return err
+    return jsonify({"accounts": get_accounts(user_id=user_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/connect", methods=["POST"])
+def cp_connect_account(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_connect_account(account_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/status", methods=["GET"])
+def cp_account_status(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_account_status(account_id)
+
+
+# ---- Conversas: acesso completo, escopado às próprias contas ----
+
+@app.route("/api/client-portal/chats", methods=["GET"])
+def cp_list_chats():
+    user_id, err = _require_client()
+    if err: return err
+    account_id = request.args.get("account_id", type=int)
+    if not account_id or _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_list_chats(account_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/chats/start", methods=["POST"])
+def cp_start_chat(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_start_chat(account_id)
+
+
+@app.route("/api/client-portal/chats/<int:chat_id>", methods=["PATCH"])
+def cp_update_chat(chat_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _chat_owner(chat_id) != user_id:
+        return _not_found("Conversa não encontrada")
+    return api_update_chat(chat_id)
+
+
+@app.route("/api/client-portal/chats/<int:chat_id>/messages", methods=["GET"])
+def cp_list_messages(chat_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _chat_owner(chat_id) != user_id:
+        return _not_found("Conversa não encontrada")
+    return api_list_messages(chat_id)
+
+
+@app.route("/api/client-portal/chats/<int:chat_id>/messages", methods=["POST"])
+def cp_send_message(chat_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _chat_owner(chat_id) != user_id:
+        return _not_found("Conversa não encontrada")
+    return api_send_message(chat_id)
+
+
+@app.route("/api/client-portal/chats/<int:chat_id>/read", methods=["POST"])
+def cp_mark_chat_read(chat_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _chat_owner(chat_id) != user_id:
+        return _not_found("Conversa não encontrada")
+    return api_mark_chat_read(chat_id)
+
+
+# ---- Agenda: controle total, escopado às próprias contas ----
+
+@app.route("/api/client-portal/accounts/<int:account_id>/consultants", methods=["GET"])
+def cp_list_consultants(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_list_consultants(account_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/consultants", methods=["POST"])
+def cp_create_consultant(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_create_consultant(account_id)
+
+
+@app.route("/api/client-portal/consultants/<int:consultant_id>", methods=["PATCH"])
+def cp_update_consultant(consultant_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Consultor não encontrado")
+    return api_update_consultant(consultant_id)
+
+
+@app.route("/api/client-portal/consultants/<int:consultant_id>", methods=["DELETE"])
+def cp_delete_consultant(consultant_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Consultor não encontrado")
+    return api_delete_consultant(consultant_id)
+
+
+@app.route("/api/client-portal/consultants/<int:consultant_id>/resend-portal-link", methods=["POST"])
+def cp_resend_portal_link(consultant_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Consultor não encontrado")
+    return api_resend_portal_link(consultant_id)
+
+
+@app.route("/api/client-portal/consultants/<int:consultant_id>/resend-invite", methods=["POST"])
+def cp_resend_consultant_invite(consultant_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Consultor não encontrado")
+    return api_resend_consultant_invite(consultant_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/appointments", methods=["GET"])
+def cp_list_appointments(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_list_appointments(account_id)
+
+
+@app.route("/api/client-portal/appointments/<int:appointment_id>/cancel", methods=["POST"])
+def cp_cancel_appointment(appointment_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _appointment_owner(appointment_id) != user_id:
+        return _not_found("Agendamento não encontrado")
+    return api_cancel_appointment(appointment_id)
 
 
 # ---------------------------------------------------------------------------

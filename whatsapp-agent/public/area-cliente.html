@@ -1,0 +1,927 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Área do Cliente | Oráculo</title>
+<style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        background: #0a1628;
+        color: #e0e0e0;
+        min-height: 100vh;
+        padding: 2rem;
+    }
+    .top-bar { display: flex; align-items: center; justify-content: space-between; margin-bottom: 0.25rem; }
+    h1 {
+        background: linear-gradient(135deg, #60a5fa, #a78bfa);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-size: 1.8rem;
+    }
+    .subtitle { color: #64748b; margin-bottom: 1.5rem; font-size: 0.9rem; }
+    .btn {
+        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
+        border: none;
+        border-radius: 6px;
+        color: #fff;
+        padding: 0.6rem 1.2rem;
+        font-size: 0.9rem;
+        cursor: pointer;
+    }
+    .btn:hover { opacity: 0.9; }
+    .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+    .btn-danger { background: #ef4444; }
+    .btn-secondary { background: #334155; }
+    .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid #334155; margin-bottom: 1.5rem; flex-wrap: wrap; }
+    .tab-btn {
+        background: none; border: none; color: #94a3b8; font-size: 0.95rem;
+        padding: 0.6rem 1.2rem; cursor: pointer; border-bottom: 2px solid transparent;
+    }
+    .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
+    .card {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 1.5rem;
+        margin-bottom: 1.5rem;
+        max-width: 700px;
+    }
+    .card h2 { font-size: 1.1rem; color: #f8fafc; margin-bottom: 1rem; }
+    .form-row { display: flex; gap: 0.75rem; }
+    .form-group { margin-bottom: 0.8rem; }
+    .form-group label { display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.3rem; }
+    .form-input {
+        flex: 1;
+        background: #0f172a;
+        border: 1px solid #334155;
+        border-radius: 6px;
+        padding: 0.6rem 0.8rem;
+        color: #e0e0e0;
+        font-size: 0.9rem;
+        width: 100%;
+    }
+    select.form-input { flex: none; }
+    .account-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        padding: 0.9rem 0;
+        border-bottom: 1px solid #1a2744;
+    }
+    .account-row:last-child { border-bottom: none; }
+    .account-info { display: flex; align-items: center; gap: 0.6rem; }
+    .status-badge {
+        display: inline-block;
+        padding: 0.2rem 0.6rem;
+        border-radius: 10px;
+        font-size: 0.75rem;
+        font-weight: 600;
+    }
+    .status-connected { background: #1f4a2d; color: #4ade80; }
+    .status-qr_pending, .status-connecting { background: #4a3a1f; color: #fbbf24; }
+    .status-disconnected { background: #1a2744; color: #94a3b8; }
+    .status-error { background: #4a1f27; color: #f87171; }
+    .account-actions { display: flex; gap: 0.5rem; }
+    .empty { color: #64748b; font-size: 0.9rem; padding: 1rem 0; }
+    .error-box { background: #2a1418; border: 1px solid #4a1f27; border-radius: 8px; padding: 1rem; color: #f87171; font-size: 0.9rem; }
+    .modal-overlay {
+        display: none;
+        position: fixed; inset: 0;
+        background: rgba(0,0,0,0.6);
+        align-items: center; justify-content: center;
+        z-index: 100;
+    }
+    .modal-overlay.active { display: flex; }
+    .modal {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        padding: 2rem;
+        text-align: center;
+        max-width: 360px;
+    }
+    .modal h3 { color: #f8fafc; margin-bottom: 1rem; }
+    .modal img { width: 260px; height: 260px; border-radius: 8px; background: #fff; padding: 8px; }
+    .modal p { color: #94a3b8; font-size: 0.85rem; margin-top: 1rem; }
+    .modal .close-btn { margin-top: 1.25rem; }
+    .modal-actions { display: flex; gap: 0.6rem; justify-content: flex-end; margin-top: 1.25rem; }
+
+    /* Conversas */
+    .chat-app {
+        display: grid;
+        grid-template-columns: 280px 1fr;
+        height: 70vh;
+        max-width: 1000px;
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 12px;
+        overflow: hidden;
+    }
+    .chat-list { border-right: 1px solid #334155; overflow-y: auto; min-height: 0; }
+    .chat-list-item {
+        padding: 0.8rem 1rem; border-bottom: 1px solid #1a2744; cursor: pointer;
+    }
+    .chat-list-item:hover { background: #24324a; }
+    .chat-list-item.active { background: #24324a; border-left: 3px solid #60a5fa; }
+    .chat-list-item .name { font-weight: 600; color: #f8fafc; font-size: 0.9rem; }
+    .chat-list-item .preview {
+        color: #94a3b8; font-size: 0.8rem; margin-top: 0.2rem;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .unread-badge {
+        display: inline-block; background: #3b82f6; color: #fff; border-radius: 10px;
+        font-size: 0.7rem; padding: 0.05rem 0.45rem; margin-left: 0.4rem;
+    }
+    .chat-panel { display: flex; flex-direction: column; min-height: 0; }
+    .chat-panel-header { padding: 0.9rem 1.2rem; border-bottom: 1px solid #334155; font-weight: 600; color: #f8fafc; flex-shrink: 0; }
+    .chat-messages { flex: 1; min-height: 0; overflow-y: auto; padding: 1rem; display: flex; flex-direction: column; gap: 0.5rem; }
+    .msg-bubble {
+        max-width: 65%; padding: 0.5rem 0.8rem; border-radius: 10px; font-size: 0.88rem;
+        line-height: 1.4; word-wrap: break-word;
+    }
+    .msg-in { align-self: flex-start; background: #334155; color: #e0e0e0; }
+    .msg-out { align-self: flex-end; background: linear-gradient(135deg, #3b82f6, #8b5cf6); color: #fff; }
+    .msg-time { display: block; font-size: 0.65rem; opacity: 0.7; margin-top: 0.2rem; text-align: right; }
+    .chat-input-row { display: flex; gap: 0.5rem; padding: 0.8rem; border-top: 1px solid #334155; flex-shrink: 0; }
+    .chat-empty { display: flex; align-items: center; justify-content: center; height: 100%; color: #64748b; font-size: 0.9rem; }
+
+    /* Extrato */
+    .credits-balance { font-size: 1.6rem; font-weight: 700; margin-bottom: 0.2rem; }
+    .credits-balance.ok { color: #4ade80; }
+    .credits-balance.low { color: #f87171; }
+    table.credits-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
+    table.credits-table th, table.credits-table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #1a2744; }
+    table.credits-table th { color: #94a3b8; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+</style>
+</head>
+<body id="app">
+
+<div id="deniedBox" style="display:none; max-width:520px; margin: 3rem auto;" class="error-box"></div>
+
+<div id="portalRoot" style="display:none;">
+    <div class="top-bar">
+        <h1>🏠 Área do Cliente</h1>
+        <button class="btn btn-secondary btn-sm" onclick="logout()">Sair</button>
+    </div>
+    <p class="subtitle" id="clientSubtitle">Carregando...</p>
+
+    <div class="tabs">
+        <button class="tab-btn active" onclick="switchTab('accounts')">Contas</button>
+        <button class="tab-btn" onclick="switchTab('chats')">Conversas</button>
+        <button class="tab-btn" onclick="switchTab('agenda')">Agenda</button>
+        <button class="tab-btn" onclick="switchTab('credits')">Extrato</button>
+        <button class="tab-btn" onclick="switchTab('help')">Ajuda</button>
+    </div>
+
+    <div id="accounts-tab" class="tab-content active">
+        <div class="card">
+            <h2>Minhas conexões de WhatsApp</h2>
+            <p style="color:#64748b; font-size:0.82rem; margin-bottom:0.8rem;">Novas conexões são criadas pelo administrador do Oráculo — aqui você só conecta (escaneia o QR Code) as que já foram vinculadas à sua conta.</p>
+            <div id="accountsList"><p class="empty">Carregando...</p></div>
+        </div>
+    </div>
+
+    <div id="chats-tab" class="tab-content">
+        <div class="card" style="max-width:1000px;" id="chatAccountRow">
+            <div class="form-row" style="align-items:center;">
+                <label style="color:#94a3b8; font-size:0.85rem;">Conta:</label>
+                <select class="form-input" id="chatAccountSelect" onchange="onChatAccountChange()"></select>
+                <button class="btn btn-sm" onclick="openStartChatModal()">+ Nova conversa</button>
+            </div>
+        </div>
+
+        <div class="chat-app">
+            <div class="chat-list" id="chatList"><p class="empty" style="padding:1rem;">Selecione uma conta.</p></div>
+            <div class="chat-panel">
+                <div class="chat-panel-header" id="chatPanelHeader">Selecione uma conversa</div>
+                <div class="chat-messages" id="chatMessages"><div class="chat-empty">Nenhuma conversa aberta</div></div>
+                <div class="chat-input-row">
+                    <input type="text" class="form-input" id="chatTextInput" placeholder="Digite sua mensagem..." onkeydown="if(event.key==='Enter') sendChatMessage()">
+                    <button class="btn" onclick="sendChatMessage()">Enviar</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <div id="agenda-tab" class="tab-content">
+        <div class="card" style="max-width:1000px;">
+            <div class="form-row" style="align-items:center;">
+                <label style="color:#94a3b8; font-size:0.85rem;">Conta:</label>
+                <select class="form-input" id="agendaAccountSelect" onchange="onAgendaAccountChange()"></select>
+                <button class="btn btn-sm" onclick="openConsultantModal()">+ Consultor</button>
+            </div>
+            <p id="agendaDisabledNotice" style="display:none; color:#fbbf24; font-size:0.85rem; margin-top:0.5rem;">
+                A agenda não está ativada no seu plano — fale com o administrador do Oráculo pra ativar.
+            </p>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2>Consultores</h2>
+            <div id="consultantsList"><p class="empty">Selecione uma conta.</p></div>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2>Próximos agendamentos</h2>
+            <div id="appointmentsList"><p class="empty">Selecione uma conta.</p></div>
+        </div>
+    </div>
+
+    <div id="credits-tab" class="tab-content">
+        <div class="card">
+            <h2>Extrato de consumo</h2>
+            <div id="creditsBalanceBox"><p class="empty">Carregando...</p></div>
+            <div id="creditsExtractBox"></div>
+        </div>
+    </div>
+
+    <div id="help-tab" class="tab-content">
+        <div class="card">
+            <h2>Ajuda</h2>
+            <p style="color:#cbd5e1; font-size:0.9rem; margin-bottom:0.8rem;">Central de Ajuda do Oráculo — cadastro, login, saldo, recarga e dúvidas gerais.</p>
+            <button class="btn" onclick="openHelp()">❓ Abrir Central de Ajuda</button>
+        </div>
+        <div class="card">
+            <h2>Documentação da API</h2>
+            <p style="color:#cbd5e1; font-size:0.9rem; margin-bottom:0.8rem;">Referência dos endpoints de WhatsApp que você pode chamar diretamente com sua chave de acesso (envio de mensagens, etc).</p>
+            <button class="btn" onclick="openApiDocs()">📄 Abrir Documentação da API</button>
+        </div>
+    </div>
+</div>
+
+<!-- Modal Novo Consultor -->
+<div class="modal-overlay" id="consultantModal">
+    <div class="modal" style="max-width:520px; text-align:left;">
+        <h3 id="consultantModalTitle">+ Consultor</h3>
+        <input type="hidden" id="editConsultantId">
+        <div class="form-group">
+            <label>Telefone (com DDI, só números)</label>
+            <input type="text" class="form-input" id="consultantPhone" placeholder="5511999999999">
+        </div>
+        <div class="form-group">
+            <label>Nome</label>
+            <input type="text" class="form-input" id="consultantName" placeholder="Ex: Dra. Ana">
+        </div>
+        <div class="form-group">
+            <label>Contexto <span style="font-weight:normal; color:#64748b;">(opcional — mostrado ao cliente na lista de consultores)</span></label>
+            <textarea class="form-input" id="consultantContext" rows="2" placeholder="Ex: Consultas de planejamento financeiro"></textarea>
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1;">
+                <label>Duração do horário (min)</label>
+                <input type="number" class="form-input" id="consultantSlotDuration" value="30">
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Aviso antes (horas)</label>
+                <input type="number" class="form-input" id="consultantReminderHours" value="2">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Disponibilidade semanal <span style="font-weight:normal; color:#64748b;">(horário local, um período por dia)</span></label>
+            <div id="consultantAvailabilityRows"></div>
+        </div>
+        <div class="modal-actions">
+            <button class="btn btn-danger" onclick="closeConsultantModal()">Cancelar</button>
+            <button class="btn" id="consultantSubmitBtn" onclick="submitConsultant()">Convidar por WhatsApp</button>
+        </div>
+    </div>
+</div>
+
+<div class="modal-overlay" id="qrModal">
+    <div class="modal">
+        <h3>Escaneie com o WhatsApp</h3>
+        <img id="qrImage" src="" alt="QR Code">
+        <p id="qrStatusText">Aguardando leitura...</p>
+        <button class="btn btn-secondary close-btn" onclick="closeQrModal()">Fechar</button>
+    </div>
+</div>
+
+<div class="modal-overlay" id="startChatModal">
+    <div class="modal" style="max-width:320px;">
+        <h3>Nova conversa</h3>
+        <div style="text-align:left; margin-top:1rem;">
+            <label style="color:#94a3b8; font-size:0.8rem;">Telefone (com DDI, só números)</label>
+            <input type="text" class="form-input" id="startChatPhone" placeholder="5511999999999" style="margin:0.4rem 0 0.8rem;">
+            <label style="color:#94a3b8; font-size:0.8rem;">Mensagem</label>
+            <input type="text" class="form-input" id="startChatText" placeholder="Olá!" style="margin:0.4rem 0;">
+        </div>
+        <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+            <button class="btn btn-secondary" style="flex:1;" onclick="closeStartChatModal()">Cancelar</button>
+            <button class="btn" style="flex:1;" onclick="submitStartChat()">Enviar</button>
+        </div>
+    </div>
+</div>
+
+<script>
+const API = window.location.origin;
+const SAAS = window.location.protocol + '//' + window.location.hostname + ':5001';
+let API_KEY = '';
+let pollTimer = null;
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+}
+
+function logout() {
+    localStorage.removeItem('oraculo_api_key');
+    window.location.href = SAAS + '/index.html';
+}
+
+function openHelp() { window.open(SAAS + '/ajuda.html', '_blank'); }
+function openApiDocs() { window.open(API + '/docs', '_blank'); }
+
+// ---- Autenticação: chave é passada 1x via ?k= (mesmo padrão do Monitor
+// Agent / Backup Manager em index.html), guardada nesta origem, e some da
+// URL. Uma chave nova (usuário diferente) força reload pra não deixar
+// resíduo de outro cliente na mesma aba. ----
+function initAuth() {
+    const params = new URLSearchParams(window.location.search);
+    const urlKey = params.get('k');
+    const storedKey = localStorage.getItem('oraculo_api_key') || '';
+
+    if (urlKey && urlKey !== storedKey) {
+        localStorage.setItem('oraculo_api_key', urlKey);
+        window.history.replaceState({}, '', window.location.pathname);
+        window.location.reload();
+        return false;
+    }
+    if (urlKey) {
+        window.history.replaceState({}, '', window.location.pathname);
+    }
+
+    API_KEY = localStorage.getItem('oraculo_api_key') || '';
+    if (!API_KEY) {
+        document.getElementById('deniedBox').style.display = 'block';
+        document.getElementById('deniedBox').innerHTML =
+            `Acesso inválido. Volte ao <a href="${SAAS}/index.html" style="color:#60a5fa;">portal do Oráculo</a> e entre novamente com sua chave de acesso.`;
+        return false;
+    }
+    return true;
+}
+
+async function authFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'X-Oraculo-Key': API_KEY }, opts.headers || {});
+    return fetch(url, opts);
+}
+
+// ---- Tabs ----
+function switchTab(name) {
+    document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(name + '-tab').classList.add('active');
+    event.target.classList.add('active');
+    if (name === 'chats') initChatsTab();
+    if (name === 'agenda') initAgendaTab();
+    if (name === 'credits') loadMyCredits();
+}
+
+// ---- Contas ----
+async function fetchAccounts() {
+    const res = await authFetch(API + '/api/client-portal/accounts');
+    const data = await res.json();
+    return data.accounts || [];
+}
+
+function statusLabel(status) {
+    return {
+        connected: 'Conectado',
+        qr_pending: 'Aguardando QR',
+        connecting: 'Conectando',
+        disconnected: 'Desconectado',
+        error: 'Erro',
+    }[status] || status;
+}
+
+async function renderAccounts() {
+    const accounts = await fetchAccounts();
+    const el = document.getElementById('accountsList');
+    if (!accounts.length) {
+        el.innerHTML = '<p class="empty">Nenhuma conexão vinculada à sua conta ainda — fale com o administrador do Oráculo.</p>';
+        return;
+    }
+    el.innerHTML = accounts.map(a => `
+        <div class="account-row">
+            <div class="account-info">
+                <strong>${esc(a.label)}</strong>
+                <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
+            </div>
+            <div class="account-actions">
+                ${a.status !== 'connected' ? `<button class="btn btn-sm" onclick="connectAccount(${a.id})">Conectar</button>` : ''}
+            </div>
+        </div>
+    `).join('');
+}
+
+async function connectAccount(id) {
+    document.getElementById('qrStatusText').textContent = 'Gerando QR Code...';
+    document.getElementById('qrImage').src = '';
+    document.getElementById('qrModal').classList.add('active');
+
+    const res = await authFetch(API + `/api/client-portal/accounts/${id}/connect`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+        document.getElementById('qrStatusText').textContent = data.message || 'Erro ao conectar';
+        return;
+    }
+    if (data.status === 'connected') {
+        document.getElementById('qrStatusText').textContent = 'Já estava conectado!';
+        setTimeout(closeQrModal, 1200);
+        await renderAccounts();
+        return;
+    }
+    const src = data.qr_base64.startsWith('data:') ? data.qr_base64 : `data:image/png;base64,${data.qr_base64}`;
+    document.getElementById('qrImage').src = src;
+    document.getElementById('qrStatusText').textContent = 'Aguardando leitura...';
+    startQrPolling(id);
+}
+
+function startQrPolling(accountId) {
+    stopQrPolling();
+    pollTimer = setInterval(async () => {
+        const res = await authFetch(API + `/api/client-portal/accounts/${accountId}/status`);
+        const data = await res.json();
+        if (!data.ok) return;
+        if (data.account.status === 'connected') {
+            document.getElementById('qrStatusText').textContent = 'Conectado! ✅';
+            stopQrPolling();
+            setTimeout(closeQrModal, 1200);
+            await renderAccounts();
+        }
+    }, 2000);
+}
+
+function stopQrPolling() {
+    if (pollTimer) clearInterval(pollTimer);
+    pollTimer = null;
+}
+
+function closeQrModal() {
+    document.getElementById('qrModal').classList.remove('active');
+    stopQrPolling();
+    renderAccounts();
+}
+
+// ---- Conversas ----
+let chatsInited = false;
+let currentAccountId = null;
+let currentChatId = null;
+let currentChats = [];
+let chatListTimer = null;
+let messagesTimer = null;
+
+async function initChatsTab() {
+    const accounts = await fetchAccounts();
+    const sel = document.getElementById('chatAccountSelect');
+    const connected = accounts.filter(a => a.status === 'connected');
+    // Se o cliente só tem uma conexão, não faz sentido mostrar seletor —
+    // vai direto pra ela.
+    document.getElementById('chatAccountRow').style.display = connected.length > 1 ? 'block' : 'none';
+    if (!connected.length) {
+        sel.innerHTML = '<option value="">Nenhuma conta conectada</option>';
+        document.getElementById('chatList').innerHTML = '<p class="empty" style="padding:1rem;">Conecte uma conta na aba Contas primeiro.</p>';
+        return;
+    }
+    sel.innerHTML = connected.map(a => `<option value="${a.id}">${esc(a.label)}</option>`).join('');
+    if (!currentAccountId || !connected.some(a => a.id === currentAccountId)) {
+        currentAccountId = connected[0].id;
+    }
+    sel.value = currentAccountId;
+    if (!chatsInited) {
+        chatsInited = true;
+        chatListTimer = setInterval(refreshChatList, 15000);
+    }
+    await refreshChatList();
+}
+
+function onChatAccountChange() {
+    currentAccountId = Number(document.getElementById('chatAccountSelect').value);
+    currentChatId = null;
+    refreshChatList();
+}
+
+async function refreshChatList() {
+    if (!currentAccountId) return;
+    const res = await authFetch(API + `/api/client-portal/chats?account_id=${currentAccountId}`);
+    const data = await res.json();
+    const chats = data.chats || [];
+    currentChats = chats;
+    const el = document.getElementById('chatList');
+    if (!chats.length) {
+        el.innerHTML = '<p class="empty" style="padding:1rem;">Nenhuma conversa ainda.</p>';
+        return;
+    }
+    el.innerHTML = chats.map(c => `
+        <div class="chat-list-item ${c.id === currentChatId ? 'active' : ''}" onclick="openChat(${c.id})">
+            <div class="name">
+                ${c.ai_auto_reply_enabled ? '🤖 ' : ''}${esc(c.display_name)}${c.unread_count > 0 ? `<span class="unread-badge">${c.unread_count}</span>` : ''}
+            </div>
+            <div class="preview">${esc(c.last_message_preview || '')}</div>
+        </div>
+    `).join('');
+    renderChatPanelHeader();
+}
+
+function renderChatPanelHeader() {
+    const header = document.getElementById('chatPanelHeader');
+    if (!currentChatId) { header.textContent = 'Selecione uma conversa'; return; }
+    const chat = currentChats.find(c => c.id === currentChatId);
+    const name = chat ? chat.display_name : '';
+    const enabled = chat ? !!chat.ai_auto_reply_enabled : false;
+    header.innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
+            <span>${esc(name)}</span>
+            <label style="font-size:0.75rem; color:#94a3b8; font-weight:normal; display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
+                <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
+                Resposta automática nesta conversa
+            </label>
+        </div>
+    `;
+}
+
+async function toggleChatAutoReply(chatId, enabled) {
+    await authFetch(API + `/api/client-portal/chats/${chatId}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ ai_auto_reply_enabled: enabled })
+    });
+    const chat = currentChats.find(c => c.id === chatId);
+    if (chat) chat.ai_auto_reply_enabled = enabled;
+}
+
+async function openChat(chatId) {
+    currentChatId = chatId;
+    renderChatPanelHeader();
+    await refreshChatList();
+    await loadMessages();
+    await authFetch(API + `/api/client-portal/chats/${chatId}/read`, { method: 'POST' });
+    if (messagesTimer) clearInterval(messagesTimer);
+    messagesTimer = setInterval(loadMessages, 3000);
+}
+
+async function loadMessages() {
+    if (!currentChatId) return;
+    const res = await authFetch(API + `/api/client-portal/chats/${currentChatId}/messages?limit=50`);
+    const data = await res.json();
+    const messages = data.messages || [];
+    const el = document.getElementById('chatMessages');
+    if (!messages.length) {
+        el.innerHTML = '<div class="chat-empty">Nenhuma mensagem ainda</div>';
+        return;
+    }
+    const wasAtBottom = el.scrollTop + el.clientHeight >= el.scrollHeight - 40;
+    el.innerHTML = messages.map(m => `
+        <div class="msg-bubble ${m.direction === 'out' ? 'msg-out' : 'msg-in'}">
+            ${esc(m.body || '')}
+            <span class="msg-time">${(m.sent_at || '').slice(11, 16)}</span>
+        </div>
+    `).join('');
+    if (wasAtBottom) el.scrollTop = el.scrollHeight;
+}
+
+async function sendChatMessage() {
+    if (!currentChatId) return;
+    const input = document.getElementById('chatTextInput');
+    const text = input.value.trim();
+    if (!text) return;
+    input.value = '';
+    const res = await authFetch(API + `/api/client-portal/chats/${currentChatId}/messages`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ text }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+        alert(data.message || 'Erro ao enviar mensagem');
+        return;
+    }
+    await loadMessages();
+    await refreshChatList();
+}
+
+function openStartChatModal() {
+    if (!currentAccountId) { alert('Selecione uma conta conectada primeiro.'); return; }
+    document.getElementById('startChatPhone').value = '';
+    document.getElementById('startChatText').value = '';
+    document.getElementById('startChatModal').classList.add('active');
+}
+
+function closeStartChatModal() {
+    document.getElementById('startChatModal').classList.remove('active');
+}
+
+async function submitStartChat() {
+    const phone = document.getElementById('startChatPhone').value.trim();
+    const text = document.getElementById('startChatText').value.trim();
+    if (!phone || !text) return;
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentAccountId}/chats/start`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ phone, text }),
+    });
+    const data = await res.json();
+    if (!res.ok) {
+        alert(data.message || 'Erro ao iniciar conversa');
+        return;
+    }
+    closeStartChatModal();
+    await refreshChatList();
+}
+
+// ---- Agenda ----
+let currentAgendaAccountId = null;
+let allConsultants = [];
+const WEEKDAYS = [['mon','Seg'], ['tue','Ter'], ['wed','Qua'], ['thu','Qui'], ['fri','Sex'], ['sat','Sáb'], ['sun','Dom']];
+
+function consultantStatusLabel(status) {
+    return {
+        pending_confirmation: '⏳ Aguardando confirmação',
+        active: '✅ Ativo',
+        declined: '❌ Recusou',
+        inactive: '⏸ Inativo',
+    }[status] || status;
+}
+
+async function initAgendaTab() {
+    const accounts = await fetchAccounts();
+    const sel = document.getElementById('agendaAccountSelect');
+    if (!accounts.length) {
+        sel.innerHTML = '<option value="">Nenhuma conta vinculada</option>';
+        return;
+    }
+    sel.innerHTML = accounts.map(a => `<option value="${a.id}">${esc(a.label)}</option>`).join('');
+    if (!currentAgendaAccountId || !accounts.some(a => a.id === currentAgendaAccountId)) {
+        currentAgendaAccountId = accounts[0].id;
+    }
+    sel.value = currentAgendaAccountId;
+    await loadAgendaData();
+}
+
+function onAgendaAccountChange() {
+    currentAgendaAccountId = Number(document.getElementById('agendaAccountSelect').value);
+    loadAgendaData();
+}
+
+async function loadAgendaData() {
+    if (!currentAgendaAccountId) return;
+    await Promise.all([loadConsultants(), loadAppointments()]);
+}
+
+async function loadConsultants() {
+    const el = document.getElementById('consultantsList');
+    el.innerHTML = '<p class="empty">Carregando...</p>';
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentAgendaAccountId}/consultants`);
+    const data = await res.json();
+    const notice = document.getElementById('agendaDisabledNotice');
+    if (!res.ok) {
+        notice.style.display = res.status === 403 ? 'block' : 'none';
+        el.innerHTML = `<p class="empty">${esc(data.message || 'Erro ao carregar consultores.')}</p>`;
+        return;
+    }
+    notice.style.display = 'none';
+    const consultants = data.consultants || [];
+    allConsultants = consultants;
+    if (!consultants.length) {
+        el.innerHTML = '<p class="empty">Nenhum consultor cadastrado ainda.</p>';
+        return;
+    }
+    el.innerHTML = consultants.map(c => `
+        <div class="account-row">
+            <div class="account-info" style="flex-direction:column; align-items:flex-start; gap:0.15rem;">
+                <div><strong>${esc(c.name)}</strong> <span style="color:#64748b; font-size:0.8rem;">${consultantStatusLabel(c.status)}</span></div>
+                <div style="font-size:0.78rem; color:#64748b;">${esc(c.contact_name || c.wa_id)} · ${c.slot_duration_minutes}min por horário · aviso ${c.reminder_hours_before}h antes</div>
+                ${c.context ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(c.context)}</div>` : ''}
+            </div>
+            <div class="account-actions">
+                <button class="btn btn-sm" onclick="editConsultant(${c.id})">Editar</button>
+                ${c.status === 'active' ? `<button class="btn btn-sm" onclick="resendPortalLink(${c.id})">Reenviar link</button>` : ''}
+                ${c.status === 'pending_confirmation' ? `<button class="btn btn-sm" onclick="resendConsultantInvite(${c.id})">Reenviar convite</button>` : ''}
+                ${c.status === 'active'
+                    ? `<button class="btn btn-sm btn-secondary" onclick="toggleConsultantStatus(${c.id}, 'inactive')">Desativar</button>`
+                    : c.status === 'inactive'
+                        ? `<button class="btn btn-sm" onclick="toggleConsultantStatus(${c.id}, 'active')">Reativar</button>`
+                        : ''}
+                <button class="btn btn-sm btn-danger" onclick="deleteConsultant(${c.id}, '${esc(c.name)}')">Excluir</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function deleteConsultant(id, name) {
+    if (!confirm(`Excluir o consultor "${name}"? Os agendamentos dele também serão apagados. Essa ação não pode ser desfeita.`)) return;
+    const res = await authFetch(API + `/api/client-portal/consultants/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao excluir consultor.');
+    loadConsultants();
+    loadAppointments();
+}
+
+async function toggleConsultantStatus(id, status) {
+    await authFetch(API + `/api/client-portal/consultants/${id}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ status })
+    });
+    loadConsultants();
+}
+
+async function resendPortalLink(id) {
+    const res = await authFetch(API + `/api/client-portal/consultants/${id}/resend-portal-link`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao reenviar link.');
+    alert('Link reenviado por WhatsApp (o link antigo deixou de funcionar).');
+}
+
+async function resendConsultantInvite(id) {
+    const res = await authFetch(API + `/api/client-portal/consultants/${id}/resend-invite`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao reenviar convite.');
+    alert('Convite reenviado por WhatsApp.');
+}
+
+function appointmentStatusLabel(status) {
+    return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu' }[status] || status;
+}
+
+async function loadAppointments() {
+    const el = document.getElementById('appointmentsList');
+    el.innerHTML = '<p class="empty">Carregando...</p>';
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentAgendaAccountId}/appointments`);
+    const data = await res.json();
+    if (!res.ok) { el.innerHTML = '<p class="empty">Erro ao carregar agendamentos.</p>'; return; }
+    const appointments = data.appointments || [];
+    if (!appointments.length) {
+        el.innerHTML = '<p class="empty">Nenhum agendamento futuro.</p>';
+        return;
+    }
+    el.innerHTML = appointments.map(a => `
+        <div class="account-row">
+            <div class="account-info" style="flex-direction:column; align-items:flex-start; gap:0.15rem;">
+                <div><strong>${esc(a.consultant_name)}</strong> com ${esc(a.client_name || a.client_wa_id)}</div>
+                <div style="font-size:0.78rem; color:#64748b;">${a.scheduled_at.slice(0,16).replace('T',' ')} · ${appointmentStatusLabel(a.status)}</div>
+            </div>
+            <div class="account-actions">
+                ${a.status === 'confirmed' ? `<button class="btn btn-sm btn-danger" onclick="cancelAppointmentRow(${a.id})">Cancelar</button>` : ''}
+            </div>
+        </div>
+    `).join('');
+}
+
+async function cancelAppointmentRow(id) {
+    if (!confirm('Cancelar este agendamento?')) return;
+    await authFetch(API + `/api/client-portal/appointments/${id}/cancel`, { method: 'POST' });
+    loadAppointments();
+}
+
+function openConsultantModal(consultant) {
+    if (!currentAgendaAccountId) return alert('Selecione uma conta primeiro.');
+    const availability = (consultant && consultant.weekly_availability) || {};
+    document.getElementById('editConsultantId').value = consultant ? consultant.id : '';
+    document.getElementById('consultantModalTitle').textContent = consultant ? 'Editar Consultor' : '+ Consultor';
+    document.getElementById('consultantSubmitBtn').textContent = consultant ? 'Salvar' : 'Convidar por WhatsApp';
+    document.getElementById('consultantPhone').value = consultant ? (consultant.wa_id || '').replace('@s.whatsapp.net', '') : '';
+    document.getElementById('consultantPhone').disabled = !!consultant;
+    document.getElementById('consultantName').value = consultant ? consultant.name : '';
+    document.getElementById('consultantContext').value = consultant ? (consultant.context || '') : '';
+    document.getElementById('consultantSlotDuration').value = consultant ? consultant.slot_duration_minutes : '30';
+    document.getElementById('consultantReminderHours').value = consultant ? consultant.reminder_hours_before : '2';
+    document.getElementById('consultantAvailabilityRows').innerHTML = WEEKDAYS.map(([key, label]) => {
+        const period = (availability[key] || [])[0] || null;
+        return `
+        <div style="display:flex; align-items:center; gap:0.5rem; margin-bottom:0.3rem;">
+            <label style="width:70px; font-size:0.85rem; color:#cbd5e1;"><input type="checkbox" id="avail_${key}_on" ${period ? 'checked' : ''}> ${label}</label>
+            <input type="time" class="form-input" id="avail_${key}_start" value="${period ? period[0] : '09:00'}" style="width:auto;">
+            <span style="color:#64748b;">às</span>
+            <input type="time" class="form-input" id="avail_${key}_end" value="${period ? period[1] : '18:00'}" style="width:auto;">
+        </div>
+    `;
+    }).join('');
+    document.getElementById('consultantModal').classList.add('active');
+}
+
+function editConsultant(id) {
+    const consultant = allConsultants.find(c => c.id === id);
+    if (!consultant) return;
+    openConsultantModal(consultant);
+}
+
+function closeConsultantModal() {
+    document.getElementById('consultantModal').classList.remove('active');
+    document.getElementById('consultantPhone').disabled = false;
+}
+
+async function submitConsultant() {
+    const editId = document.getElementById('editConsultantId').value;
+    const name = document.getElementById('consultantName').value.trim();
+    if (!name) return alert('Nome é obrigatório.');
+
+    const weekly_availability = {};
+    WEEKDAYS.forEach(([key]) => {
+        if (document.getElementById(`avail_${key}_on`).checked) {
+            const start = document.getElementById(`avail_${key}_start`).value;
+            const end = document.getElementById(`avail_${key}_end`).value;
+            weekly_availability[key] = [[start, end]];
+        }
+    });
+
+    if (editId) {
+        const payload = {
+            name,
+            context: document.getElementById('consultantContext').value.trim() || null,
+            slot_duration_minutes: Number(document.getElementById('consultantSlotDuration').value) || 30,
+            reminder_hours_before: Number(document.getElementById('consultantReminderHours').value) || 2,
+            weekly_availability,
+        };
+        const res = await authFetch(API + `/api/client-portal/consultants/${editId}`, {
+            method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) return alert(data.message || 'Erro ao salvar consultor.');
+        closeConsultantModal();
+        loadConsultants();
+        return;
+    }
+
+    const phone = document.getElementById('consultantPhone').value.trim();
+    if (!phone) return alert('Telefone é obrigatório.');
+    const payload = {
+        phone, name,
+        context: document.getElementById('consultantContext').value.trim() || null,
+        slot_duration_minutes: Number(document.getElementById('consultantSlotDuration').value) || 30,
+        reminder_hours_before: Number(document.getElementById('consultantReminderHours').value) || 2,
+        weekly_availability,
+    };
+
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentAgendaAccountId}/consultants`, {
+        method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao cadastrar consultor.');
+    closeConsultantModal();
+    alert('Convite enviado! O consultor precisa confirmar pelo WhatsApp antes de ficar ativo.');
+    loadConsultants();
+}
+
+// ---- Extrato (dado vive no ai_oraculo_saas, porta 5001 — mesma chave) ----
+async function loadMyCredits() {
+    const box = document.getElementById('creditsBalanceBox');
+    try {
+        const res = await fetch(SAAS + '/api/my-credits', { headers: { 'X-Oraculo-Key': API_KEY } });
+        const data = await res.json();
+        if (!res.ok) {
+            box.innerHTML = `<p class="empty">${esc(data.error || 'Erro ao carregar extrato.')}</p>`;
+            return;
+        }
+        const low = data.balance <= 0;
+        box.innerHTML = `<p class="credits-balance ${low ? 'low' : 'ok'}">R$ ${Number(data.balance).toFixed(4)}</p>
+             <p style="color:#64748b; font-size:0.85rem;">${low ? 'Saldo esgotado — fale com o administrador para recarregar.' : 'Saldo disponível'}</p>`;
+
+        const typeLabel = { deposit: 'Depósito', consumption: 'Consumo', adjustment: 'Ajuste' };
+        const transactions = data.transactions || [];
+        const extractBox = document.getElementById('creditsExtractBox');
+        if (!transactions.length) {
+            extractBox.innerHTML = '<p class="empty">Nenhuma transação ainda.</p>';
+            return;
+        }
+        const rows = transactions.map(t => `
+            <tr>
+                <td>${t.created_at ? new Date(t.created_at).toLocaleString('pt-BR') : '-'}</td>
+                <td>${typeLabel[t.type] || t.type}</td>
+                <td style="color:${t.amount >= 0 ? '#4ade80' : '#f87171'};">${t.amount >= 0 ? '+' : ''}R$ ${Number(t.amount).toFixed(4)}</td>
+                <td>${t.description ? esc(t.description) : '-'}</td>
+            </tr>
+        `).join('');
+        extractBox.innerHTML = `
+            <table class="credits-table">
+                <thead><tr><th>Data</th><th>Tipo</th><th>Valor</th><th>Descrição</th></tr></thead>
+                <tbody>${rows}</tbody>
+            </table>
+        `;
+    } catch (e) {
+        box.innerHTML = '<p class="empty">Erro ao conectar ao Oráculo.</p>';
+    }
+}
+
+async function loadClientSubtitle() {
+    try {
+        const res = await fetch(SAAS + '/api/me', { headers: { 'X-Oraculo-Key': API_KEY } });
+        const data = await res.json();
+        document.getElementById('clientSubtitle').textContent = res.ok ? data.email : 'Chave de acesso inválida';
+    } catch (e) {
+        document.getElementById('clientSubtitle').textContent = '';
+    }
+}
+
+// ---- Início ----
+if (initAuth()) {
+    document.getElementById('portalRoot').style.display = 'block';
+    loadClientSubtitle();
+    renderAccounts();
+    setInterval(renderAccounts, 15000);
+}
+</script>
+
+</body>
+</html>
