@@ -157,9 +157,15 @@ def _parse_index(text, options, names=None):
         i = _NUMBER_WORDS[t] - 1
         return i if 0 <= i < len(options) else None
     if names:
-        match = _fuzzy_match(t, [n for n in names if n], cutoff=0.7)
+        normalized_names = [_normalize(n) for n in names]
+        # nome digitado parcial (ex: só o primeiro nome) bate por substring
+        # antes de tentar aproximação por erro de digitação
+        for i, n in enumerate(normalized_names):
+            if t and n and (t in n or n in t):
+                return i
+        match = _fuzzy_match(t, [n for n in normalized_names if n], cutoff=0.6)
         if match is not None:
-            return names.index(match)
+            return normalized_names.index(match)
     return None
 
 
