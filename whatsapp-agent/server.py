@@ -796,7 +796,7 @@ def get_appointments(account_id, upcoming_only=True):
         where_extra = "AND a2.scheduled_at >= NOW()" if upcoming_only else ""
         cur.execute(
             f"""SELECT a2.id, a2.consultant_id, c.name, a2.client_contact_id, ct.push_name, ct.wa_id,
-                       a2.scheduled_at, a2.duration_minutes, a2.status
+                       a2.scheduled_at, a2.duration_minutes, a2.status, a2.subject
                 FROM whatsapp_appointments a2
                 JOIN whatsapp_consultants c ON c.id = a2.consultant_id
                 JOIN whatsapp_contacts ct ON ct.id = a2.client_contact_id
@@ -805,7 +805,7 @@ def get_appointments(account_id, upcoming_only=True):
             (account_id,),
         )
         cols = ["id", "consultant_id", "consultant_name", "client_contact_id", "client_name", "client_wa_id",
-                "scheduled_at", "duration_minutes", "status"]
+                "scheduled_at", "duration_minutes", "status", "subject"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
             # .astimezone() converte pra America/Sao_Paulo independente de

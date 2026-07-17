@@ -840,6 +840,7 @@ async function loadAppointments() {
             <div class="account-info" style="flex-direction:column; align-items:flex-start; gap:0.15rem;">
                 <div><strong>${esc(a.consultant_name)}</strong> com ${esc(a.client_name || a.client_wa_id)}</div>
                 <div style="font-size:0.78rem; color:#64748b;">${a.scheduled_at.slice(0,16).replace('T',' ')} · ${appointmentStatusLabel(a.status)}</div>
+                ${a.subject ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(a.subject)}</div>` : ''}
             </div>
             <div class="account-actions">
                 ${a.status === 'confirmed' ? `<button class="btn btn-sm btn-danger" onclick="cancelAppointmentRow(${a.id})">Cancelar</button>` : ''}
