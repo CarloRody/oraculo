@@ -571,6 +571,7 @@ def plan_has_agenda(user_id):
 CONSULTANT_COLUMNS = [
     "id", "account_id", "contact_id", "name", "context", "slot_duration_minutes",
     "weekly_availability", "reminder_hours_before", "status", "confirmed_at", "created_at",
+    "portal_token",
 ]
 
 

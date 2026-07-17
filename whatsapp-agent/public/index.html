@@ -726,6 +726,7 @@ async function loadConsultants() {
             </div>
             <div class="account-actions">
                 <button class="btn btn-sm" onclick="editConsultant(${c.id})">Editar</button>
+                ${c.status === 'active' ? `<button class="btn btn-sm" onclick="openConsultantAgenda('${c.portal_token}')">📅 Ver agenda</button>` : ''}
                 ${c.status === 'active' ? `<button class="btn btn-sm" onclick="resendPortalLink(${c.id})">Reenviar link</button>` : ''}
                 ${c.status === 'pending_confirmation' ? `<button class="btn btn-sm" onclick="resendConsultantInvite(${c.id})">Reenviar convite</button>` : ''}
                 ${c.status === 'active'
@@ -760,6 +761,10 @@ async function resendPortalLink(id) {
     const data = await res.json();
     if (!res.ok) return alert(data.message || 'Erro ao reenviar link.');
     alert('Link reenviado por WhatsApp (o link antigo deixou de funcionar).');
+}
+
+function openConsultantAgenda(token) {
+    window.open(`${API}/agenda-consultor?token=${token}`, '_blank');
 }
 
 async function resendConsultantInvite(id) {
