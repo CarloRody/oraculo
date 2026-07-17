@@ -1032,7 +1032,15 @@ def call_llm_agent(llm_cfg, system_prompt, user_prompt, history=None):
                 {"role": "user", "content": user_prompt}
             ],
             "temperature": llm_cfg["temperature"],
-            "max_tokens": llm_cfg["max_tokens"]
+            "max_tokens": llm_cfg["max_tokens"],
+            # Sem isso, modelos pequenos/locais (ex: 4B via LM Studio) podem
+            # degenerar em loop de repetição quando o prompt cresce (RAG +
+            # busca web + histórico de conversa) — sem nenhum freio contra
+            # repetir o que já disse, o modelo recheia o max_tokens inteiro
+            # repetindo o mesmo parágrafo. Valores moderados, não afetam
+            # respostas legitimamente repetitivas (listas, tabelas).
+            "frequency_penalty": 0.4,
+            "presence_penalty": 0.3,
         },
         headers=llm_headers,
         timeout=llm_cfg["timeout_seconds"]
