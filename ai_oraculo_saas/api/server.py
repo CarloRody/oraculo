@@ -2721,10 +2721,18 @@ def admin_get_credit_extract(user_id):
 @app.route('/api/my-credits', methods=['GET'])
 def get_my_credits():
     """Saldo + extrato do próprio cliente, identificado pela X-Oraculo-Key —
-    mesmo padrão de /api/me e /api/my-area."""
+    mesmo padrão de /api/me e /api/my-area. Sem ?period=, comportamento
+    de sempre (últimas 100, qualquer mês). Com ?period=YYYY-MM, filtra
+    pro mês pedido (sem limite de linhas — um mês não estoura)."""
     user_id = resolve_user_from_request()
     if not user_id:
         return jsonify({"error": "Chave de acesso inválida"}), 401
+    period = request.args.get('period')
+    if period:
+        try:
+            period_start, period_end = _period_bounds(period)
+        except Exception:
+            return jsonify({"error": "period inválido, use o formato YYYY-MM"}), 400
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível"}), 500
@@ -2735,11 +2743,19 @@ def get_my_credits():
         if not row:
             conn.close()
             return jsonify({"error": "Cliente não encontrado"}), 404
-        cur.execute(
-            """SELECT type, amount, balance_after, description, tokens_input, tokens_output, created_at
-               FROM credit_transactions WHERE user_id = %s ORDER BY created_at DESC LIMIT 100""",
-            (user_id,)
-        )
+        if period:
+            cur.execute(
+                """SELECT type, amount, balance_after, description, tokens_input, tokens_output, created_at
+                   FROM credit_transactions WHERE user_id = %s AND created_at >= %s AND created_at < %s
+                   ORDER BY created_at DESC""",
+                (user_id, period_start, period_end)
+            )
+        else:
+            cur.execute(
+                """SELECT type, amount, balance_after, description, tokens_input, tokens_output, created_at
+                   FROM credit_transactions WHERE user_id = %s ORDER BY created_at DESC LIMIT 100""",
+                (user_id,)
+            )
         transactions = [{
             "type": t[0], "amount": float(t[1]), "balance_after": float(t[2]),
             "description": t[3], "tokens_input": t[4], "tokens_output": t[5],

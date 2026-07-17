@@ -233,6 +233,10 @@
     <div id="credits-tab" class="tab-content">
         <div class="card">
             <h2>Extrato de consumo</h2>
+            <div class="form-row" style="align-items:center; max-width:320px; margin-bottom:1rem;">
+                <input type="month" class="form-input" id="creditsMonthPicker" onchange="loadMyCredits()">
+                <button class="btn btn-sm btn-secondary" onclick="clearCreditsMonth()">Tudo</button>
+            </div>
             <div id="creditsBalanceBox"><p class="empty">Carregando...</p></div>
             <div id="creditsExtractBox"></div>
         </div>
@@ -378,7 +382,17 @@ function switchTab(name) {
     event.target.classList.add('active');
     if (name === 'chats') initChatsTab();
     if (name === 'agenda') initAgendaTab();
-    if (name === 'credits') loadMyCredits();
+    if (name === 'credits') initCreditsTab();
+}
+
+let creditsInited = false;
+function initCreditsTab() {
+    if (!creditsInited) {
+        creditsInited = true;
+        const d = new Date();
+        document.getElementById('creditsMonthPicker').value = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+    }
+    loadMyCredits();
 }
 
 // ---- Contas ----
@@ -412,10 +426,18 @@ async function renderAccounts() {
                 <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
             </div>
             <div class="account-actions">
-                ${a.status !== 'connected' ? `<button class="btn btn-sm" onclick="connectAccount(${a.id})">Conectar</button>` : ''}
+                ${a.status === 'connected'
+                    ? `<button class="btn btn-sm btn-secondary" onclick="disconnectAccount(${a.id})">Desconectar</button>`
+                    : `<button class="btn btn-sm" onclick="connectAccount(${a.id})">Conectar</button>`}
             </div>
         </div>
     `).join('');
+}
+
+async function disconnectAccount(id) {
+    if (!confirm('Desconectar este WhatsApp? Você pode reconectar (escanear o QR de novo) a qualquer momento.')) return;
+    await authFetch(API + `/api/client-portal/accounts/${id}/disconnect`, { method: 'POST' });
+    await renderAccounts();
 }
 
 async function connectAccount(id) {
@@ -536,10 +558,13 @@ function renderChatPanelHeader() {
     header.innerHTML = `
         <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
             <span>${esc(name)}</span>
-            <label style="font-size:0.75rem; color:#94a3b8; font-weight:normal; display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
-                <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
-                Resposta automática nesta conversa
-            </label>
+            <div style="display:flex; align-items:center; gap:0.75rem;">
+                <button class="btn btn-sm" onclick="openConsultantModalFromChat()">+ Consultor</button>
+                <label style="font-size:0.75rem; color:#94a3b8; font-weight:normal; display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
+                    <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
+                    Resposta automática nesta conversa
+                </label>
+            </div>
         </div>
     `;
 }
@@ -807,6 +832,16 @@ function editConsultant(id) {
     openConsultantModal(consultant);
 }
 
+function openConsultantModalFromChat() {
+    if (!currentChatId) return;
+    const chat = currentChats.find(c => c.id === currentChatId);
+    if (!chat) return;
+    currentAgendaAccountId = currentAccountId;
+    openConsultantModal();
+    document.getElementById('consultantPhone').value = (chat.wa_id || '').split('@')[0];
+    document.getElementById('consultantName').value = chat.display_name !== chat.wa_id ? chat.display_name : '';
+}
+
 function closeConsultantModal() {
     document.getElementById('consultantModal').classList.remove('active');
     document.getElementById('consultantPhone').disabled = false;
@@ -865,10 +900,17 @@ async function submitConsultant() {
 }
 
 // ---- Extrato (dado vive no ai_oraculo_saas, porta 5001 — mesma chave) ----
+function clearCreditsMonth() {
+    document.getElementById('creditsMonthPicker').value = '';
+    loadMyCredits();
+}
+
 async function loadMyCredits() {
     const box = document.getElementById('creditsBalanceBox');
+    const period = document.getElementById('creditsMonthPicker').value; // '' (tudo) ou 'YYYY-MM'
+    const url = SAAS + '/api/my-credits' + (period ? ('?period=' + encodeURIComponent(period)) : '');
     try {
-        const res = await fetch(SAAS + '/api/my-credits', { headers: { 'X-Oraculo-Key': API_KEY } });
+        const res = await fetch(url, { headers: { 'X-Oraculo-Key': API_KEY } });
         const data = await res.json();
         if (!res.ok) {
             box.innerHTML = `<p class="empty">${esc(data.error || 'Erro ao carregar extrato.')}</p>`;

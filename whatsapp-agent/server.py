@@ -1412,7 +1412,7 @@ def _appointment_owner(appointment_id):
         conn.close()
 
 
-# ---- Contas: só leitura + conectar (criar conexão continua sendo só admin) ----
+# ---- Contas: conectar/desconectar (criar/vincular conexão continua sendo só admin) ----
 
 @app.route("/api/client-portal/accounts", methods=["GET"])
 def cp_list_accounts():
@@ -1437,6 +1437,15 @@ def cp_account_status(account_id):
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
     return api_account_status(account_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/disconnect", methods=["POST"])
+def cp_disconnect_account(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return api_disconnect_account(account_id)
 
 
 # ---- Conversas: acesso completo, escopado às próprias contas ----
