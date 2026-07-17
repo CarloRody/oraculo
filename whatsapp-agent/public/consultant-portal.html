@@ -148,8 +148,19 @@ function renderShell(me) {
             </div>
             <div class="form-group"><label>Nome (opcional)</label><input class="form-input" id="newName"></div>
             <div class="form-group"><label>Assunto (opcional)</label><input class="form-input" id="newSubject" placeholder="Ex: Revisão de contrato"></div>
-            <div id="newSlots"><p class="empty">Escolha telefone e toque em "Ver horários".</p></div>
-            <button class="btn btn-block" onclick="loadNewSlots()">Ver horários livres</button>
+            <div class="form-group">
+                <label>Data e horário</label>
+                <div style="display:flex; gap:0.5rem;">
+                    <input type="date" class="form-input" id="newDate">
+                    <input type="time" class="form-input" id="newTime" style="flex:0.7;">
+                </div>
+            </div>
+            <button class="btn btn-block" onclick="createAppointmentManual()">Agendar</button>
+            <details style="margin-top:0.9rem;">
+                <summary style="cursor:pointer; color:#94a3b8; font-size:0.85rem;">ou escolher a partir dos horários livres já cadastrados</summary>
+                <div id="newSlots" style="margin-top:0.6rem;"><p class="empty">Toque em "Ver horários" abaixo.</p></div>
+                <button class="btn btn-secondary btn-block" style="margin-top:0.5rem;" onclick="loadNewSlots()">Ver horários livres</button>
+            </details>
         </div>
         <div class="card">
             <h2>Minha disponibilidade</h2>
@@ -364,10 +375,23 @@ async function createAppointment(iso) {
         document.getElementById('newPhone').value = '';
         document.getElementById('newName').value = '';
         document.getElementById('newSubject').value = '';
-        document.getElementById('newSlots').innerHTML = '<p class="empty">Escolha telefone e toque em "Ver horários".</p>';
+        document.getElementById('newDate').value = '';
+        document.getElementById('newTime').value = '';
+        document.getElementById('newSlots').innerHTML = '<p class="empty">Toque em "Ver horários" abaixo.</p>';
         loadAppointments();
         alert('Agendamento criado! O cliente foi avisado por WhatsApp.');
     } catch (e) { alert(e.message); }
+}
+
+function createAppointmentManual() {
+    // Pontual: agenda exatamente a data/horário digitado, sem depender da
+    // disponibilidade cadastrada — o backend só confere conflito com outros
+    // agendamentos confirmados (_create_appointment_if_free), não exige que
+    // o horário esteja pré-liberado em weekly_availability.
+    const date = document.getElementById('newDate').value;
+    const time = document.getElementById('newTime').value;
+    if (!date || !time) return alert('Escolha a data e o horário.');
+    createAppointment(`${date}T${time}:00`);
 }
 
 init();
