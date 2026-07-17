@@ -1,4 +1,16 @@
 (function() {
+    // Chegou com ?k= = link cross-origin passando a chave do cliente (Área
+    // do Cliente, Monitor Agent, Backup Manager) — salva nesta origem e
+    // limpa da URL, mesmo padrão já usado por index.html.
+    var params = new URLSearchParams(location.search);
+    var urlKey = params.get('k');
+    if (urlKey) {
+        localStorage.setItem('oraculo_api_key', urlKey);
+        params.delete('k');
+        var qs = params.toString();
+        history.replaceState({}, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
+    }
+
     var key = localStorage.getItem('oraculo_api_key');
     if (!key) return; // sem chave de cliente = admin, acesso total (comportamento de sempre)
 

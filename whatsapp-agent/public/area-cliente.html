@@ -170,14 +170,22 @@
     <p class="subtitle" id="clientSubtitle">Carregando...</p>
 
     <div class="tabs">
-        <button class="tab-btn active" onclick="switchTab('accounts')">Contas</button>
+        <button class="tab-btn active" onclick="switchTab('pesquisas')">Pesquisas</button>
+        <button class="tab-btn" onclick="switchTab('accounts')">Contas</button>
         <button class="tab-btn" onclick="switchTab('chats')">Conversas</button>
         <button class="tab-btn" onclick="switchTab('agenda')">Agenda</button>
         <button class="tab-btn" onclick="switchTab('credits')">Extrato</button>
         <button class="tab-btn" onclick="switchTab('help')">Ajuda</button>
     </div>
 
-    <div id="accounts-tab" class="tab-content active">
+    <div id="pesquisas-tab" class="tab-content active">
+        <div class="card">
+            <h2>Pesquisas</h2>
+            <div id="pesquisasLinksBox"><p class="empty">Carregando...</p></div>
+        </div>
+    </div>
+
+    <div id="accounts-tab" class="tab-content">
         <div class="card">
             <h2>Minhas conexões de WhatsApp</h2>
             <p style="color:#64748b; font-size:0.82rem; margin-bottom:0.8rem;">Novas conexões são criadas pelo administrador do Oráculo — aqui você só conecta (escaneia o QR Code) as que já foram vinculadas à sua conta.</p>
@@ -383,6 +391,50 @@ function switchTab(name) {
     if (name === 'chats') initChatsTab();
     if (name === 'agenda') initAgendaTab();
     if (name === 'credits') initCreditsTab();
+}
+
+// ---- Pesquisas (páginas do ai_oraculo_saas, porta 5001 — reaproveitadas
+// como estão, só abertas já com a chave do cliente via ?k=) ----
+const SAAS_PAGES = [
+    { file: 'chat.html', icon: '💬', title: 'Pesquisa & Chat', desc: 'Chat interativo com IA. Faça perguntas e receba respostas fundamentadas nos documentos.' },
+    { file: 'pesquisa-agentes.html', icon: '🔎', title: 'Pesquisa 3 PRO High', desc: 'Um agente consulta a documentação oficial, outro pesquisa na internet, e um terceiro compara as respostas e traz a solução final.' },
+];
+
+function openSaasPage(file) {
+    window.open(`${SAAS}/${file}?k=${encodeURIComponent(API_KEY)}`, '_blank');
+}
+
+async function initPesquisasTab() {
+    const box = document.getElementById('pesquisasLinksBox');
+    box.innerHTML = '<p class="empty">Carregando...</p>';
+    try {
+        const res = await fetch(SAAS + '/api/allowed-pages', { headers: { 'X-Oraculo-Key': API_KEY } });
+        const data = await res.json();
+        if (!res.ok) {
+            box.innerHTML = `<p class="empty">${esc(data.error || 'Erro ao carregar pesquisas.')}</p>`;
+            return;
+        }
+        if (data.active === false) {
+            box.innerHTML = '<p class="empty">Sua conta está desativada. Fale com o administrador do Oráculo.</p>';
+            return;
+        }
+        const allowed = new Set(data.pages || []);
+        const visible = data.restricted ? SAAS_PAGES.filter(p => allowed.has(p.file)) : SAAS_PAGES;
+        if (!visible.length) {
+            box.innerHTML = '<p class="empty">Nenhuma pesquisa liberada para sua conta ainda — fale com o administrador do Oráculo.</p>';
+            return;
+        }
+        box.innerHTML = visible.map(p => `
+            <a href="#" onclick="openSaasPage('${p.file}'); return false;" class="account-row" style="text-decoration:none; color:inherit; cursor:pointer;">
+                <div class="account-info" style="flex-direction:column; align-items:flex-start; gap:0.15rem;">
+                    <div><strong>${p.icon} ${esc(p.title)}</strong></div>
+                    <div style="font-size:0.8rem; color:#94a3b8; max-width:600px;">${esc(p.desc)}</div>
+                </div>
+            </a>
+        `).join('');
+    } catch (e) {
+        box.innerHTML = '<p class="empty">Erro ao conectar ao Oráculo.</p>';
+    }
 }
 
 let creditsInited = false;
@@ -960,6 +1012,7 @@ async function loadClientSubtitle() {
 if (initAuth()) {
     document.getElementById('portalRoot').style.display = 'block';
     loadClientSubtitle();
+    initPesquisasTab();
     renderAccounts();
     setInterval(renderAccounts, 15000);
 }
