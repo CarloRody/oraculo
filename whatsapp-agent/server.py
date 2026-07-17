@@ -1381,7 +1381,7 @@ def api_portal_contacts(token):
         cur = conn.cursor()
         cur.execute(
             """SELECT wa_id, COALESCE(name, push_name) FROM whatsapp_contacts
-               WHERE account_id = %s AND status = 'active'
+               WHERE account_id = %s AND status = 'active' AND wa_id LIKE '%%@s.whatsapp.net'
                ORDER BY COALESCE(name, push_name) NULLS LAST""",
             (consultant["account_id"],),
         )
