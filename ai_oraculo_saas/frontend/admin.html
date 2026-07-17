@@ -332,8 +332,16 @@
         </div>
         <div class="form-group">
             <label>Chave de acesso <span style="font-weight:normal; color:#64748b;">(edite livremente e clique em Salvar — a chave antiga para de funcionar na hora)</span></label>
-            <input type="text" class="form-input" id="editClientKeyValue" style="font-family:monospace;">
+            <input type="text" class="form-input" id="editClientKeyValue" style="font-family:monospace;" oninput="updateClientPortalLinkField()">
             <button class="btn btn-sm btn-danger" style="margin-top:0.5rem;" onclick="regenerateClientKey()">Gerar chave aleatória agora</button>
+        </div>
+        <div class="form-group">
+            <label>Link da Área do Cliente <span style="font-weight:normal; color:#64748b;">(WhatsApp, agenda e extrato do cliente — a chave acima já vai embutida)</span></label>
+            <input type="text" class="form-input" id="editClientPortalLink" readonly style="font-family:monospace; font-size:0.8rem;">
+            <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+                <button class="btn btn-sm" onclick="openClientPortalLink()">🔗 Abrir</button>
+                <button class="btn btn-sm btn-secondary" onclick="resendClientPortalLink()">📋 Reenviar (copiar link)</button>
+            </div>
         </div>
         <div class="form-group">
             <label>Áreas &amp; conexões WhatsApp <span style="font-weight:normal; color:#64748b;">(qual conexão do próprio cliente atende automaticamente por cada área do plano dele)</span></label>
@@ -1028,9 +1036,42 @@ function showClientEditModal(userId) {
     document.getElementById('editClientId').value = client.id;
     document.getElementById('editClientEmail').value = client.email;
     document.getElementById('editClientKeyValue').value = client.api_key || '';
+    updateClientPortalLinkField();
     document.getElementById('clientEditModal').classList.add('active');
     loadClientAreasWhatsapp(userId);
     loadClientWhatsappUsage(userId);
+}
+
+// Link da Área do Cliente (whatsapp-agent, porta 5005) — mesma chave do
+// cliente embutida em ?k=, igual ao link do Monitor Agent/Backup Manager.
+function clientPortalLinkFor(apiKey) {
+    if (!apiKey) return '';
+    return `${window.location.protocol}//${window.location.hostname}:5005/area-cliente?k=${encodeURIComponent(apiKey)}`;
+}
+
+function updateClientPortalLinkField() {
+    const key = document.getElementById('editClientKeyValue').value.trim();
+    document.getElementById('editClientPortalLink').value = clientPortalLinkFor(key);
+}
+
+function openClientPortalLink() {
+    const link = document.getElementById('editClientPortalLink').value;
+    if (!link) return alert('Este cliente ainda não tem chave de acesso.');
+    window.open(link, '_blank');
+}
+
+async function resendClientPortalLink() {
+    // O Oráculo não manda isso sozinho (não guarda telefone/e-mail de
+    // contato do cliente) — só copia pra você colar e enviar pelo canal
+    // que preferir (WhatsApp, e-mail etc).
+    const link = document.getElementById('editClientPortalLink').value;
+    if (!link) return alert('Este cliente ainda não tem chave de acesso.');
+    try {
+        await navigator.clipboard.writeText(link);
+        alert('Link copiado! Cole e envie para o cliente.');
+    } catch (e) {
+        prompt('Copie o link abaixo e envie para o cliente:', link);
+    }
 }
 
 async function loadClientWhatsappUsage(userId) {
@@ -1101,6 +1142,7 @@ async function regenerateClientKey() {
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao gerar nova chave.');
         document.getElementById('editClientKeyValue').value = data.api_key;
+        updateClientPortalLinkField();
         loadClients();
     } catch(e) { alert('Erro ao gerar nova chave.'); }
 }
