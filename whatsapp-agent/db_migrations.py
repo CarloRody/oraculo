@@ -320,6 +320,13 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS portal_token VARCHAR(64) UNIQUE;
     """,
+
+    # 17 — assunto/motivo do agendamento, opcional — preenchido hoje só pelo
+    # agendamento manual feito pelo próprio consultor no portal; o fluxo
+    # self-service do cliente via WhatsApp não coleta isso, fica NULL nesses casos.
+    """
+    ALTER TABLE whatsapp_appointments ADD COLUMN IF NOT EXISTS subject VARCHAR(200);
+    """,
 ]
 
 

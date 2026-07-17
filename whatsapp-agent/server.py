@@ -815,8 +815,8 @@ def get_consultant_appointments(consultant_id):
     conn = _conn()
     try:
         cur = conn.cursor()
-        cols_sql = "a.id, a.client_contact_id, ct.push_name, ct.wa_id, a.scheduled_at, a.duration_minutes, a.status"
-        cols = ["id", "client_contact_id", "client_name", "client_wa_id", "scheduled_at", "duration_minutes", "status"]
+        cols_sql = "a.id, a.client_contact_id, ct.push_name, ct.wa_id, a.scheduled_at, a.duration_minutes, a.status, a.subject"
+        cols = ["id", "client_contact_id", "client_name", "client_wa_id", "scheduled_at", "duration_minutes", "status", "subject"]
 
         cur.execute(
             f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
@@ -1368,6 +1368,29 @@ def api_portal_appointments(token):
     return jsonify({"upcoming": upcoming, "history": history})
 
 
+@app.route("/api/consultant-portal/<token>/contacts", methods=["GET"])
+def api_portal_contacts(token):
+    """Contatos já conhecidos na conexão de WhatsApp do consultor — usado pelo
+    formulário de novo agendamento, pra escolher em vez de só digitar o
+    telefone. Nunca expõe account_id nem dados de outra conta/consultor."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT wa_id, COALESCE(name, push_name) FROM whatsapp_contacts
+               WHERE account_id = %s AND status = 'active'
+               ORDER BY COALESCE(name, push_name) NULLS LAST""",
+            (consultant["account_id"],),
+        )
+        contacts = [{"phone": r[0].split("@")[0], "name": r[1]} for r in cur.fetchall()]
+        return jsonify({"contacts": contacts})
+    finally:
+        conn.close()
+
+
 @app.route("/api/consultant-portal/<token>/free-slots", methods=["GET"])
 def api_portal_free_slots(token):
     consultant = get_consultant_by_portal_token(token)
@@ -1385,6 +1408,7 @@ def api_portal_create_appointment(token):
     data = request.json or {}
     phone = re.sub(r"\D", "", data.get("phone") or "")
     name = (data.get("name") or "").strip()
+    subject = (data.get("subject") or "").strip() or None
     scheduled_at_raw = data.get("scheduled_at")
     if not phone or not scheduled_at_raw:
         return jsonify({"ok": False, "message": "Telefone e horário são obrigatórios"}), 400
@@ -1395,7 +1419,7 @@ def api_portal_create_appointment(token):
 
     wa_id = f"{phone}@s.whatsapp.net"
     client_contact_id = get_or_create_contact(consultant["account_id"], wa_id, name or None)
-    ok = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False)
+    ok = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False, subject=subject)
     if not ok:
         return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
     return jsonify({"ok": True}), 201

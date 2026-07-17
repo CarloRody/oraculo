@@ -126,6 +126,7 @@ async function init() {
         document.getElementById('subtitle').textContent = `${me.name} · ${me.account_label}`;
         renderShell(me);
         await loadAppointments();
+        loadContacts();
     } catch (e) {
         document.getElementById('subtitle').textContent = '';
         document.getElementById('content').innerHTML = `<div class="error-box">${esc(e.message)}. Peça um novo link mandando "minha agenda" pelo WhatsApp.</div>`;
@@ -140,8 +141,13 @@ function renderShell(me) {
         </div>
         <div class="card">
             <h2>+ Novo agendamento</h2>
-            <div class="form-group"><label>Telefone do cliente (com DDI)</label><input class="form-input" id="newPhone" placeholder="5511999999999"></div>
+            <div class="form-group">
+                <label>Telefone do cliente (com DDI)</label>
+                <input class="form-input" id="newPhone" placeholder="5511999999999" list="contactsDatalist" oninput="onNewPhoneInput()">
+                <datalist id="contactsDatalist"></datalist>
+            </div>
             <div class="form-group"><label>Nome (opcional)</label><input class="form-input" id="newName"></div>
+            <div class="form-group"><label>Assunto (opcional)</label><input class="form-input" id="newSubject" placeholder="Ex: Revisão de contrato"></div>
             <div id="newSlots"><p class="empty">Escolha telefone e toque em "Ver horários".</p></div>
             <button class="btn btn-block" onclick="loadNewSlots()">Ver horários livres</button>
         </div>
@@ -200,6 +206,7 @@ async function loadAppointments() {
             <div class="appt-info">
                 <div class="name">${esc(a.client_name || a.client_wa_id)}</div>
                 <div class="when">${fmtWhen(a.scheduled_at)}</div>
+                ${a.subject ? `<div class="when">${esc(a.subject)}</div>` : ''}
             </div>
             <div class="appt-actions">
                 <button class="btn btn-sm btn-secondary" onclick="openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g,"\\'")}')">Remarcar</button>
@@ -214,9 +221,30 @@ async function loadAppointments() {
             <div class="appt-info">
                 <div class="name">${esc(a.client_name || a.client_wa_id)} <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span></div>
                 <div class="when">${fmtWhen(a.scheduled_at)}</div>
+                ${a.subject ? `<div class="when">${esc(a.subject)}</div>` : ''}
             </div>
         </div>
     `).join('');
+}
+
+let knownContacts = [];
+
+async function loadContacts() {
+    try {
+        const data = await api('/contacts');
+        knownContacts = data.contacts || [];
+        document.getElementById('contactsDatalist').innerHTML = knownContacts
+            .map(c => `<option value="${esc(c.phone)}">${esc(c.name || c.phone)}</option>`).join('');
+    } catch (e) { /* lista de contatos é só um auxílio — sem ela, ainda dá pra digitar o telefone */ }
+}
+
+function onNewPhoneInput() {
+    const phone = document.getElementById('newPhone').value.trim();
+    const contact = knownContacts.find(c => c.phone === phone);
+    const nameField = document.getElementById('newName');
+    if (contact && contact.name && !nameField.value.trim()) {
+        nameField.value = contact.name;
+    }
 }
 
 async function cancelAppt(id) {
@@ -272,11 +300,13 @@ async function loadNewSlots() {
 async function createAppointment(iso) {
     const phone = document.getElementById('newPhone').value.trim();
     const name = document.getElementById('newName').value.trim();
+    const subject = document.getElementById('newSubject').value.trim();
     if (!phone) return alert('Informe o telefone do cliente primeiro.');
     try {
-        await api('/appointments', { method: 'POST', body: JSON.stringify({ phone, name, scheduled_at: iso }) });
+        await api('/appointments', { method: 'POST', body: JSON.stringify({ phone, name, subject, scheduled_at: iso }) });
         document.getElementById('newPhone').value = '';
         document.getElementById('newName').value = '';
+        document.getElementById('newSubject').value = '';
         document.getElementById('newSlots').innerHTML = '<p class="empty">Escolha telefone e toque em "Ver horários".</p>';
         loadAppointments();
         alert('Agendamento criado! O cliente foi avisado por WhatsApp.');

@@ -107,7 +107,7 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
     return slots
 
 
-def _create_appointment_if_free(consultant, client_contact_id, scheduled_at):
+def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=None):
     """pg_advisory_xact_lock serializa tentativas de agendar o MESMO
     consultor — evita duas pessoas confirmarem o mesmo horário ao mesmo
     tempo (checar disponibilidade e inserir não são atômicos sem isso)."""
@@ -127,9 +127,9 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at):
             conn.rollback()
             return False
         cur.execute(
-            """INSERT INTO whatsapp_appointments (consultant_id, client_contact_id, scheduled_at, duration_minutes)
-               VALUES (%s, %s, %s, %s)""",
-            (consultant["id"], client_contact_id, scheduled_at, duration),
+            """INSERT INTO whatsapp_appointments (consultant_id, client_contact_id, scheduled_at, duration_minutes, subject)
+               VALUES (%s, %s, %s, %s, %s)""",
+            (consultant["id"], client_contact_id, scheduled_at, duration, subject),
         )
         conn.commit()
         return True
@@ -137,25 +137,27 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at):
         conn.close()
 
 
-def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False):
+def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None):
     """Cria o agendamento (se o horário ainda estiver livre) e avisa o
     cliente. Usado tanto pelo fluxo self-service do cliente (notify_consultant
     =True, ele ainda não sabe do agendamento) quanto pelo portal do próprio
     consultor (notify_consultant=False — não faz sentido avisar quem tá
-    criando). Retorna True se criou, False se o horário já não estava livre."""
-    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at):
+    criando). `subject` é opcional — só o portal do consultor coleta isso hoje.
+    Retorna True se criou, False se o horário já não estava livre."""
+    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject):
         return False
     when = scheduled_at.strftime("%d/%m às %H:%M")
     client_phone = _phone(client_wa_id)
+    subject_line = f"\nAssunto: {subject}" if subject else ""
     try:
         evolution.send_text(consultant["wa_session_name"], client_phone,
-                             f"Você tem um agendamento confirmado com {consultant['name']} em {when}!")
+                             f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}")
     except EvolutionError:
         pass
     if notify_consultant:
         try:
             evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]),
-                                 f"Novo agendamento: {client_push_name or client_phone} em {when}.")
+                                 f"Novo agendamento: {client_push_name or client_phone} em {when}.{subject_line}")
         except EvolutionError:
             pass
     return True
