@@ -750,13 +750,26 @@ function term(plural) {
     return (plural ? c.plural : c.singular) || (plural ? 'Consultores' : 'Consultor');
 }
 
+function setText(id, text) {
+    const el = document.getElementById(id);
+    if (el) el.textContent = text;
+}
+function setValue(id, value) {
+    const el = document.getElementById(id);
+    if (el) el.value = value;
+}
+
 function applyNomenclatureLabels() {
-    document.getElementById('addConsultantBtn').textContent = `+ ${term()}`;
-    document.getElementById('addConsultantBtnChat').textContent = `+ ${term()}`;
-    document.getElementById('consultantsHeading').textContent = term(true);
-    document.getElementById('consultantContextHint').textContent = `(opcional — mostrado ao cliente na lista de ${term(true).toLowerCase()})`;
-    document.getElementById('nomenclatureSingularInput').value = term();
-    document.getElementById('nomenclaturePluralInput').value = term(true);
+    // addConsultantBtnChat só existe depois que uma conversa é aberta
+    // (renderChatPanelHeader monta esse botão via innerHTML) — por isso o
+    // acesso precisa ser null-safe, senão quebra silenciosamente quando o
+    // usuário salva a nomenclatura sem nunca ter aberto um chat antes.
+    setText('addConsultantBtn', `+ ${term()}`);
+    setText('addConsultantBtnChat', `+ ${term()}`);
+    setText('consultantsHeading', term(true));
+    setText('consultantContextHint', `(opcional — mostrado ao cliente na lista de ${term(true).toLowerCase()})`);
+    setValue('nomenclatureSingularInput', term());
+    setValue('nomenclaturePluralInput', term(true));
 }
 
 function updateAgendaNomenclature() {
