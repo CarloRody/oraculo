@@ -342,6 +342,15 @@ MIGRATIONS = [
         updated_at TIMESTAMPTZ DEFAULT NOW()
     );
     """,
+
+    # 19 — quem controla a disponibilidade semanal do consultor: por padrão o
+    # próprio consultor (TRUE, mantém o comportamento de sempre pra quem já
+    # existe), mas a empresa (admin/Área do Cliente, no cadastro do consultor)
+    # pode desligar — nesse caso o card "Minha disponibilidade" some do portal
+    # e só quem administra a agenda define os horários.
+    """
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS self_availability_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+    """,
 ]
 
 

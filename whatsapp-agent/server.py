@@ -641,7 +641,7 @@ def plan_has_agenda(user_id):
 CONSULTANT_COLUMNS = [
     "id", "account_id", "contact_id", "name", "context", "slot_duration_minutes",
     "weekly_availability", "reminder_hours_before", "status", "confirmed_at", "created_at",
-    "portal_token",
+    "portal_token", "self_availability_enabled",
 ]
 
 
@@ -1369,7 +1369,7 @@ def api_update_consultant(consultant_id):
     if not get_consultant(consultant_id):
         return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
     data = request.json or {}
-    allowed = ("name", "context", "slot_duration_minutes", "weekly_availability", "reminder_hours_before", "status")
+    allowed = ("name", "context", "slot_duration_minutes", "weekly_availability", "reminder_hours_before", "status", "self_availability_enabled")
     fields = {k: v for k, v in data.items() if k in allowed}
     if "status" in fields and fields["status"] not in ("active", "inactive"):
         return jsonify({"ok": False, "message": "status só pode ser alternado entre active/inactive por aqui (confirmação inicial é feita pelo próprio consultor no WhatsApp)"}), 400
@@ -1708,6 +1708,7 @@ def api_portal_me(token):
         "account_label": consultant["account_label"],
         "slot_duration_minutes": consultant["slot_duration_minutes"],
         "weekly_availability": consultant["weekly_availability"],
+        "self_availability_enabled": consultant["self_availability_enabled"],
     })
 
 

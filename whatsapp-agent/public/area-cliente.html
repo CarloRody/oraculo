@@ -308,6 +308,13 @@
             </div>
         </div>
         <div class="form-group">
+            <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-weight:normal;">
+                <input type="checkbox" id="consultantSelfAvailability" checked>
+                Consultor pode editar a própria disponibilidade
+            </label>
+            <span style="font-size:0.78rem; color:#64748b;">Se desmarcar, o card "Minha disponibilidade" some da página do consultor — só você define os horários por aqui.</span>
+        </div>
+        <div class="form-group">
             <label>Disponibilidade semanal <span style="font-weight:normal; color:#64748b;">(horário local, um período por dia)</span></label>
             <div id="consultantAvailabilityRows"></div>
         </div>
@@ -987,6 +994,7 @@ function openConsultantModal(consultant) {
     document.getElementById('consultantContext').value = consultant ? (consultant.context || '') : '';
     document.getElementById('consultantSlotDuration').value = consultant ? consultant.slot_duration_minutes : '30';
     document.getElementById('consultantReminderHours').value = consultant ? consultant.reminder_hours_before : '2';
+    document.getElementById('consultantSelfAvailability').checked = consultant ? consultant.self_availability_enabled !== false : true;
     document.getElementById('consultantAvailabilityRows').innerHTML = WEEKDAYS.map(([key, label]) => {
         const period = (availability[key] || [])[0] || null;
         return `
@@ -1056,6 +1064,7 @@ async function submitConsultant() {
             context: document.getElementById('consultantContext').value.trim() || null,
             slot_duration_minutes: Number(document.getElementById('consultantSlotDuration').value) || 30,
             reminder_hours_before: Number(document.getElementById('consultantReminderHours').value) || 2,
+            self_availability_enabled: document.getElementById('consultantSelfAvailability').checked,
             weekly_availability,
         };
         const res = await authFetch(API + `/api/client-portal/consultants/${editId}`, {

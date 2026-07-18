@@ -52,6 +52,8 @@
         padding: 0.45rem 0.9rem; font-size: 0.82rem; cursor: pointer;
     }
     .btn:hover { opacity: 0.9; }
+    .btn:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn:disabled:hover { opacity: 0.4; }
     .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.76rem; }
     .btn-danger { background: #ef4444; }
     .btn-secondary { background: #334155; }
@@ -134,17 +136,50 @@ async function init() {
 }
 
 function renderShell(me) {
+    const availabilityCard = me.self_availability_enabled === false ? `
+        <div class="card">
+            <h2>Minha disponibilidade</h2>
+            <p class="empty">Sua disponibilidade é definida por ${esc(me.account_label)} — fale com quem administra sua agenda pra ajustar os horários.</p>
+        </div>
+    ` : `
+        <div class="card">
+            <h2>Minha disponibilidade</h2>
+            <div id="availabilityRows"></div>
+            <h3 style="font-size:0.9rem; color:#f8fafc; margin:1.2rem 0 0.5rem;">Datas avulsas <span style="font-weight:normal; color:#64748b; font-size:0.78rem;">(libera um horário fora do padrão semanal, numa data específica)</span></h3>
+            <div id="extraDatesRows"></div>
+            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.5rem;">
+                <input type="date" class="form-input" id="newExtraDate" style="flex:1; min-width:140px;">
+                <input type="time" class="form-input" id="newExtraStart" value="09:00" style="width:auto;">
+                <span style="color:#64748b;">–</span>
+                <input type="time" class="form-input" id="newExtraEnd" value="18:00" style="width:auto;">
+                <button class="btn btn-sm" onclick="addExtraDate()">+ Adicionar</button>
+            </div>
+            <button class="btn btn-block" style="margin-top:1.2rem;" onclick="saveAvailability()">Salvar disponibilidade</button>
+        </div>
+    `;
     document.getElementById('content').innerHTML = `
         <div class="card">
-            <h2>Próximos horários</h2>
+            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.8rem; flex-wrap:wrap; gap:0.5rem;">
+                <h2 style="margin:0;">Próximos horários</h2>
+                <div style="display:flex; gap:0.4rem;">
+                    <button class="btn btn-sm" id="viewTabList" onclick="switchAgendaView('list')">Lista</button>
+                    <button class="btn btn-sm btn-secondary" id="viewTabWeek" onclick="switchAgendaView('week')">Semana</button>
+                </div>
+            </div>
             <div id="upcomingList"><p class="empty">Carregando...</p></div>
+            <div id="weekView" style="display:none;"></div>
         </div>
         <div class="card">
             <h2>+ Novo agendamento</h2>
             <div class="form-group">
+                <label>Cliente</label>
+                <select class="form-input" id="newContactSelect" onchange="onContactSelectChange()">
+                    <option value="">+ Novo contato (digitar telefone)</option>
+                </select>
+            </div>
+            <div class="form-group">
                 <label>Telefone do cliente (com DDI)</label>
-                <input class="form-input" id="newPhone" placeholder="5511999999999" list="contactsDatalist" oninput="onNewPhoneInput()">
-                <datalist id="contactsDatalist"></datalist>
+                <input class="form-input" id="newPhone" placeholder="5511999999999">
             </div>
             <div class="form-group"><label>Nome (opcional)</label><input class="form-input" id="newName"></div>
             <div class="form-group"><label>Assunto (opcional)</label><input class="form-input" id="newSubject" placeholder="Ex: Revisão de contrato"></div>
@@ -162,20 +197,7 @@ function renderShell(me) {
                 <button class="btn btn-secondary btn-block" style="margin-top:0.5rem;" onclick="loadNewSlots()">Ver horários livres</button>
             </details>
         </div>
-        <div class="card">
-            <h2>Minha disponibilidade</h2>
-            <div id="availabilityRows"></div>
-            <h3 style="font-size:0.9rem; color:#f8fafc; margin:1.2rem 0 0.5rem;">Datas avulsas <span style="font-weight:normal; color:#64748b; font-size:0.78rem;">(libera um horário fora do padrão semanal, numa data específica)</span></h3>
-            <div id="extraDatesRows"></div>
-            <div style="display:flex; gap:0.5rem; align-items:center; flex-wrap:wrap; margin-top:0.5rem;">
-                <input type="date" class="form-input" id="newExtraDate" style="flex:1; min-width:140px;">
-                <input type="time" class="form-input" id="newExtraStart" value="09:00" style="width:auto;">
-                <span style="color:#64748b;">–</span>
-                <input type="time" class="form-input" id="newExtraEnd" value="18:00" style="width:auto;">
-                <button class="btn btn-sm" onclick="addExtraDate()">+ Adicionar</button>
-            </div>
-            <button class="btn btn-block" style="margin-top:1.2rem;" onclick="saveAvailability()">Salvar disponibilidade</button>
-        </div>
+        ${availabilityCard}
         <div class="card">
             <details>
                 <summary>Histórico recente</summary>
@@ -189,7 +211,9 @@ function renderShell(me) {
             <button class="btn btn-secondary btn-block" onclick="closeReschedule()">Cancelar</button>
         </div>
     `;
-    renderAvailabilityRows(me.weekly_availability || {});
+    if (me.self_availability_enabled !== false) {
+        renderAvailabilityRows(me.weekly_availability || {});
+    }
 }
 
 const WEEKDAY_KEY_SET = new Set(WEEKDAYS.map(([k]) => k));
@@ -266,8 +290,11 @@ async function saveAvailability() {
     } catch (e) { alert(e.message); }
 }
 
+let lastUpcoming = [];
+
 async function loadAppointments() {
     const data = await api('/appointments');
+    lastUpcoming = data.upcoming;
     const up = document.getElementById('upcomingList');
     up.innerHTML = !data.upcoming.length ? '<p class="empty">Nenhum agendamento futuro.</p>' : data.upcoming.map(a => `
         <div class="appt-row">
@@ -293,6 +320,72 @@ async function loadAppointments() {
             </div>
         </div>
     `).join('');
+
+    if (agendaViewMode === 'week') renderWeekView();
+}
+
+let agendaViewMode = 'list';
+let weekViewOffset = 0;
+
+function switchAgendaView(mode) {
+    agendaViewMode = mode;
+    document.getElementById('viewTabList').className = mode === 'list' ? 'btn btn-sm' : 'btn btn-sm btn-secondary';
+    document.getElementById('viewTabWeek').className = mode === 'week' ? 'btn btn-sm' : 'btn btn-sm btn-secondary';
+    document.getElementById('upcomingList').style.display = mode === 'list' ? '' : 'none';
+    document.getElementById('weekView').style.display = mode === 'week' ? '' : 'none';
+    if (mode === 'week') renderWeekView();
+}
+
+function startOfWeek(offsetWeeks) {
+    const now = new Date();
+    const day = now.getDay(); // 0=Dom..6=Sáb
+    const diffToMonday = (day === 0 ? -6 : 1 - day);
+    return new Date(now.getFullYear(), now.getMonth(), now.getDate() + diffToMonday + offsetWeeks * 7);
+}
+
+function changeWeek(delta) {
+    weekViewOffset = Math.max(0, weekViewOffset + delta);
+    renderWeekView();
+}
+
+function renderWeekView() {
+    const monday = startOfWeek(weekViewOffset);
+    const dayNames = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
+    const todayKey = new Date().toISOString().slice(0, 10);
+
+    const byDate = {};
+    lastUpcoming.forEach(a => {
+        const dateKey = a.scheduled_at.slice(0, 10);
+        (byDate[dateKey] = byDate[dateKey] || []).push(a);
+    });
+
+    const cols = [];
+    for (let i = 0; i < 7; i++) {
+        const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
+        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+        const items = (byDate[key] || []).sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at));
+        const isToday = key === todayKey;
+        cols.push(`
+            <div style="flex:1; min-width:130px; background:#0f172a; border:1px solid ${isToday ? '#60a5fa' : '#334155'}; border-radius:8px; padding:0.5rem;">
+                <div style="font-size:0.78rem; color:${isToday ? '#60a5fa' : '#94a3b8'}; font-weight:600; margin-bottom:0.4rem;">${dayNames[i]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}</div>
+                ${items.length ? items.map(a => `
+                    <div style="font-size:0.78rem; color:#cbd5e1; padding:0.3rem 0; border-top:1px solid #1a2744; cursor:pointer;" onclick="openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g, "\\'")}')">
+                        <strong>${a.scheduled_at.slice(11, 16)}</strong> ${esc(a.client_name || a.client_wa_id)}
+                        ${a.subject ? `<div style="color:#64748b;">${esc(a.subject)}</div>` : ''}
+                    </div>
+                `).join('') : '<div style="font-size:0.76rem; color:#475569; padding:0.3rem 0;">—</div>'}
+            </div>
+        `);
+    }
+
+    document.getElementById('weekView').innerHTML = `
+        <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.6rem;">
+            <button class="btn btn-sm btn-secondary" onclick="changeWeek(-1)" ${weekViewOffset === 0 ? 'disabled' : ''}>◀ Semana anterior</button>
+            <span style="font-size:0.8rem; color:#94a3b8;">${weekViewOffset === 0 ? 'Esta semana' : `Daqui ${weekViewOffset} semana(s)`}</span>
+            <button class="btn btn-sm btn-secondary" onclick="changeWeek(1)">Semana seguinte ▶</button>
+        </div>
+        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">${cols.join('')}</div>
+    `;
 }
 
 let knownContacts = [];
@@ -301,18 +394,28 @@ async function loadContacts() {
     try {
         const data = await api('/contacts');
         knownContacts = data.contacts || [];
-        document.getElementById('contactsDatalist').innerHTML = knownContacts
-            .map(c => `<option value="${esc(c.phone)}">${esc(c.name || c.phone)}</option>`).join('');
+        document.getElementById('newContactSelect').innerHTML = '<option value="">+ Novo contato (digitar telefone)</option>' +
+            knownContacts.map(c => `<option value="${esc(c.phone)}">${esc(c.name || c.phone)}</option>`).join('');
     } catch (e) { /* lista de contatos é só um auxílio — sem ela, ainda dá pra digitar o telefone */ }
 }
 
-function onNewPhoneInput() {
-    const phone = document.getElementById('newPhone').value.trim();
-    const contact = knownContacts.find(c => c.phone === phone);
+function onContactSelectChange() {
+    // select nativo em vez de <input list=datalist> — datalist não é confiável
+    // em navegadores mobile/in-app (inclusive o navegador embutido do
+    // WhatsApp, que é como a maioria dos consultores abre esse link).
+    const phone = document.getElementById('newContactSelect').value;
+    const phoneField = document.getElementById('newPhone');
     const nameField = document.getElementById('newName');
-    if (contact && contact.name && !nameField.value.trim()) {
-        nameField.value = contact.name;
+    if (!phone) {
+        phoneField.value = '';
+        phoneField.readOnly = false;
+        nameField.value = '';
+        return;
     }
+    const contact = knownContacts.find(c => c.phone === phone);
+    phoneField.value = phone;
+    phoneField.readOnly = true;
+    nameField.value = (contact && contact.name) || '';
 }
 
 async function cancelAppt(id) {
@@ -372,7 +475,9 @@ async function createAppointment(iso) {
     if (!phone) return alert('Informe o telefone do cliente primeiro.');
     try {
         await api('/appointments', { method: 'POST', body: JSON.stringify({ phone, name, subject, scheduled_at: iso }) });
+        document.getElementById('newContactSelect').value = '';
         document.getElementById('newPhone').value = '';
+        document.getElementById('newPhone').readOnly = false;
         document.getElementById('newName').value = '';
         document.getElementById('newSubject').value = '';
         document.getElementById('newDate').value = '';
