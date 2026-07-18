@@ -74,6 +74,17 @@ def _phone(wa_id):
     return (wa_id or "").split("@")[0]
 
 
+def _term(account, plural=False):
+    """Nome customizável de 'consultor' pra esse cliente (ex: 'Médico',
+    'Especialista') — configurado em whatsapp_client_settings, vale pra todas
+    as contas do mesmo cliente. Sem configuração, cai no padrão 'Consultor'/
+    'Consultores'."""
+    import server
+    nomenclature = server.get_nomenclature(account.get("user_id"))
+    form = "plural" if plural else "singular"
+    return nomenclature["consultant"][form]
+
+
 def _normalize(text):
     """Minúsculo, sem acento, sem espaço nas pontas — base pra toda
     comparação de texto tolerante a erro deste módulo."""
@@ -407,7 +418,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         new_state = _resend_current_step(account, wa_id, state)
         if new_state is None:
             server.set_chat_booking_state(chat_id, None)
-            _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
+            _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
         else:
             server.set_chat_booking_state(chat_id, new_state)
         return True
@@ -432,7 +443,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         consultant = server.get_consultant(consultant_id)
         if not consultant or consultant["account_id"] != account["id"] or consultant["status"] != "active":
             server.set_chat_booking_state(chat_id, None)
-            _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
+            _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
         slots = compute_free_slots(consultant, limit=2 if urgent else 10)
         if not slots:
@@ -457,7 +468,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         consultant = server.get_consultant(state["consultant_id"])
         if not consultant:
             server.set_chat_booking_state(chat_id, None)
-            _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
+            _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
         scheduled_at = datetime.datetime.fromisoformat(iso)
         _send_confirm_buttons(account, wa_id, consultant, scheduled_at)
@@ -478,7 +489,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             return True
         consultant = server.get_consultant(state["consultant_id"])
         if not consultant:
-            _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
+            _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
         scheduled_at = datetime.datetime.fromisoformat(state["scheduled_at"])
         if not book_appointment(consultant, contact_id, wa_id, push_name, scheduled_at, notify_consultant=True):
@@ -504,7 +515,7 @@ def _retry_or_give_up(account, chat_id, wa_id, phone, state):
     new_state = _resend_current_step(account, wa_id, state)
     if new_state is None:
         server.set_chat_booking_state(chat_id, None)
-        _send_text(account, phone, "Consultor não encontrado. Digite \"agendar\" pra começar de novo.")
+        _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
         return
     new_state["attempts"] = attempts
     server.set_chat_booking_state(chat_id, new_state)
@@ -573,12 +584,13 @@ def _send_consultant_list(account, wa_id, consultants, urgent=False, reminder=Fa
         for i, c in enumerate(consultants)
     ]
     numbered = "\n".join(lines)
+    term = _term(account).lower()
     if reminder:
         intro = "Não consegui entender 🙏 Aqui está a lista de novo, é só digitar o número:"
     elif urgent:
-        intro = "Vamos te encaixar o quanto antes. Escolha um profissional, digite o número:"
+        intro = f"Vamos te encaixar o quanto antes. Escolha um {term}, digite o número:"
     else:
-        intro = "Escolha um consultor, digite o número:"
+        intro = f"Escolha um {term}, digite o número:"
     parts = []
     if urgent:
         parts.append(

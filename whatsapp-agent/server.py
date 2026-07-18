@@ -115,9 +115,10 @@ def _row_to_account(row):
 
 
 def get_accounts(user_id=None):
-    # LEFT JOIN com users e areas (mesmo ai_tutor_db, mesma conexão — não são
-    # bancos separados) só pra trazer o e-mail do cliente e o nome da área
-    # vinculados junto, sem round-trip extra pro frontend.
+    # LEFT JOIN com users, areas e whatsapp_client_settings (mesmo ai_tutor_db,
+    # mesma conexão — não são bancos separados) só pra trazer o e-mail do
+    # cliente, o nome da área e a nomenclatura customizada junto, sem
+    # round-trip extra pro frontend.
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -125,19 +126,21 @@ def get_accounts(user_id=None):
         where = "WHERE a.user_id = %s" if user_id else ""
         params = (user_id,) if user_id else ()
         cur.execute(
-            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name
+            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name, cs.nomenclature
                 FROM whatsapp_accounts a
                 LEFT JOIN users u ON u.id = a.user_id
                 LEFT JOIN areas ar ON ar.id = a.area_id
+                LEFT JOIN whatsapp_client_settings cs ON cs.user_id = a.user_id
                 {where}
                 ORDER BY a.created_at DESC""",
             params,
         )
         rows = []
         for r in cur.fetchall():
-            d = _row_to_account(r[:-2])
-            d["client_email"] = r[-2]
-            d["area_name"] = r[-1]
+            d = _row_to_account(r[:-3])
+            d["client_email"] = r[-3]
+            d["area_name"] = r[-2]
+            d["nomenclature"] = _merge_nomenclature(r[-1])
             rows.append(d)
         return rows
     finally:
@@ -150,19 +153,21 @@ def get_account(account_id):
         cur = conn.cursor()
         cols = ", ".join(f"a.{c}" for c in ACCOUNT_COLUMNS)
         cur.execute(
-            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name
+            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name, cs.nomenclature
                 FROM whatsapp_accounts a
                 LEFT JOIN users u ON u.id = a.user_id
                 LEFT JOIN areas ar ON ar.id = a.area_id
+                LEFT JOIN whatsapp_client_settings cs ON cs.user_id = a.user_id
                 WHERE a.id = %s""",
             (account_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        d = _row_to_account(row[:-2])
-        d["client_email"] = row[-2]
-        d["area_name"] = row[-1]
+        d = _row_to_account(row[:-3])
+        d["client_email"] = row[-3]
+        d["area_name"] = row[-2]
+        d["nomenclature"] = _merge_nomenclature(row[-1])
         return d
     finally:
         conn.close()
@@ -176,6 +181,71 @@ def get_clients():
         return [{"id": r[0], "email": r[1]} for r in cur.fetchall()]
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Nomenclatura customizável por CLIENTE (não por conta — um cliente pode ter
+# mais de uma whatsapp_accounts e a nomenclatura vale pra todas). Hoje só a
+# chave "consultant" existe; o formato já é um dict aberto pra dar pra
+# acrescentar outras chaves depois sem precisar de migração nova.
+# ---------------------------------------------------------------------------
+
+DEFAULT_NOMENCLATURE = {"consultant": {"singular": "Consultor", "plural": "Consultores"}}
+
+
+def _merge_nomenclature(raw):
+    merged = {k: dict(v) for k, v in DEFAULT_NOMENCLATURE.items()}
+    if raw:
+        for key, val in raw.items():
+            if key in merged and isinstance(val, dict):
+                merged[key].update({
+                    k: v for k, v in val.items()
+                    if k in ("singular", "plural") and isinstance(v, str) and v.strip()
+                })
+    return merged
+
+
+def get_nomenclature(user_id):
+    if not user_id:
+        return dict(DEFAULT_NOMENCLATURE)
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT nomenclature FROM whatsapp_client_settings WHERE user_id = %s", (user_id,))
+        row = cur.fetchone()
+        return _merge_nomenclature(row[0] if row else None)
+    finally:
+        conn.close()
+
+
+def set_nomenclature(user_id, data):
+    """Só aceita as chaves conhecidas (DEFAULT_NOMENCLATURE) com forma
+    singular/plural em texto — ignora qualquer outra coisa vinda do cliente."""
+    cleaned = {}
+    for key in DEFAULT_NOMENCLATURE:
+        val = (data or {}).get(key)
+        if not isinstance(val, dict):
+            continue
+        entry = {}
+        for form in ("singular", "plural"):
+            v = val.get(form)
+            if isinstance(v, str) and v.strip():
+                entry[form] = v.strip()[:80]
+        if entry:
+            cleaned[key] = entry
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_client_settings (user_id, nomenclature, updated_at)
+               VALUES (%s, %s, NOW())
+               ON CONFLICT (user_id) DO UPDATE SET nomenclature = %s, updated_at = NOW()""",
+            (user_id, psycopg2.extras.Json(cleaned), psycopg2.extras.Json(cleaned)),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return _merge_nomenclature(cleaned)
 
 
 def create_account(label, connection_type, user_id=None):
@@ -1228,10 +1298,12 @@ def _send_consultant_invite_message(consultant):
     nativeFlowMessage) e mostra 'Não foi possível carregar a mensagem' pra
     quem recebe por lá. O webhook já aceita SIM/NÃO digitado (era o fallback
     de texto do botão, agora é o único caminho)."""
+    account = get_account(consultant["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"].lower()
     evolution.send_text(
         consultant["wa_session_name"],
         _phone_from_wa_id(consultant["wa_id"]),
-        f"Você foi cadastrado como consultor ({consultant['name']}) pra receber agendamentos por aqui. "
+        f"Você foi cadastrado como {term} ({consultant['name']}) pra receber agendamentos por aqui. "
         f"Confirma o cadastro? Responda SIM ou NÃO.",
     )
 
@@ -1350,6 +1422,28 @@ def api_resend_consultant_invite(consultant_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/whatsapp/accounts/<int:account_id>/nomenclature", methods=["GET"])
+def api_get_nomenclature(account_id):
+    account = get_account(account_id)
+    if not account:
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    return jsonify({"nomenclature": get_nomenclature(account.get("user_id"))})
+
+
+@app.route("/api/whatsapp/accounts/<int:account_id>/nomenclature", methods=["PATCH"])
+def api_set_nomenclature(account_id):
+    # Nomenclatura é por CLIENTE, não por conta — grava em whatsapp_client_settings
+    # chaveada no user_id da conta, então vale pra todas as outras contas do
+    # mesmo cliente também (mesmo comportamento pro lado admin e client-portal).
+    account = get_account(account_id)
+    if not account:
+        return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
+    if not account.get("user_id"):
+        return jsonify({"ok": False, "message": "Essa conta não está vinculada a um cliente"}), 400
+    data = request.json or {}
+    return jsonify({"ok": True, "nomenclature": set_nomenclature(account["user_id"], data)})
+
+
 @app.route("/api/whatsapp/accounts/<int:account_id>/appointments", methods=["GET"])
 def api_list_appointments(account_id):
     if not get_account(account_id):
@@ -1420,6 +1514,23 @@ def cp_list_accounts():
     user_id, err = _require_client()
     if err: return err
     return jsonify({"accounts": get_accounts(user_id=user_id)})
+
+
+@app.route("/api/client-portal/settings/nomenclature", methods=["GET"])
+def cp_get_nomenclature():
+    user_id, err = _require_client()
+    if err: return err
+    return jsonify({"nomenclature": get_nomenclature(user_id)})
+
+
+@app.route("/api/client-portal/settings/nomenclature", methods=["PATCH"])
+def cp_set_nomenclature():
+    # Vale pra todas as contas de WhatsApp do cliente logado, não só pra uma —
+    # é por isso que essa rota não leva account_id na URL.
+    user_id, err = _require_client()
+    if err: return err
+    data = request.json or {}
+    return jsonify({"ok": True, "nomenclature": set_nomenclature(user_id, data)})
 
 
 @app.route("/api/client-portal/accounts/<int:account_id>/connect", methods=["POST"])

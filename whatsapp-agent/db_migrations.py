@@ -327,6 +327,21 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_appointments ADD COLUMN IF NOT EXISTS subject VARCHAR(200);
     """,
+
+    # 18 — nomenclatura customizável por CLIENTE (users.id), não por conta —
+    # um cliente pode ter mais de uma whatsapp_accounts (o seletor de conta na
+    # Agenda já existe) e a nomenclatura vale pra todas elas, por isso é
+    # chaveada em user_id e não em account_id (diferente de whatsapp_settings,
+    # que é por conta e está sem uso). Hoje só a chave "consultant" é escrita/
+    # lida ({"singular": "...", "plural": "..."}), mas o JSONB fica aberto pra
+    # dar pra acrescentar outros termos customizáveis depois sem migração nova.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_client_settings (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        nomenclature JSONB NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    """,
 ]
 
 

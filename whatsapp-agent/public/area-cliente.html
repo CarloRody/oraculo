@@ -220,7 +220,7 @@
             <div class="form-row" style="align-items:center;">
                 <label style="color:#94a3b8; font-size:0.85rem;">Conta:</label>
                 <select class="form-input" id="agendaAccountSelect" onchange="onAgendaAccountChange()"></select>
-                <button class="btn btn-sm" onclick="openConsultantModal()">+ Consultor</button>
+                <button class="btn btn-sm" id="addConsultantBtn" onclick="openConsultantModal()">+ Consultor</button>
             </div>
             <p id="agendaDisabledNotice" style="display:none; color:#fbbf24; font-size:0.85rem; margin-top:0.5rem;">
                 A agenda não está ativada no seu plano — fale com o administrador do Oráculo pra ativar.
@@ -228,7 +228,23 @@
         </div>
 
         <div class="card" style="max-width:1000px;">
-            <h2>Consultores</h2>
+            <h2>Nomenclatura</h2>
+            <p style="color:#94a3b8; font-size:0.82rem; margin-bottom:0.6rem;">Troque "Consultor" pelo termo usado na sua clínica/consultoria (ex: Médico, Dr., Especialista). Vale pra todas as suas contas, nas telas e nas mensagens do WhatsApp.</p>
+            <div class="form-row">
+                <div class="form-group" style="flex:1;">
+                    <label>Singular</label>
+                    <input type="text" class="form-input" id="nomenclatureSingularInput" placeholder="Consultor">
+                </div>
+                <div class="form-group" style="flex:1;">
+                    <label>Plural</label>
+                    <input type="text" class="form-input" id="nomenclaturePluralInput" placeholder="Consultores">
+                </div>
+                <button class="btn btn-sm" onclick="saveNomenclature()" style="align-self:flex-end; margin-bottom:1rem;">Salvar</button>
+            </div>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2 id="consultantsHeading">Consultores</h2>
             <div id="consultantsList"><p class="empty">Selecione uma conta.</p></div>
         </div>
 
@@ -278,7 +294,7 @@
             <input type="text" class="form-input" id="consultantName" placeholder="Ex: Dra. Ana">
         </div>
         <div class="form-group">
-            <label>Contexto <span style="font-weight:normal; color:#64748b;">(opcional — mostrado ao cliente na lista de consultores)</span></label>
+            <label>Contexto <span style="font-weight:normal; color:#64748b;" id="consultantContextHint">(opcional — mostrado ao cliente na lista de consultores)</span></label>
             <textarea class="form-input" id="consultantContext" rows="2" placeholder="Ex: Consultas de planejamento financeiro"></textarea>
         </div>
         <div class="form-row">
@@ -622,7 +638,7 @@ function renderChatPanelHeader() {
         <div style="display:flex; align-items:center; justify-content:space-between; gap:0.75rem;">
             <span>${esc(name)}</span>
             <div style="display:flex; align-items:center; gap:0.75rem;">
-                <button class="btn btn-sm" onclick="openConsultantModalFromChat()">+ Consultor</button>
+                <button class="btn btn-sm" id="addConsultantBtnChat" onclick="openConsultantModalFromChat()">+ Consultor</button>
                 <label style="font-size:0.75rem; color:#94a3b8; font-weight:normal; display:flex; align-items:center; gap:0.35rem; cursor:pointer;">
                     <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
                     Resposta automática nesta conversa
@@ -722,10 +738,50 @@ async function submitStartChat() {
 
 // ---- Agenda ----
 let currentAgendaAccountId = null;
+let agendaAccounts = [];
 let allConsultants = [];
 const WEEKDAYS = [['mon','Seg'], ['tue','Ter'], ['wed','Qua'], ['thu','Qui'], ['fri','Sex'], ['sat','Sáb'], ['sun','Dom']];
 const WEEKDAY_KEY_SET = new Set(WEEKDAYS.map(([k]) => k));
 let consultantExtraDates = [];
+let nomenclature = { consultant: { singular: 'Consultor', plural: 'Consultores' } };
+
+function term(plural) {
+    const c = nomenclature.consultant || {};
+    return (plural ? c.plural : c.singular) || (plural ? 'Consultores' : 'Consultor');
+}
+
+function applyNomenclatureLabels() {
+    document.getElementById('addConsultantBtn').textContent = `+ ${term()}`;
+    document.getElementById('addConsultantBtnChat').textContent = `+ ${term()}`;
+    document.getElementById('consultantsHeading').textContent = term(true);
+    document.getElementById('consultantContextHint').textContent = `(opcional — mostrado ao cliente na lista de ${term(true).toLowerCase()})`;
+    document.getElementById('nomenclatureSingularInput').value = term();
+    document.getElementById('nomenclaturePluralInput').value = term(true);
+}
+
+function updateAgendaNomenclature() {
+    const acc = agendaAccounts.find(a => a.id === currentAgendaAccountId);
+    nomenclature = (acc && acc.nomenclature) || { consultant: { singular: 'Consultor', plural: 'Consultores' } };
+    applyNomenclatureLabels();
+}
+
+async function saveNomenclature() {
+    if (!currentAgendaAccountId) return alert('Selecione uma conta primeiro.');
+    const singular = document.getElementById('nomenclatureSingularInput').value.trim();
+    const plural = document.getElementById('nomenclaturePluralInput').value.trim();
+    if (!singular || !plural) return alert('Preencha singular e plural.');
+    const res = await authFetch(API + `/api/client-portal/settings/nomenclature`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ consultant: { singular, plural } }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar nomenclatura.');
+    nomenclature = data.nomenclature;
+    agendaAccounts.forEach(a => { a.nomenclature = data.nomenclature; });
+    applyNomenclatureLabels();
+    loadConsultants();
+    alert('Nomenclatura salva!');
+}
 
 function fmtExtraDate(iso) {
     const [y, m, d] = iso.split('-');
@@ -770,22 +826,24 @@ function consultantStatusLabel(status) {
 }
 
 async function initAgendaTab() {
-    const accounts = await fetchAccounts();
+    agendaAccounts = await fetchAccounts();
     const sel = document.getElementById('agendaAccountSelect');
-    if (!accounts.length) {
+    if (!agendaAccounts.length) {
         sel.innerHTML = '<option value="">Nenhuma conta vinculada</option>';
         return;
     }
-    sel.innerHTML = accounts.map(a => `<option value="${a.id}">${esc(a.label)}</option>`).join('');
-    if (!currentAgendaAccountId || !accounts.some(a => a.id === currentAgendaAccountId)) {
-        currentAgendaAccountId = accounts[0].id;
+    sel.innerHTML = agendaAccounts.map(a => `<option value="${a.id}">${esc(a.label)}</option>`).join('');
+    if (!currentAgendaAccountId || !agendaAccounts.some(a => a.id === currentAgendaAccountId)) {
+        currentAgendaAccountId = agendaAccounts[0].id;
     }
     sel.value = currentAgendaAccountId;
+    updateAgendaNomenclature();
     await loadAgendaData();
 }
 
 function onAgendaAccountChange() {
     currentAgendaAccountId = Number(document.getElementById('agendaAccountSelect').value);
+    updateAgendaNomenclature();
     loadAgendaData();
 }
 
@@ -802,14 +860,14 @@ async function loadConsultants() {
     const notice = document.getElementById('agendaDisabledNotice');
     if (!res.ok) {
         notice.style.display = res.status === 403 ? 'block' : 'none';
-        el.innerHTML = `<p class="empty">${esc(data.message || 'Erro ao carregar consultores.')}</p>`;
+        el.innerHTML = `<p class="empty">${esc(data.message || `Erro ao carregar ${term(true).toLowerCase()}.`)}</p>`;
         return;
     }
     notice.style.display = 'none';
     const consultants = data.consultants || [];
     allConsultants = consultants;
     if (!consultants.length) {
-        el.innerHTML = '<p class="empty">Nenhum consultor cadastrado ainda.</p>';
+        el.innerHTML = `<p class="empty">Nenhum ${term().toLowerCase()} cadastrado ainda.</p>`;
         return;
     }
     el.innerHTML = consultants.map(c => `
@@ -836,10 +894,10 @@ async function loadConsultants() {
 }
 
 async function deleteConsultant(id, name) {
-    if (!confirm(`Excluir o consultor "${name}"? Os agendamentos dele também serão apagados. Essa ação não pode ser desfeita.`)) return;
+    if (!confirm(`Excluir o ${term().toLowerCase()} "${name}"? Os agendamentos dele também serão apagados. Essa ação não pode ser desfeita.`)) return;
     const res = await authFetch(API + `/api/client-portal/consultants/${id}`, { method: 'DELETE' });
     const data = await res.json();
-    if (!res.ok) return alert(data.message || 'Erro ao excluir consultor.');
+    if (!res.ok) return alert(data.message || `Erro ao excluir ${term().toLowerCase()}.`);
     loadConsultants();
     loadAppointments();
 }
@@ -908,7 +966,7 @@ function openConsultantModal(consultant) {
     if (!currentAgendaAccountId) return alert('Selecione uma conta primeiro.');
     const availability = (consultant && consultant.weekly_availability) || {};
     document.getElementById('editConsultantId').value = consultant ? consultant.id : '';
-    document.getElementById('consultantModalTitle').textContent = consultant ? 'Editar Consultor' : '+ Consultor';
+    document.getElementById('consultantModalTitle').textContent = consultant ? `Editar ${term()}` : `+ ${term()}`;
     document.getElementById('consultantSubmitBtn').textContent = consultant ? 'Salvar' : 'Convidar por WhatsApp';
     document.getElementById('consultantPhone').value = consultant ? (consultant.wa_id || '').replace('@s.whatsapp.net', '') : '';
     document.getElementById('consultantPhone').disabled = !!consultant;
@@ -950,6 +1008,7 @@ function openConsultantModalFromChat() {
     const chat = currentChats.find(c => c.id === currentChatId);
     if (!chat) return;
     currentAgendaAccountId = currentAccountId;
+    updateAgendaNomenclature();
     openConsultantModal();
     document.getElementById('consultantPhone').value = (chat.wa_id || '').split('@')[0];
     document.getElementById('consultantName').value = chat.display_name !== chat.wa_id ? chat.display_name : '';
@@ -990,7 +1049,7 @@ async function submitConsultant() {
             method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
         });
         const data = await res.json();
-        if (!res.ok) return alert(data.message || 'Erro ao salvar consultor.');
+        if (!res.ok) return alert(data.message || `Erro ao salvar ${term().toLowerCase()}.`);
         closeConsultantModal();
         loadConsultants();
         return;
@@ -1010,9 +1069,9 @@ async function submitConsultant() {
         method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
     });
     const data = await res.json();
-    if (!res.ok) return alert(data.message || 'Erro ao cadastrar consultor.');
+    if (!res.ok) return alert(data.message || `Erro ao cadastrar ${term().toLowerCase()}.`);
     closeConsultantModal();
-    alert('Convite enviado! O consultor precisa confirmar pelo WhatsApp antes de ficar ativo.');
+    alert(`Convite enviado! O ${term().toLowerCase()} precisa confirmar pelo WhatsApp antes de ficar ativo.`);
     loadConsultants();
 }
 
