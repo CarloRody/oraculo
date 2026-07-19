@@ -2073,7 +2073,22 @@ def cp_set_checklist_template(account_id):
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
     data = request.json or {}
-    return jsonify({"ok": True, "steps": set_checklist_template(account_id, data.get("steps"))})
+    steps = data.get("steps") or []
+    # Sem essa checagem, set_checklist_template() derruba auto_message_enabled
+    # pra False em silêncio quando o texto vem vazio (ver server.py mais
+    # abaixo) — e quem tá preenchendo o formulário só descobre que "não
+    # salvou" ao reabrir a tela, sem nenhuma explicação do porquê.
+    for step in steps:
+        if not isinstance(step, dict):
+            continue
+        label = (step.get("label") or "").strip()
+        if label and step.get("auto_message_enabled") and not (step.get("auto_message_template") or "").strip():
+            return jsonify({
+                "ok": False,
+                "message": f'A etapa "{label}" está marcada pra enviar mensagem automática, mas o texto da '
+                           f'mensagem está vazio. Preencha o texto ou desmarque a opção.',
+            }), 400
+    return jsonify({"ok": True, "steps": set_checklist_template(account_id, steps)})
 
 
 @app.route("/api/client-portal/appointments/<int:appointment_id>/checklist", methods=["GET"])
