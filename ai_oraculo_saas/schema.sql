@@ -44,7 +44,8 @@ CREATE TABLE IF NOT EXISTS plans (
     model_id INTEGER REFERENCES ai_models(id) ON DELETE SET NULL, -- Modelo de IA usado nas respostas de clientes deste plano (NULL = usa config.yaml global, sem cobrança de crédito)
     charge_unrelated_received_messages BOOLEAN NOT NULL DEFAULT FALSE, -- cobra mensagens WhatsApp recebidas numa conexão sem área vinculada?
     price_per_unrelated_message NUMERIC(10,4), -- preço dessa mensagem recebida (NULL = não cobra mesmo com o flag acima)
-    agenda_enabled BOOLEAN NOT NULL DEFAULT FALSE, -- libera a feature de agenda de consultores no whatsapp-agent (dados da agenda ficam lá, não aqui)
+    agenda_enabled BOOLEAN NOT NULL DEFAULT FALSE, -- OBSOLETO: substituído por booking_mode (migração 20), mantido na tabela sem uso
+    booking_mode VARCHAR(20) NOT NULL DEFAULT 'none' CHECK (booking_mode IN ('none', 'consultores', 'crm_medico')), -- modo de agenda no whatsapp-agent: nenhum, self-service do paciente, ou CRM médico (painel da secretária)
     whatsapp_context_tokens INTEGER, -- orçamento de tokens de histórico injetado nas respostas automáticas de WhatsApp (NULL/0 = sem contexto)
     pesquisa_context_tokens INTEGER -- orçamento de tokens de histórico injetado em /api/chat e /api/agent-research (NULL/0 = sem contexto)
 );

@@ -2334,7 +2334,7 @@ def admin_list_plans():
         cur = conn.cursor()
         cur.execute(
             """SELECT p.id, p.name, p.description, p.model_id, m.name,
-                      p.charge_unrelated_received_messages, p.price_per_unrelated_message, p.agenda_enabled,
+                      p.charge_unrelated_received_messages, p.price_per_unrelated_message, p.booking_mode,
                       p.whatsapp_context_tokens, p.pesquisa_context_tokens
                FROM plans p LEFT JOIN ai_models m ON m.id = p.model_id ORDER BY p.name"""
         )
@@ -2342,7 +2342,7 @@ def admin_list_plans():
             "id": r[0], "name": r[1], "description": r[2], "model_id": r[3], "model_name": r[4],
             "charge_unrelated_received_messages": r[5],
             "price_per_unrelated_message": float(r[6]) if r[6] is not None else None,
-            "agenda_enabled": r[7],
+            "booking_mode": r[7],
             "whatsapp_context_tokens": r[8],
             "pesquisa_context_tokens": r[9]
         } for r in cur.fetchall()]
@@ -2406,7 +2406,9 @@ def admin_create_plan():
     model_id = data.get('model_id') or None
     charge_unrelated = bool(data.get('charge_unrelated_received_messages'))
     unrelated_price = data.get('price_per_unrelated_message')
-    agenda_enabled = bool(data.get('agenda_enabled'))
+    booking_mode = data.get('booking_mode') or 'none'
+    if booking_mode not in ('none', 'consultores', 'crm_medico'):
+        return jsonify({"error": "booking_mode inválido"}), 400
     whatsapp_context_tokens = data.get('whatsapp_context_tokens')
     pesquisa_context_tokens = data.get('pesquisa_context_tokens')
 
@@ -2416,9 +2418,9 @@ def admin_create_plan():
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled, whatsapp_context_tokens, pesquisa_context_tokens)
+            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, whatsapp_context_tokens, pesquisa_context_tokens)
                VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-            (name, description, model_id, charge_unrelated, unrelated_price, agenda_enabled, whatsapp_context_tokens, pesquisa_context_tokens)
+            (name, description, model_id, charge_unrelated, unrelated_price, booking_mode, whatsapp_context_tokens, pesquisa_context_tokens)
         )
         plan_id = cur.fetchone()[0]
         _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
@@ -2460,8 +2462,12 @@ def admin_update_plan(plan_id):
             fields['charge_unrelated_received_messages'] = bool(data.get('charge_unrelated_received_messages'))
         if 'price_per_unrelated_message' in data:
             fields['price_per_unrelated_message'] = data.get('price_per_unrelated_message')
-        if 'agenda_enabled' in data:
-            fields['agenda_enabled'] = bool(data.get('agenda_enabled'))
+        if 'booking_mode' in data:
+            booking_mode = data.get('booking_mode') or 'none'
+            if booking_mode not in ('none', 'consultores', 'crm_medico'):
+                conn.close()
+                return jsonify({"error": "booking_mode inválido"}), 400
+            fields['booking_mode'] = booking_mode
         if 'whatsapp_context_tokens' in data:
             fields['whatsapp_context_tokens'] = data.get('whatsapp_context_tokens')
         if 'pesquisa_context_tokens' in data:

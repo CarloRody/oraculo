@@ -476,7 +476,10 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
     if state is None:
         if not _is_trigger(text):
             return False
-        if not server.plan_has_agenda(account.get("user_id")):
+        if server.plan_booking_mode(account.get("user_id")) != "consultores":
+            # 'crm_medico' desliga o self-service do paciente de propósito —
+            # nesse modo só a secretária cria agendamentos pelo painel dela.
+            # 'none' continua sem agenda nenhuma, igual antes.
             return False
         consultants = [c for c in server.get_consultants(account["id"]) if c["status"] == "active"]
         if not consultants:

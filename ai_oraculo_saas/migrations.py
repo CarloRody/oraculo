@@ -360,6 +360,19 @@ MIGRATIONS = [
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS whatsapp_context_tokens INTEGER;
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS pesquisa_context_tokens INTEGER;
     """,
+
+    # 20 — substitui o toggle único agenda_enabled por um modo de 3 estados:
+    # Consultores (agendamento self-service do paciente via WhatsApp) e CRM
+    # médico (painel da secretária + checklist, self-service desligado) agora
+    # são mutuamente exclusivos, não dois add-ons independentes. agenda_enabled
+    # fica na tabela sem uso (não é dropada) — só backfill uma vez (a condição
+    # "booking_mode = 'none'" evita sobrescrever uma escolha manual em runs
+    # seguintes).
+    """
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS booking_mode VARCHAR(20) NOT NULL DEFAULT 'none'
+        CHECK (booking_mode IN ('none', 'consultores', 'crm_medico'));
+    UPDATE plans SET booking_mode = 'consultores' WHERE agenda_enabled = TRUE AND booking_mode = 'none';
+    """,
 ]
 
 

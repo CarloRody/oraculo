@@ -412,10 +412,12 @@
             <input type="number" step="0.01" class="form-input" id="planUnrelatedPrice" placeholder="R$ por mensagem recebida" style="margin-top:0.4rem; max-width:220px;" disabled>
         </div>
         <div class="form-group">
-            <label style="display:flex; align-items:center; gap:0.5rem; font-weight:normal; cursor:pointer;">
-                <input type="checkbox" id="planAgendaEnabled">
-                Ativar agenda de consultores (agendamento via WhatsApp)
-            </label>
+            <label>Agenda de consultores (whatsapp-agent)</label>
+            <select class="form-input" id="planBookingMode" style="max-width:420px;">
+                <option value="none">Desativada</option>
+                <option value="consultores">Consultores — paciente agenda sozinho pelo WhatsApp, consultor confirma</option>
+                <option value="crm_medico">CRM médico — painel da secretária + checklist, sem agendamento direto do paciente</option>
+            </select>
         </div>
         <div class="form-group">
             <label>Contexto de conversa — WhatsApp (tokens, vazio = sem contexto)</label>
@@ -1409,7 +1411,7 @@ function showPlanModal(planId) {
     unrelatedPrice.value = plan && plan.price_per_unrelated_message != null ? plan.price_per_unrelated_message : '';
     unrelatedPrice.disabled = !chargeUnrelated.checked;
 
-    document.getElementById('planAgendaEnabled').checked = plan ? !!plan.agenda_enabled : false;
+    document.getElementById('planBookingMode').value = plan && plan.booking_mode ? plan.booking_mode : 'none';
 
     document.getElementById('planWhatsappContext').value = plan && plan.whatsapp_context_tokens != null ? plan.whatsapp_context_tokens : '';
     document.getElementById('planPesquisaContext').value = plan && plan.pesquisa_context_tokens != null ? plan.pesquisa_context_tokens : '';
@@ -1451,7 +1453,7 @@ async function savePlan() {
     const charge_unrelated_received_messages = document.getElementById('planChargeUnrelated').checked;
     const unrelatedPriceVal = document.getElementById('planUnrelatedPrice').value;
     const price_per_unrelated_message = unrelatedPriceVal ? Number(unrelatedPriceVal) : null;
-    const agenda_enabled = document.getElementById('planAgendaEnabled').checked;
+    const booking_mode = document.getElementById('planBookingMode').value;
     const whatsappContextVal = document.getElementById('planWhatsappContext').value;
     const whatsapp_context_tokens = whatsappContextVal ? Number(whatsappContextVal) : null;
     const pesquisaContextVal = document.getElementById('planPesquisaContext').value;
@@ -1461,7 +1463,7 @@ async function savePlan() {
         const res = await fetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, agenda_enabled, whatsapp_context_tokens, pesquisa_context_tokens })
+            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, whatsapp_context_tokens, pesquisa_context_tokens })
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar plano.');

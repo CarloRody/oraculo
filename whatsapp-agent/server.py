@@ -619,21 +619,23 @@ def set_chat_booking_state(chat_id, state):
 # Agenda de consultores
 # ---------------------------------------------------------------------------
 
-def plan_has_agenda(user_id):
-    # Leitura direta em plans (mesmo ai_tutor_db, mesma conexão — mesmo
-    # padrão já usado em get_clients()/_client_api_key()); nunca escrevemos
-    # nessa tabela daqui. Sem cliente vinculado à conta = sem agenda.
+def plan_booking_mode(user_id):
+    """'none' | 'consultores' | 'crm_medico' — leitura direta em plans (mesmo
+    ai_tutor_db, mesma conexão — mesmo padrão já usado em
+    get_clients()/_client_api_key()); nunca escrevemos nessa tabela daqui.
+    Sem cliente vinculado à conta = 'none'. Consultores e CRM médico são
+    mutuamente exclusivos (ver plano): só um dos dois habilita cada recurso."""
     if not user_id:
-        return False
+        return "none"
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT p.agenda_enabled FROM users u JOIN plans p ON p.id = u.plan_id WHERE u.id = %s",
+            "SELECT p.booking_mode FROM users u JOIN plans p ON p.id = u.plan_id WHERE u.id = %s",
             (user_id,),
         )
         row = cur.fetchone()
-        return bool(row[0]) if row else False
+        return row[0] if row and row[0] else "none"
     finally:
         conn.close()
 
@@ -1658,7 +1660,7 @@ def api_list_consultants(account_id):
     account = get_account(account_id)
     if not account:
         return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
-    if not plan_has_agenda(account.get("user_id")):
+    if plan_booking_mode(account.get("user_id")) == "none":
         return jsonify({"ok": False, "message": "Agenda não está ativada no plano deste cliente."}), 403
     return jsonify({"consultants": get_consultants(account_id)})
 
@@ -1668,7 +1670,7 @@ def api_create_consultant(account_id):
     account = get_account(account_id)
     if not account:
         return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
-    if not plan_has_agenda(account.get("user_id")):
+    if plan_booking_mode(account.get("user_id")) == "none":
         return jsonify({"ok": False, "message": "Agenda não está ativada no plano deste cliente."}), 403
 
     data = request.json or {}
@@ -1807,6 +1809,15 @@ def _require_client():
     return user_id, None
 
 
+def _require_crm_medico(user_id):
+    """Gate das rotas exclusivas do CRM médico (checklist/painel da
+    secretária) — devolve uma resposta de erro se o plano do cliente não
+    estiver no modo 'crm_medico', ou None se puder seguir."""
+    if plan_booking_mode(user_id) != "crm_medico":
+        return jsonify({"ok": False, "message": "O CRM médico não está ativado no plano desta conta."}), 403
+    return None
+
+
 def _not_found(msg="Não encontrado"):
     return jsonify({"ok": False, "message": msg}), 404
 
@@ -1866,6 +1877,16 @@ def cp_list_accounts():
     user_id, err = _require_client()
     if err: return err
     return jsonify({"accounts": get_accounts(user_id=user_id)})
+
+
+@app.route("/api/client-portal/booking-mode", methods=["GET"])
+def cp_booking_mode():
+    """Usado pelos frontends (area-cliente.html, painel-secretaria.html) pra
+    saber se o cliente está no modo Consultores, CRM médico, ou nenhum, e
+    mostrar/esconder telas de acordo — sem precisar duplicar essa lógica."""
+    user_id, err = _require_client()
+    if err: return err
+    return jsonify({"booking_mode": plan_booking_mode(user_id)})
 
 
 @app.route("/api/client-portal/settings/nomenclature", methods=["GET"])
@@ -1989,6 +2010,41 @@ def cp_create_consultant(account_id):
     return api_create_consultant(account_id)
 
 
+@app.route("/api/client-portal/accounts/<int:account_id>/contacts", methods=["GET"])
+def cp_list_contacts(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return jsonify({"contacts": get_account_contacts(account_id)})
+
+
+@app.route("/api/client-portal/consultants/<int:consultant_id>/free-slots", methods=["GET"])
+def cp_free_slots(consultant_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Consultor não encontrado")
+    consultant = get_consultant(consultant_id)
+    slots = booking_flow.compute_free_slots(consultant)
+    return jsonify({"slots": [s.isoformat() for s in slots]})
+
+
+@app.route("/api/client-portal/consultants/<int:consultant_id>/appointments", methods=["POST"])
+def cp_create_appointment(consultant_id):
+    """Só o modo CRM médico usa isso — é a única forma de marcar uma consulta
+    nova quando o self-service do paciente via WhatsApp está desligado (ver
+    plan_booking_mode/booking_flow.py:handle_incoming)."""
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Consultor não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    consultant = get_consultant(consultant_id)
+    return _create_appointment_for_consultant(consultant, request.json or {})
+
+
 @app.route("/api/client-portal/consultants/<int:consultant_id>", methods=["PATCH"])
 def cp_update_consultant(consultant_id):
     user_id, err = _require_client()
@@ -2052,6 +2108,8 @@ def cp_complete_appointment(appointment_id):
     if err: return err
     if _appointment_owner(appointment_id) != user_id:
         return _not_found("Agendamento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
     if not mark_appointment_completed(appointment_id):
         return jsonify({"ok": False, "message": "Agendamento não encontrado ou já concluído/cancelado"}), 400
     return jsonify({"ok": True})
@@ -2063,6 +2121,8 @@ def cp_get_checklist_template(account_id):
     if err: return err
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
     return jsonify({"steps": get_checklist_template(account_id)})
 
 
@@ -2072,6 +2132,8 @@ def cp_set_checklist_template(account_id):
     if err: return err
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
     data = request.json or {}
     steps = data.get("steps") or []
     # Sem essa checagem, set_checklist_template() derruba auto_message_enabled
@@ -2097,6 +2159,8 @@ def cp_get_appointment_checklist(appointment_id):
     if err: return err
     if _appointment_owner(appointment_id) != user_id:
         return _not_found("Agendamento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
     return jsonify({"items": get_checklist_items_for_appointment(appointment_id)})
 
 
@@ -2106,6 +2170,8 @@ def cp_list_checklist_items(account_id):
     if err: return err
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
     status = request.args.get("status") or None
     return jsonify({"items": get_checklist_items_for_account(account_id, status)})
 
@@ -2116,6 +2182,8 @@ def cp_update_checklist_item(item_id):
     if err: return err
     if _checklist_item_owner(item_id) != user_id:
         return _not_found("Item não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
     new_status = (request.json or {}).get("status")
     if new_status not in ("pending", "done", "skipped"):
         return jsonify({"ok": False, "message": "Status inválido"}), 400
@@ -2169,14 +2237,11 @@ def api_portal_appointments(token):
     return jsonify({"pending": pending, "upcoming": upcoming, "history": history})
 
 
-@app.route("/api/consultant-portal/<token>/contacts", methods=["GET"])
-def api_portal_contacts(token):
-    """Contatos já conhecidos na conexão de WhatsApp do consultor — usado pelo
+def get_account_contacts(account_id):
+    """Contatos já conhecidos na conexão de WhatsApp da conta — usado pelo
     formulário de novo agendamento, pra escolher em vez de só digitar o
-    telefone. Nunca expõe account_id nem dados de outra conta/consultor."""
-    consultant = get_consultant_by_portal_token(token)
-    if not consultant:
-        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    telefone. Reaproveitado tanto pelo portal do consultor (por token) quanto
+    pelo client-portal (por API key, painel da secretária)."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -2184,29 +2249,18 @@ def api_portal_contacts(token):
             """SELECT wa_id, COALESCE(name, push_name) FROM whatsapp_contacts
                WHERE account_id = %s AND status = 'active' AND wa_id LIKE '%%@s.whatsapp.net'
                ORDER BY COALESCE(name, push_name) NULLS LAST""",
-            (consultant["account_id"],),
+            (account_id,),
         )
-        contacts = [{"phone": r[0].split("@")[0], "name": r[1]} for r in cur.fetchall()]
-        return jsonify({"contacts": contacts})
+        return [{"phone": r[0].split("@")[0], "name": r[1]} for r in cur.fetchall()]
     finally:
         conn.close()
 
 
-@app.route("/api/consultant-portal/<token>/free-slots", methods=["GET"])
-def api_portal_free_slots(token):
-    consultant = get_consultant_by_portal_token(token)
-    if not consultant:
-        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
-    slots = booking_flow.compute_free_slots(consultant)
-    return jsonify({"slots": [s.isoformat() for s in slots]})
-
-
-@app.route("/api/consultant-portal/<token>/appointments", methods=["POST"])
-def api_portal_create_appointment(token):
-    consultant = get_consultant_by_portal_token(token)
-    if not consultant:
-        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
-    data = request.json or {}
+def _create_appointment_for_consultant(consultant, data):
+    """Corpo comum de criação de agendamento — usado tanto pelo próprio
+    consultor (portal por token) quanto pela secretária (client-portal, modo
+    CRM médico). Sempre nasce 'confirmed' direto (notify_consultant=False):
+    quem cria já é quem administra a agenda, não precisa de auto-confirmação."""
     phone = re.sub(r"\D", "", data.get("phone") or "")
     name = (data.get("name") or "").strip()
     subject = (data.get("subject") or "").strip() or None
@@ -2224,6 +2278,31 @@ def api_portal_create_appointment(token):
     if not ok:
         return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
     return jsonify({"ok": True}), 201
+
+
+@app.route("/api/consultant-portal/<token>/contacts", methods=["GET"])
+def api_portal_contacts(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    return jsonify({"contacts": get_account_contacts(consultant["account_id"])})
+
+
+@app.route("/api/consultant-portal/<token>/free-slots", methods=["GET"])
+def api_portal_free_slots(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    slots = booking_flow.compute_free_slots(consultant)
+    return jsonify({"slots": [s.isoformat() for s in slots]})
+
+
+@app.route("/api/consultant-portal/<token>/appointments", methods=["POST"])
+def api_portal_create_appointment(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    return _create_appointment_for_consultant(consultant, request.json or {})
 
 
 @app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/cancel", methods=["POST"])
