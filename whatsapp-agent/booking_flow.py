@@ -201,7 +201,7 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
         cur = conn.cursor()
         cur.execute(
             """SELECT scheduled_at, duration_minutes FROM whatsapp_appointments
-               WHERE consultant_id = %s AND status = 'confirmed' AND scheduled_at >= %s""",
+               WHERE consultant_id = %s AND status IN ('confirmed', 'pending_consultant') AND scheduled_at >= %s""",
             (consultant["id"], now),
         )
         busy = [(r[0], r[0] + datetime.timedelta(minutes=r[1])) for r in cur.fetchall()]
@@ -229,10 +229,15 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
     return slots
 
 
-def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=None):
+def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=None, status="confirmed"):
     """pg_advisory_xact_lock serializa tentativas de agendar o MESMO
     consultor — evita duas pessoas confirmarem o mesmo horário ao mesmo
-    tempo (checar disponibilidade e inserir não são atômicos sem isso)."""
+    tempo (checar disponibilidade e inserir não são atômicos sem isso).
+
+    O conflito é checado contra 'confirmed' E 'pending_consultant' — um
+    horário aguardando confirmação do consultor já fica reservado, ninguém
+    mais pode escolhê-lo enquanto isso (senão dois clientes poderiam disputar
+    o mesmo horário até o consultor decidir)."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -241,7 +246,7 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
         end_at = scheduled_at + datetime.timedelta(minutes=duration)
         cur.execute(
             """SELECT 1 FROM whatsapp_appointments
-               WHERE consultant_id = %s AND status = 'confirmed'
+               WHERE consultant_id = %s AND status IN ('confirmed', 'pending_consultant')
                AND scheduled_at < %s AND (scheduled_at + make_interval(mins => duration_minutes)) > %s""",
             (consultant["id"], end_at, scheduled_at),
         )
@@ -249,9 +254,9 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
             conn.rollback()
             return False
         cur.execute(
-            """INSERT INTO whatsapp_appointments (consultant_id, client_contact_id, scheduled_at, duration_minutes, subject)
-               VALUES (%s, %s, %s, %s, %s)""",
-            (consultant["id"], client_contact_id, scheduled_at, duration, subject),
+            """INSERT INTO whatsapp_appointments (consultant_id, client_contact_id, scheduled_at, duration_minutes, subject, status)
+               VALUES (%s, %s, %s, %s, %s, %s)""",
+            (consultant["id"], client_contact_id, scheduled_at, duration, subject, status),
         )
         conn.commit()
         return True
@@ -259,27 +264,45 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
         conn.close()
 
 
-def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None):
+def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None, requires_confirmation=False):
     """Cria o agendamento (se o horário ainda estiver livre) e avisa o
     cliente. Usado tanto pelo fluxo self-service do cliente (notify_consultant
     =True, ele ainda não sabe do agendamento) quanto pelo portal do próprio
     consultor (notify_consultant=False — não faz sentido avisar quem tá
     criando). `subject` é opcional — só o portal do consultor coleta isso hoje.
+
+    `requires_confirmation=True` (usado só no fluxo self-service do cliente)
+    cria o agendamento como 'pending_consultant' em vez de 'confirmed' direto
+    — o cliente é avisado que está aguardando, e o consultor recebe o link do
+    painel pra confirmar (botão "Confirmar", ver server.py). Quando o próprio
+    consultor cria pelo portal, não faz sentido esperar confirmação da
+    própria criação, por isso o padrão é False.
+
     Retorna True se criou, False se o horário já não estava livre."""
-    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject):
+    status = "pending_consultant" if requires_confirmation else "confirmed"
+    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject, status=status):
         return False
     when = scheduled_at.strftime("%d/%m às %H:%M")
     client_phone = _phone(client_wa_id)
     subject_line = f"\nAssunto: {subject}" if subject else ""
+    if requires_confirmation:
+        client_msg = (f"Recebi seu pedido de agendamento com {consultant['name']} em {when}!{subject_line}\n"
+                       f"Assim que o profissional confirmar, eu te aviso por aqui.")
+    else:
+        client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
     try:
-        evolution.send_text(consultant["wa_session_name"], client_phone,
-                             f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}")
+        evolution.send_text(consultant["wa_session_name"], client_phone, client_msg)
     except EvolutionError:
         pass
     if notify_consultant:
+        if requires_confirmation:
+            import server  # tardio — ver docstring do módulo
+            consultant_msg = (f"Novo agendamento pra confirmar: {client_push_name or client_phone} em {when}.{subject_line}\n"
+                               f"Confirme no seu painel: {server.portal_link(consultant['portal_token'])}")
+        else:
+            consultant_msg = f"Novo agendamento: {client_push_name or client_phone} em {when}.{subject_line}"
         try:
-            evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]),
-                                 f"Novo agendamento: {client_push_name or client_phone} em {when}.{subject_line}")
+            evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]), consultant_msg)
         except EvolutionError:
             pass
     return True
@@ -339,6 +362,62 @@ def cancel_appointment_and_notify(appointment_id, consultant_id):
     return "ok"
 
 
+def confirm_appointment_and_notify(appointment_id, consultant_id):
+    """Confirma um agendamento que veio do self-service do cliente e estava
+    aguardando o consultor ('pending_consultant') e avisa o cliente. Retorna
+    'ok', 'not_found' ou 'forbidden'."""
+    appt = _get_appointment_full(appointment_id)
+    if not appt:
+        return "not_found"
+    if appt["consultant_id"] != consultant_id:
+        return "forbidden"
+    if appt["status"] != "pending_consultant":
+        return "not_found"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_appointments SET status = 'confirmed' WHERE id = %s", (appointment_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
+    try:
+        evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
+                             f"Seu agendamento com {appt['consultant_name']} em {when} foi confirmado pelo profissional! ✅")
+    except EvolutionError:
+        pass
+    return "ok"
+
+
+def decline_appointment_and_notify(appointment_id, consultant_id):
+    """Recusa um agendamento que estava aguardando confirmação do consultor
+    ('pending_consultant') — libera o horário (vira 'cancelled', mesmo estado
+    final de um cancelamento normal) e avisa o cliente. Retorna 'ok',
+    'not_found' ou 'forbidden'."""
+    appt = _get_appointment_full(appointment_id)
+    if not appt:
+        return "not_found"
+    if appt["consultant_id"] != consultant_id:
+        return "forbidden"
+    if appt["status"] != "pending_consultant":
+        return "not_found"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_appointments SET status = 'cancelled' WHERE id = %s", (appointment_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
+    try:
+        evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
+                             f"Seu pedido de agendamento com {appt['consultant_name']} em {when} não pôde ser confirmado. "
+                             f"Digite \"agendar\" pra escolher outro horário.")
+    except EvolutionError:
+        pass
+    return "ok"
+
+
 def reschedule_appointment_and_notify(appointment_id, consultant_id, new_scheduled_at):
     """Remarca (revalidando disponibilidade, mesma trava de concorrência do
     agendamento novo) e avisa o cliente com o horário antigo e o novo.
@@ -358,7 +437,7 @@ def reschedule_appointment_and_notify(appointment_id, consultant_id, new_schedul
         end_at = new_scheduled_at + datetime.timedelta(minutes=appt["slot_duration_minutes"])
         cur.execute(
             """SELECT 1 FROM whatsapp_appointments
-               WHERE consultant_id = %s AND status = 'confirmed' AND id != %s
+               WHERE consultant_id = %s AND status IN ('confirmed', 'pending_consultant') AND id != %s
                AND scheduled_at < %s AND (scheduled_at + make_interval(mins => duration_minutes)) > %s""",
             (consultant_id, appointment_id, end_at, new_scheduled_at),
         )
@@ -492,7 +571,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
         scheduled_at = datetime.datetime.fromisoformat(state["scheduled_at"])
-        if not book_appointment(consultant, contact_id, wa_id, push_name, scheduled_at, notify_consultant=True):
+        if not book_appointment(consultant, contact_id, wa_id, push_name, scheduled_at, notify_consultant=True, requires_confirmation=True):
             _send_text(account, phone, "Esse horário acabou de ser ocupado por outra pessoa. Digite \"agendar\" pra escolher outro.")
         return True
 

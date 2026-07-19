@@ -900,7 +900,7 @@ async function resendConsultantInvite(id) {
 }
 
 function appointmentStatusLabel(status) {
-    return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu' }[status] || status;
+    return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu', pending_consultant: '⏳ Aguardando consultor' }[status] || status;
 }
 
 async function loadAppointments() {
@@ -922,7 +922,7 @@ async function loadAppointments() {
                 ${a.subject ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(a.subject)}</div>` : ''}
             </div>
             <div class="account-actions">
-                ${a.status === 'confirmed' ? `<button class="btn btn-sm btn-danger" onclick="cancelAppointmentRow(${a.id})">Cancelar</button>` : ''}
+                ${(a.status === 'confirmed' || a.status === 'pending_consultant') ? `<button class="btn btn-sm btn-danger" onclick="cancelAppointmentRow(${a.id})">Cancelar</button>` : ''}
             </div>
         </div>
     `).join('');

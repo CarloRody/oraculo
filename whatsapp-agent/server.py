@@ -898,14 +898,24 @@ def cancel_appointment(appointment_id):
 
 
 def get_consultant_appointments(consultant_id):
-    """Pro portal do próprio consultor: agenda futura + um histórico curto
-    (últimos concluídos/cancelados/passados), separado do get_appointments
-    admin (que é por CONTA, não por consultor)."""
+    """Pro portal do próprio consultor: pedidos aguardando confirmação
+    ('pending_consultant', vindos do self-service do cliente) + agenda futura
+    já confirmada + um histórico curto (últimos concluídos/cancelados/
+    passados), separado do get_appointments admin (que é por CONTA, não por
+    consultor)."""
     conn = _conn()
     try:
         cur = conn.cursor()
         cols_sql = "a.id, a.client_contact_id, ct.push_name, ct.wa_id, a.scheduled_at, a.duration_minutes, a.status, a.subject"
         cols = ["id", "client_contact_id", "client_name", "client_wa_id", "scheduled_at", "duration_minutes", "status", "subject"]
+
+        cur.execute(
+            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+                WHERE a.consultant_id = %s AND a.status = 'pending_consultant' AND a.scheduled_at >= NOW()
+                ORDER BY a.scheduled_at""",
+            (consultant_id,),
+        )
+        pending = [dict(zip(cols, r)) for r in cur.fetchall()]
 
         cur.execute(
             f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
@@ -917,16 +927,16 @@ def get_consultant_appointments(consultant_id):
 
         cur.execute(
             f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
-                WHERE a.consultant_id = %s AND (a.status != 'confirmed' OR a.scheduled_at < NOW())
+                WHERE a.consultant_id = %s AND (a.scheduled_at < NOW() OR a.status NOT IN ('confirmed', 'pending_consultant'))
                 ORDER BY a.scheduled_at DESC LIMIT 10""",
             (consultant_id,),
         )
         history = [dict(zip(cols, r)) for r in cur.fetchall()]
 
-        for lst in (upcoming, history):
+        for lst in (pending, upcoming, history):
             for r in lst:
                 r["scheduled_at"] = r["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
-        return upcoming, history
+        return pending, upcoming, history
     finally:
         conn.close()
 
@@ -1717,8 +1727,8 @@ def api_portal_appointments(token):
     consultant = get_consultant_by_portal_token(token)
     if not consultant:
         return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
-    upcoming, history = get_consultant_appointments(consultant["id"])
-    return jsonify({"upcoming": upcoming, "history": history})
+    pending, upcoming, history = get_consultant_appointments(consultant["id"])
+    return jsonify({"pending": pending, "upcoming": upcoming, "history": history})
 
 
 @app.route("/api/consultant-portal/<token>/contacts", methods=["GET"])
@@ -1786,6 +1796,36 @@ def api_portal_cancel_appointment(token, appointment_id):
     result = booking_flow.cancel_appointment_and_notify(appointment_id, consultant["id"])
     if result == "not_found":
         return jsonify({"ok": False, "message": "Agendamento não encontrado"}), 404
+    if result == "forbidden":
+        return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/confirm", methods=["POST"])
+def api_portal_confirm_appointment(token, appointment_id):
+    """Confirma um pedido que veio do self-service do cliente pelo WhatsApp
+    (status 'pending_consultant') — avisa o cliente que foi confirmado."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    result = booking_flow.confirm_appointment_and_notify(appointment_id, consultant["id"])
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Agendamento não encontrado ou já resolvido"}), 404
+    if result == "forbidden":
+        return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/decline", methods=["POST"])
+def api_portal_decline_appointment(token, appointment_id):
+    """Recusa um pedido que veio do self-service do cliente pelo WhatsApp
+    (status 'pending_consultant') — libera o horário e avisa o cliente."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    result = booking_flow.decline_appointment_and_notify(appointment_id, consultant["id"])
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Agendamento não encontrado ou já resolvido"}), 404
     if result == "forbidden":
         return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
     return jsonify({"ok": True})

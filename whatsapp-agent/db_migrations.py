@@ -351,6 +351,20 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS self_availability_enabled BOOLEAN NOT NULL DEFAULT TRUE;
     """,
+
+    # 20 — confirmação do consultor: agendamento criado pelo próprio cliente
+    # via WhatsApp (self-service) agora nasce como 'pending_consultant' em vez
+    # de já 'confirmed' — só vira 'confirmed' quando o consultor aperta
+    # "Confirmar" no painel dele. Agendamento criado pelo PRÓPRIO consultor no
+    # portal continua nascendo 'confirmed' direto (não faz sentido confirmar
+    # a própria criação) — ver requires_confirmation em booking_flow.book_appointment.
+    # DROP+ADD do CHECK a cada execução é o padrão idempotente aqui (mesmo
+    # nome de constraint que o Postgres gera sozinho pra CHECK inline).
+    """
+    ALTER TABLE whatsapp_appointments DROP CONSTRAINT IF EXISTS whatsapp_appointments_status_check;
+    ALTER TABLE whatsapp_appointments ADD CONSTRAINT whatsapp_appointments_status_check
+        CHECK (status IN ('confirmed', 'cancelled', 'completed', 'no_show', 'pending_consultant'));
+    """,
 ]
 
 

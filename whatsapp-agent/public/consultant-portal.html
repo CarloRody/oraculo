@@ -46,6 +46,7 @@
     .status-cancelled { background: #4a1f27; color: #f87171; }
     .status-completed { background: #1a2744; color: #94a3b8; }
     .status-no_show { background: #4a3a1f; color: #fbbf24; }
+    .status-pending_consultant { background: #4a3a1f; color: #fbbf24; }
     .btn {
         background: linear-gradient(135deg, #3b82f6, #8b5cf6);
         border: none; border-radius: 6px; color: #fff;
@@ -105,7 +106,7 @@ function fmtWhen(iso) {
 }
 
 function statusLabel(s) {
-    return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu' }[s] || s;
+    return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu', pending_consultant: 'Expirou sem confirmação' }[s] || s;
 }
 
 const WEEKDAYS = [['mon','Seg'], ['tue','Ter'], ['wed','Qua'], ['thu','Qui'], ['fri','Sex'], ['sat','Sáb'], ['sun','Dom']];
@@ -158,6 +159,11 @@ function renderShell(me) {
         </div>
     `;
     document.getElementById('content').innerHTML = `
+        <div class="card" id="pendingCard" style="display:none;">
+            <h2>⏳ Aguardando sua confirmação</h2>
+            <p class="empty" style="padding-top:0;">Pedidos feitos pelo cliente direto pelo WhatsApp — o cliente só sabe que está confirmado depois que você aprova aqui.</p>
+            <div id="pendingList"></div>
+        </div>
         <div class="card">
             <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.8rem; flex-wrap:wrap; gap:0.5rem;">
                 <h2 style="margin:0;">Próximos horários</h2>
@@ -294,7 +300,29 @@ let lastUpcoming = [];
 
 async function loadAppointments() {
     const data = await api('/appointments');
-    lastUpcoming = data.upcoming;
+    lastUpcoming = [...data.pending, ...data.upcoming];
+
+    const pendingCard = document.getElementById('pendingCard');
+    const pendingEl = document.getElementById('pendingList');
+    if (!data.pending.length) {
+        pendingCard.style.display = 'none';
+    } else {
+        pendingCard.style.display = 'block';
+        pendingEl.innerHTML = data.pending.map(a => `
+            <div class="appt-row">
+                <div class="appt-info">
+                    <div class="name">${esc(a.client_name || a.client_wa_id)}</div>
+                    <div class="when">${fmtWhen(a.scheduled_at)}</div>
+                    ${a.subject ? `<div class="when">${esc(a.subject)}</div>` : ''}
+                </div>
+                <div class="appt-actions">
+                    <button class="btn btn-sm" onclick="confirmAppt(${a.id})">Confirmar</button>
+                    <button class="btn btn-sm btn-danger" onclick="declineAppt(${a.id})">Recusar</button>
+                </div>
+            </div>
+        `).join('');
+    }
+
     const up = document.getElementById('upcomingList');
     up.innerHTML = !data.upcoming.length ? '<p class="empty">Nenhum agendamento futuro.</p>' : data.upcoming.map(a => `
         <div class="appt-row">
@@ -322,6 +350,22 @@ async function loadAppointments() {
     `).join('');
 
     if (agendaViewMode === 'week') renderWeekView();
+}
+
+async function confirmAppt(id) {
+    try {
+        await api(`/appointments/${id}/confirm`, { method: 'POST' });
+        loadAppointments();
+        alert('Agendamento confirmado! O cliente foi avisado por WhatsApp.');
+    } catch (e) { alert(e.message); }
+}
+
+async function declineAppt(id) {
+    if (!confirm('Recusar esse pedido de agendamento? O cliente será avisado e o horário fica livre de novo.')) return;
+    try {
+        await api(`/appointments/${id}/decline`, { method: 'POST' });
+        loadAppointments();
+    } catch (e) { alert(e.message); }
 }
 
 let agendaViewMode = 'list';
@@ -368,12 +412,18 @@ function renderWeekView() {
         cols.push(`
             <div style="flex:1; min-width:130px; background:#0f172a; border:1px solid ${isToday ? '#60a5fa' : '#334155'}; border-radius:8px; padding:0.5rem;">
                 <div style="font-size:0.78rem; color:${isToday ? '#60a5fa' : '#94a3b8'}; font-weight:600; margin-bottom:0.4rem;">${dayNames[i]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}</div>
-                ${items.length ? items.map(a => `
-                    <div style="font-size:0.78rem; color:#cbd5e1; padding:0.3rem 0; border-top:1px solid #1a2744; cursor:pointer;" onclick="openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g, "\\'")}')">
-                        <strong>${a.scheduled_at.slice(11, 16)}</strong> ${esc(a.client_name || a.client_wa_id)}
+                ${items.length ? items.map(a => {
+                    const isPending = a.status === 'pending_consultant';
+                    const onclick = isPending
+                        ? `document.getElementById('pendingCard').scrollIntoView({behavior:'smooth'})`
+                        : `openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g, "\\'")}')`;
+                    return `
+                    <div style="font-size:0.78rem; color:${isPending ? '#fbbf24' : '#cbd5e1'}; padding:0.3rem 0; border-top:1px solid #1a2744; cursor:pointer;" onclick="${onclick}">
+                        <strong>${a.scheduled_at.slice(11, 16)}</strong> ${isPending ? '⏳ ' : ''}${esc(a.client_name || a.client_wa_id)}
                         ${a.subject ? `<div style="color:#64748b;">${esc(a.subject)}</div>` : ''}
                     </div>
-                `).join('') : '<div style="font-size:0.76rem; color:#475569; padding:0.3rem 0;">—</div>'}
+                `;
+                }).join('') : '<div style="font-size:0.76rem; color:#475569; padding:0.3rem 0;">—</div>'}
             </div>
         `);
     }
