@@ -1927,6 +1927,46 @@ def cp_set_weekly_summary_schedule(account_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/client-portal/accounts/<int:account_id>/resend-weekly-summary", methods=["POST"])
+def cp_resend_weekly_summary(account_id):
+    """Reenvio manual, sob demanda — a secretária digita o próprio WhatsApp e
+    recebe na hora um resumo dos agendamentos confirmados dos próximos 7 dias
+    de TODOS os médicos da clínica (diferente do resumo automático semanal,
+    que é por médico individual, um de cada vez)."""
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account = get_account(account_id)
+    if not account:
+        return _not_found("Conta não encontrada")
+    data = request.json or {}
+    phone = re.sub(r"\D", "", data.get("phone") or "")
+    if not phone:
+        return jsonify({"ok": False, "message": "Informe o número de WhatsApp"}), 400
+
+    appts = get_appointments(account_id)
+    limit = (datetime.datetime.now(booking_flow.LOCAL_TZ) + datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M")
+    week_appts = [a for a in appts if a["status"] == "confirmed" and a["scheduled_at"] <= limit]
+    if week_appts:
+        linhas = "\n".join(
+            f"- {a['scheduled_at'][8:10]}/{a['scheduled_at'][5:7]} {a['scheduled_at'][11:16]} · "
+            f"{a['consultant_name']} · {a['client_name'] or a['client_wa_id']}"
+            for a in week_appts[:40]
+        )
+        texto = f"Resumo da semana — {account['label']}:\n{linhas}"
+    else:
+        texto = f"Resumo da semana — {account['label']}: nenhuma consulta confirmada nos próximos 7 dias."
+    try:
+        evolution.send_text(account["wa_session_name"], phone, texto)
+    except EvolutionError as e:
+        log_event(account_id, "weekly_summary_resend_failed", level="error", detail={"error": str(e)})
+        return jsonify({"ok": False, "message": "Erro ao enviar pelo WhatsApp. Confirme o número e tente de novo."}), 502
+    return jsonify({"ok": True})
+
+
 @app.route("/api/client-portal/settings/nomenclature", methods=["GET"])
 def cp_get_nomenclature():
     user_id, err = _require_client()
