@@ -408,6 +408,18 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_appointments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
     ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS last_weekly_summary_sent_at TIMESTAMPTZ;
     """,
+
+    # 22 — dia/hora do resumo semanal do médico agora é configurável por
+    # CLÍNICA (account_id — vale pra todos os médicos daquela conta, não por
+    # médico individual), em vez de fixo em toda segunda 07h. weekday segue a
+    # convenção do EXTRACT(DOW) do Postgres (0=domingo..6=sábado); default 1
+    # (segunda) + 7 (07h) preserva o comportamento de hoje pra quem não mexer.
+    """
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS weekly_summary_weekday SMALLINT NOT NULL DEFAULT 1
+        CHECK (weekly_summary_weekday BETWEEN 0 AND 6);
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS weekly_summary_hour SMALLINT NOT NULL DEFAULT 7
+        CHECK (weekly_summary_hour BETWEEN 0 AND 23);
+    """,
 ]
 
 

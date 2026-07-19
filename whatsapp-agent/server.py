@@ -103,6 +103,7 @@ def log_event(account_id, event, level="info", detail=None):
 ACCOUNT_COLUMNS = [
     "id", "label", "connection_type", "phone_number", "status",
     "wa_session_name", "ai_auto_reply_enabled", "last_connected_at", "created_at", "user_id", "area_id",
+    "weekly_summary_weekday", "weekly_summary_hour",
 ]
 
 
@@ -1151,7 +1152,7 @@ def mark_checklist_item(item_id, new_status):
             return None
         cur.execute(
             """SELECT i.auto_message_sent_at, t.auto_message_enabled, t.auto_message_template,
-                      a.scheduled_at, acc.wa_session_name, acc.label,
+                      a.scheduled_at, a.subject, acc.wa_session_name, acc.label,
                       con.name, ct.wa_id, ct.push_name
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
@@ -1165,7 +1166,7 @@ def mark_checklist_item(item_id, new_status):
         row = cur.fetchone()
         conn.commit()
         cols = ["auto_message_sent_at", "auto_message_enabled", "auto_message_template",
-                "scheduled_at", "wa_session_name", "account_label",
+                "scheduled_at", "subject", "wa_session_name", "account_label",
                 "consultant_name", "client_wa_id", "client_push_name"]
         return dict(zip(cols, row)) if row else None
     finally:
@@ -1229,11 +1230,15 @@ def _mark_reminder_sent(appointment_id):
 
 
 def _due_weekly_consultants():
-    """Consultores ativos que devem receber o resumo semanal: hoje (hora de
-    São Paulo) é segunda-feira, já passou das 07:00, e ainda não saiu nenhum
-    resumo desde a segunda-feira desta semana (0h) — mesmo raciocínio de
-    idempotência de _due_reminders, só que por semana em vez de por
-    agendamento."""
+    """Consultores ativos que devem receber o resumo semanal: cada CONTA
+    (clínica) configura seu próprio dia/hora (whatsapp_accounts.
+    weekly_summary_weekday/hour, default segunda 07h — mesmo valor pra todos
+    os médicos daquela conta). 'most_recent_occurrence' é a última vez que
+    esse dia/hora aconteceu (hoje, se já passou, senão na semana anterior);
+    fica devido se ainda não foi mandado nada desde essa ocorrência —  mesmo
+    raciocínio de idempotência de _due_reminders, só que por semana em vez de
+    por agendamento. Não trava numa janela de tempo: se o serviço ficar fora
+    do ar na hora exata, manda assim que voltar."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -1242,12 +1247,16 @@ def _due_weekly_consultants():
                FROM whatsapp_consultants con
                JOIN whatsapp_accounts acc ON acc.id = con.account_id
                JOIN whatsapp_contacts ct ON ct.id = con.contact_id
+               CROSS JOIN LATERAL (
+                   SELECT date_trunc('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
+                          - make_interval(days => ((EXTRACT(DOW FROM (NOW() AT TIME ZONE 'America/Sao_Paulo'))::int
+                                                     - acc.weekly_summary_weekday + 7) % 7))
+                          + make_interval(hours => acc.weekly_summary_hour) AS most_recent_occurrence
+               ) occ
                WHERE con.status = 'active'
-                 AND EXTRACT(DOW FROM (NOW() AT TIME ZONE 'America/Sao_Paulo')) = 1
-                 AND (NOW() AT TIME ZONE 'America/Sao_Paulo')::time >= '07:00'
+                 AND (NOW() AT TIME ZONE 'America/Sao_Paulo') >= occ.most_recent_occurrence
                  AND (con.last_weekly_summary_sent_at IS NULL
-                      OR (con.last_weekly_summary_sent_at AT TIME ZONE 'America/Sao_Paulo')
-                         < date_trunc('week', NOW() AT TIME ZONE 'America/Sao_Paulo'))"""
+                      OR (con.last_weekly_summary_sent_at AT TIME ZONE 'America/Sao_Paulo') < occ.most_recent_occurrence)"""
         )
         cols = ["id", "name", "wa_session_name", "account_label", "wa_id"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
@@ -1889,6 +1898,35 @@ def cp_booking_mode():
     return jsonify({"booking_mode": plan_booking_mode(user_id)})
 
 
+@app.route("/api/client-portal/accounts/<int:account_id>/weekly-summary-schedule", methods=["PUT"])
+def cp_set_weekly_summary_schedule(account_id):
+    """Dia/hora em que os médicos dessa clínica recebem o resumo semanal da
+    agenda (mesmo horário pra todos os médicos da conta) — lido por
+    _due_weekly_consultants() no loop de fundo."""
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    data = request.json or {}
+    weekday = data.get("weekday")
+    hour = data.get("hour")
+    if not isinstance(weekday, int) or not (0 <= weekday <= 6):
+        return jsonify({"ok": False, "message": "Dia da semana inválido"}), 400
+    if not isinstance(hour, int) or not (0 <= hour <= 23):
+        return jsonify({"ok": False, "message": "Hora inválida"}), 400
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_accounts SET weekly_summary_weekday = %s, weekly_summary_hour = %s WHERE id = %s",
+            (weekday, hour, account_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    return jsonify({"ok": True})
+
+
 @app.route("/api/client-portal/settings/nomenclature", methods=["GET"])
 def cp_get_nomenclature():
     user_id, err = _require_client()
@@ -2191,10 +2229,13 @@ def cp_update_checklist_item(item_id):
     if not result:
         return _not_found("Item não encontrado")
     if new_status == "done" and result["auto_message_enabled"] and not result["auto_message_sent_at"]:
+        local_scheduled_at = result["scheduled_at"].astimezone(booking_flow.LOCAL_TZ)
         ctx = {
             "paciente": result["client_push_name"] or _phone_from_wa_id(result["client_wa_id"]),
             "medico": result["consultant_name"],
-            "data": result["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%d/%m/%Y"),
+            "data": local_scheduled_at.strftime("%d/%m/%Y"),
+            "hora": local_scheduled_at.strftime("%H:%M"),
+            "assunto": result["subject"] or "",
             "clinica": result["account_label"],
         }
         texto = _render_checklist_message(result["auto_message_template"], ctx)
