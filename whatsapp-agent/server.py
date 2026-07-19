@@ -859,20 +859,36 @@ def get_consultant_by_pending_contact(account_id, wa_id):
         conn.close()
 
 
-def get_appointments(account_id, upcoming_only=True):
+def get_appointments(account_id, upcoming_only=True, date_from=None, date_to=None):
+    """date_from/date_to (opcionais, "YYYY-MM-DD") permitem pedir uma janela
+    explícita (ex.: a semana corrente pro painel da secretária) — quando
+    informados, prevalecem sobre upcoming_only. date_to é exclusivo (< , não
+    <=). Interpretados como meia-noite em America/Sao_Paulo (não a timezone
+    da sessão do Postgres) — mesmo cuidado de fuso já usado no resto do
+    arquivo (.astimezone(booking_flow.LOCAL_TZ))."""
     conn = _conn()
     try:
         cur = conn.cursor()
-        where_extra = "AND a2.scheduled_at >= NOW()" if upcoming_only else ""
+        where_parts = ["c.account_id = %s"]
+        params = [account_id]
+        if date_from:
+            where_parts.append("a2.scheduled_at >= (%s::date)::timestamp AT TIME ZONE 'America/Sao_Paulo'")
+            params.append(date_from)
+        if date_to:
+            where_parts.append("a2.scheduled_at < (%s::date)::timestamp AT TIME ZONE 'America/Sao_Paulo'")
+            params.append(date_to)
+        if not date_from and not date_to and upcoming_only:
+            where_parts.append("a2.scheduled_at >= NOW()")
+        where_sql = " AND ".join(where_parts)
         cur.execute(
             f"""SELECT a2.id, a2.consultant_id, c.name, a2.client_contact_id, ct.push_name, ct.wa_id,
                        a2.scheduled_at, a2.duration_minutes, a2.status, a2.subject
                 FROM whatsapp_appointments a2
                 JOIN whatsapp_consultants c ON c.id = a2.consultant_id
                 JOIN whatsapp_contacts ct ON ct.id = a2.client_contact_id
-                WHERE c.account_id = %s {where_extra}
+                WHERE {where_sql}
                 ORDER BY a2.scheduled_at""",
-            (account_id,),
+            params,
         )
         cols = ["id", "consultant_id", "consultant_name", "client_contact_id", "client_name", "client_wa_id",
                 "scheduled_at", "duration_minutes", "status", "subject"]
@@ -941,6 +957,239 @@ def get_consultant_appointments(consultant_id):
         conn.close()
 
 
+def mark_appointment_completed(appointment_id):
+    """Único ponto de entrada pra 'a consulta aconteceu' — sempre um clique
+    manual da secretária, nunca automático (não existe job que 'adivinha'
+    comparecimento). Ao completar, nasce um item de checklist por etapa ativa
+    do template da clínica (ON CONFLICT DO NOTHING pra ser seguro se chamado
+    2x)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_appointments SET status = 'completed', completed_at = NOW()
+               WHERE id = %s AND status IN ('confirmed', 'pending_consultant')""",
+            (appointment_id,),
+        )
+        if cur.rowcount == 0:
+            conn.commit()
+            return False
+        cur.execute(
+            """SELECT c.account_id FROM whatsapp_appointments a
+               JOIN whatsapp_consultants c ON c.id = a.consultant_id
+               WHERE a.id = %s""",
+            (appointment_id,),
+        )
+        account_id = cur.fetchone()[0]
+        cur.execute(
+            "SELECT id FROM whatsapp_checklist_templates WHERE account_id = %s AND active",
+            (account_id,),
+        )
+        for (template_id,) in cur.fetchall():
+            cur.execute(
+                """INSERT INTO whatsapp_checklist_items (appointment_id, template_id)
+                   VALUES (%s, %s) ON CONFLICT (appointment_id, template_id) DO NOTHING""",
+                (appointment_id, template_id),
+            )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_checklist_template(account_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, step_key, label, sort_order, auto_message_enabled, auto_message_template
+               FROM whatsapp_checklist_templates
+               WHERE account_id = %s AND active
+               ORDER BY sort_order""",
+            (account_id,),
+        )
+        cols = ["id", "step_key", "label", "sort_order", "auto_message_enabled", "auto_message_template"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_checklist_template(account_id, steps):
+    """Substitui a configuração de etapas da clínica. Faz UPSERT por id (não
+    DELETE+INSERT) porque whatsapp_checklist_items.template_id referencia essa
+    tabela com ON DELETE CASCADE — apagar e recriar a linha do template
+    apagaria junto o progresso de checklist já registrado em consultas
+    passadas. Etapa removida pela clínica só vira active=FALSE (soft delete),
+    continua existindo pra não quebrar o histórico já criado."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, step_key FROM whatsapp_checklist_templates WHERE account_id = %s",
+            (account_id,),
+        )
+        existing = {r[0]: r[1] for r in cur.fetchall()}
+        used_keys = set(existing.values())
+        kept_ids = set()
+
+        for idx, step in enumerate(steps or []):
+            if not isinstance(step, dict):
+                continue
+            label = (step.get("label") or "").strip()[:150]
+            if not label:
+                continue
+            auto_template = (step.get("auto_message_template") or "").strip()[:2000] or None
+            auto_enabled = bool(step.get("auto_message_enabled")) and bool(auto_template)
+
+            step_id = step.get("id")
+            if isinstance(step_id, int) and step_id in existing:
+                cur.execute(
+                    """UPDATE whatsapp_checklist_templates
+                       SET label = %s, sort_order = %s, auto_message_enabled = %s,
+                           auto_message_template = %s, active = TRUE
+                       WHERE id = %s AND account_id = %s""",
+                    (label, idx, auto_enabled, auto_template, step_id, account_id),
+                )
+                kept_ids.add(step_id)
+            else:
+                key = slugify(label)[:45] or f"etapa-{idx}"
+                base_key, n = key, 2
+                while key in used_keys:
+                    key = f"{base_key}-{n}"[:50]
+                    n += 1
+                used_keys.add(key)
+                cur.execute(
+                    """INSERT INTO whatsapp_checklist_templates
+                       (account_id, step_key, label, sort_order, auto_message_enabled, auto_message_template)
+                       VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (account_id, key, label, idx, auto_enabled, auto_template),
+                )
+                kept_ids.add(cur.fetchone()[0])
+
+        removed_ids = list(set(existing) - kept_ids)
+        if removed_ids:
+            cur.execute(
+                "UPDATE whatsapp_checklist_templates SET active = FALSE WHERE id = ANY(%s)",
+                (removed_ids,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_checklist_template(account_id)
+
+
+def get_checklist_items_for_appointment(appointment_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT i.id, i.status, i.done_at, i.auto_message_sent_at,
+                      t.label, t.sort_order, t.auto_message_enabled
+               FROM whatsapp_checklist_items i
+               JOIN whatsapp_checklist_templates t ON t.id = i.template_id
+               WHERE i.appointment_id = %s
+               ORDER BY t.sort_order""",
+            (appointment_id,),
+        )
+        cols = ["id", "status", "done_at", "auto_message_sent_at", "label", "sort_order", "auto_message_enabled"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_checklist_items_for_account(account_id, status=None):
+    """Board agregado pro painel da secretária — todos os itens de checklist
+    de todos os médicos da conta, com dados do paciente/médico/consulta pra
+    render direto sem chamada extra por linha."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        where_status = "AND i.status = %s" if status else ""
+        params = [account_id] + ([status] if status else [])
+        cur.execute(
+            f"""SELECT i.id, i.status, i.done_at, t.label, t.auto_message_enabled,
+                       a.id, a.scheduled_at, a.subject,
+                       con.id, con.name,
+                       ct.id, ct.push_name, ct.wa_id
+                FROM whatsapp_checklist_items i
+                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
+                JOIN whatsapp_appointments a ON a.id = i.appointment_id
+                JOIN whatsapp_consultants con ON con.id = a.consultant_id
+                JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+                WHERE con.account_id = %s {where_status}
+                ORDER BY ct.push_name, a.scheduled_at DESC, t.sort_order""",
+            params,
+        )
+        cols = ["id", "status", "done_at", "label", "auto_message_enabled",
+                "appointment_id", "scheduled_at", "subject",
+                "consultant_id", "consultant_name",
+                "client_contact_id", "client_name", "client_wa_id"]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            r["scheduled_at"] = r["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+        return rows
+    finally:
+        conn.close()
+
+
+def mark_checklist_item(item_id, new_status):
+    """Atualiza o status do item e devolve os dados necessários pra decidir
+    (e disparar) a mensagem automática — não manda a mensagem aqui dentro,
+    quem chama decide, porque essa função só mexe no banco."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        done_at_sql = "NOW()" if new_status == "done" else "NULL"
+        cur.execute(
+            f"UPDATE whatsapp_checklist_items SET status = %s, done_at = {done_at_sql} WHERE id = %s",
+            (new_status, item_id),
+        )
+        if cur.rowcount == 0:
+            conn.commit()
+            return None
+        cur.execute(
+            """SELECT i.auto_message_sent_at, t.auto_message_enabled, t.auto_message_template,
+                      a.scheduled_at, acc.wa_session_name, acc.label,
+                      con.name, ct.wa_id, ct.push_name
+               FROM whatsapp_checklist_items i
+               JOIN whatsapp_checklist_templates t ON t.id = i.template_id
+               JOIN whatsapp_appointments a ON a.id = i.appointment_id
+               JOIN whatsapp_consultants con ON con.id = a.consultant_id
+               JOIN whatsapp_accounts acc ON acc.id = con.account_id
+               JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+               WHERE i.id = %s""",
+            (item_id,),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        cols = ["auto_message_sent_at", "auto_message_enabled", "auto_message_template",
+                "scheduled_at", "wa_session_name", "account_label",
+                "consultant_name", "client_wa_id", "client_push_name"]
+        return dict(zip(cols, row)) if row else None
+    finally:
+        conn.close()
+
+
+def _mark_checklist_auto_message_sent(item_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_checklist_items SET auto_message_sent_at = NOW() WHERE id = %s", (item_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _render_checklist_message(template_text, ctx):
+    """Substitui só os placeholders conhecidos via str.replace simples —
+    nunca str.format/template engine: o texto vem digitado livremente pela
+    secretária e não pode virar vetor de KeyError nem de execução."""
+    text = template_text
+    for key, value in ctx.items():
+        text = text.replace("{{" + key + "}}", str(value))
+    return text
+
+
 def _due_reminders():
     """Agendamentos confirmados cujo horário de lembrete (scheduled_at menos
     reminder_hours_before do consultor) já chegou, mas o lembrete ainda não
@@ -977,12 +1226,53 @@ def _mark_reminder_sent(appointment_id):
         conn.close()
 
 
+def _due_weekly_consultants():
+    """Consultores ativos que devem receber o resumo semanal: hoje (hora de
+    São Paulo) é segunda-feira, já passou das 07:00, e ainda não saiu nenhum
+    resumo desde a segunda-feira desta semana (0h) — mesmo raciocínio de
+    idempotência de _due_reminders, só que por semana em vez de por
+    agendamento."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT con.id, con.name, acc.wa_session_name, acc.label, ct.wa_id
+               FROM whatsapp_consultants con
+               JOIN whatsapp_accounts acc ON acc.id = con.account_id
+               JOIN whatsapp_contacts ct ON ct.id = con.contact_id
+               WHERE con.status = 'active'
+                 AND EXTRACT(DOW FROM (NOW() AT TIME ZONE 'America/Sao_Paulo')) = 1
+                 AND (NOW() AT TIME ZONE 'America/Sao_Paulo')::time >= '07:00'
+                 AND (con.last_weekly_summary_sent_at IS NULL
+                      OR (con.last_weekly_summary_sent_at AT TIME ZONE 'America/Sao_Paulo')
+                         < date_trunc('week', NOW() AT TIME ZONE 'America/Sao_Paulo'))"""
+        )
+        cols = ["id", "name", "wa_session_name", "account_label", "wa_id"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _mark_weekly_summary_sent(consultant_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_consultants SET last_weekly_summary_sent_at = NOW() WHERE id = %s",
+            (consultant_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _reminder_loop():
     """Único processo em background do whatsapp-agent — não existia nenhum
     antes desta feature (tudo mais é disparado sob demanda por webhook).
     Polling simples (sem dependência nova tipo APScheduler): a cada 5min,
     manda lembrete pro cliente e pro consultor de agendamentos cujo horário
-    de aviso chegou."""
+    de aviso chegou, e (bloco separado, próprio try/except pra um não
+    derrubar o outro) o resumo semanal de agenda pro médico."""
     while True:
         try:
             for appt in _due_reminders():
@@ -1003,6 +1293,31 @@ def _reminder_loop():
                 _mark_reminder_sent(appt["id"])
         except Exception as e:
             log_event(None, "reminder_loop_error", level="error", detail={"error": str(e)})
+
+        try:
+            for consultant in _due_weekly_consultants():
+                limit = (datetime.datetime.now(booking_flow.LOCAL_TZ) + datetime.timedelta(days=7)).strftime("%Y-%m-%dT%H:%M")
+                _, upcoming, _ = get_consultant_appointments(consultant["id"])
+                week_appts = [a for a in upcoming if a["scheduled_at"] <= limit]
+                if week_appts:
+                    linhas = "\n".join(
+                        f"- {a['scheduled_at'][8:10]}/{a['scheduled_at'][5:7]} {a['scheduled_at'][11:16]} · "
+                        f"{a['client_name'] or a['client_wa_id']}"
+                        for a in week_appts[:20]
+                    )
+                    texto = f"Resumo da sua semana ({consultant['account_label']}):\n{linhas}"
+                else:
+                    texto = (f"Resumo da sua semana ({consultant['account_label']}): "
+                             f"nenhuma consulta confirmada nos próximos 7 dias.")
+                try:
+                    evolution.send_text(consultant["wa_session_name"], _phone_from_wa_id(consultant["wa_id"]), texto)
+                except EvolutionError as e:
+                    log_event(None, "weekly_summary_send_failed", level="error",
+                              detail={"consultant_id": consultant["id"], "error": str(e)})
+                _mark_weekly_summary_sent(consultant["id"])
+        except Exception as e:
+            log_event(None, "weekly_summary_loop_error", level="error", detail={"error": str(e)})
+
         time.sleep(300)
 
 
@@ -1028,6 +1343,11 @@ def consultant_portal_page():
 @app.route("/area-cliente")
 def client_portal_page():
     return send_from_directory(PUBLIC_DIR, "area-cliente.html")
+
+
+@app.route("/painel-secretaria")
+def secretary_panel_page():
+    return send_from_directory(PUBLIC_DIR, "painel-secretaria.html")
 
 
 @app.route("/health")
@@ -1458,7 +1778,12 @@ def api_set_nomenclature(account_id):
 def api_list_appointments(account_id):
     if not get_account(account_id):
         return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
-    return jsonify({"appointments": get_appointments(account_id)})
+    date_from = request.args.get("from") or None
+    date_to = request.args.get("to") or None
+    include_past = request.args.get("include_past") == "1"
+    return jsonify({"appointments": get_appointments(
+        account_id, upcoming_only=not include_past, date_from=date_from, date_to=date_to,
+    )})
 
 
 @app.route("/api/whatsapp/appointments/<int:appointment_id>/cancel", methods=["POST"])
@@ -1510,6 +1835,23 @@ def _appointment_owner(appointment_id):
                JOIN whatsapp_consultants c ON c.id = a.consultant_id
                WHERE a.id = %s""",
             (appointment_id,),
+        )
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def _checklist_item_owner(item_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT con.account_id FROM whatsapp_checklist_items i
+               JOIN whatsapp_appointments a ON a.id = i.appointment_id
+               JOIN whatsapp_consultants con ON con.id = a.consultant_id
+               WHERE i.id = %s""",
+            (item_id,),
         )
         row = cur.fetchone()
         return _account_owner(row[0]) if row else None
@@ -1699,6 +2041,87 @@ def cp_cancel_appointment(appointment_id):
     if _appointment_owner(appointment_id) != user_id:
         return _not_found("Agendamento não encontrado")
     return api_cancel_appointment(appointment_id)
+
+
+# ---- CRM médico / painel da secretária: conclusão de consulta e checklist
+# de acompanhamento do paciente, configurável por conta (clínica) ----
+
+@app.route("/api/client-portal/appointments/<int:appointment_id>/complete", methods=["POST"])
+def cp_complete_appointment(appointment_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _appointment_owner(appointment_id) != user_id:
+        return _not_found("Agendamento não encontrado")
+    if not mark_appointment_completed(appointment_id):
+        return jsonify({"ok": False, "message": "Agendamento não encontrado ou já concluído/cancelado"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/checklist-template", methods=["GET"])
+def cp_get_checklist_template(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return jsonify({"steps": get_checklist_template(account_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/checklist-template", methods=["PUT"])
+def cp_set_checklist_template(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    data = request.json or {}
+    return jsonify({"ok": True, "steps": set_checklist_template(account_id, data.get("steps"))})
+
+
+@app.route("/api/client-portal/appointments/<int:appointment_id>/checklist", methods=["GET"])
+def cp_get_appointment_checklist(appointment_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _appointment_owner(appointment_id) != user_id:
+        return _not_found("Agendamento não encontrado")
+    return jsonify({"items": get_checklist_items_for_appointment(appointment_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/checklist-items", methods=["GET"])
+def cp_list_checklist_items(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    status = request.args.get("status") or None
+    return jsonify({"items": get_checklist_items_for_account(account_id, status)})
+
+
+@app.route("/api/client-portal/checklist-items/<int:item_id>", methods=["PATCH"])
+def cp_update_checklist_item(item_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _checklist_item_owner(item_id) != user_id:
+        return _not_found("Item não encontrado")
+    new_status = (request.json or {}).get("status")
+    if new_status not in ("pending", "done", "skipped"):
+        return jsonify({"ok": False, "message": "Status inválido"}), 400
+    result = mark_checklist_item(item_id, new_status)
+    if not result:
+        return _not_found("Item não encontrado")
+    if new_status == "done" and result["auto_message_enabled"] and not result["auto_message_sent_at"]:
+        ctx = {
+            "paciente": result["client_push_name"] or _phone_from_wa_id(result["client_wa_id"]),
+            "medico": result["consultant_name"],
+            "data": result["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%d/%m/%Y"),
+            "clinica": result["account_label"],
+        }
+        texto = _render_checklist_message(result["auto_message_template"], ctx)
+        try:
+            evolution.send_text(result["wa_session_name"], _phone_from_wa_id(result["client_wa_id"]), texto)
+            _mark_checklist_auto_message_sent(item_id)
+        except EvolutionError as e:
+            log_event(None, "checklist_auto_message_failed", level="error",
+                      detail={"item_id": item_id, "error": str(e)})
+    return jsonify({"ok": True})
 
 
 # ---------------------------------------------------------------------------

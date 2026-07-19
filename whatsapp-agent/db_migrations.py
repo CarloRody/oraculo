@@ -365,6 +365,49 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_appointments ADD CONSTRAINT whatsapp_appointments_status_check
         CHECK (status IN ('confirmed', 'cancelled', 'completed', 'no_show', 'pending_consultant'));
     """,
+
+    # 21 — CRM médico / painel da secretária: checklist de acompanhamento do
+    # paciente. Template é chaveado em account_id (não user_id como a
+    # nomenclatura) porque cada CLÍNICA define seu próprio checklist, mesmo
+    # que o mesmo dono tenha duas contas/clínicas distintas. Progresso fica
+    # amarrado ao appointment_id (não ao contato) — cada consulta concluída é
+    # um episódio de acompanhamento próprio, evita ambiguidade de "a qual
+    # consulta esse item pertence" quando o mesmo paciente volta depois.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_checklist_templates (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        step_key VARCHAR(50) NOT NULL,
+        label VARCHAR(150) NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        auto_message_enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        auto_message_template TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(account_id, step_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_checklist_templates_account
+        ON whatsapp_checklist_templates(account_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS whatsapp_checklist_items (
+        id SERIAL PRIMARY KEY,
+        appointment_id INTEGER NOT NULL REFERENCES whatsapp_appointments(id) ON DELETE CASCADE,
+        template_id INTEGER NOT NULL REFERENCES whatsapp_checklist_templates(id) ON DELETE CASCADE,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'done', 'skipped')),
+        done_at TIMESTAMPTZ,
+        auto_message_sent_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(appointment_id, template_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_checklist_items_appointment
+        ON whatsapp_checklist_items(appointment_id);
+    CREATE INDEX IF NOT EXISTS idx_checklist_items_pending
+        ON whatsapp_checklist_items(status) WHERE status = 'pending';
+
+    ALTER TABLE whatsapp_appointments ADD COLUMN IF NOT EXISTS completed_at TIMESTAMPTZ;
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS last_weekly_summary_sent_at TIMESTAMPTZ;
+    """,
 ]
 
 
