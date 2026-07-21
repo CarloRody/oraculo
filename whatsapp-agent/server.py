@@ -1002,6 +1002,73 @@ def upsert_patient_record(contact_id, data):
         conn.close()
 
 
+def get_appointment_consultation(appointment_id, consultant_id):
+    """Registro do atendimento (detalhes/diagnóstico/prescrição) de UM
+    agendamento — responde vazio se o médico ainda não salvou nada, mesma
+    filosofia de get_patient_record. Confere que o agendamento é desse
+    consultor antes de responder (mesmo guard de upsert_appointment_consultation),
+    senão qualquer token válido poderia ler notas de outro médico/clínica só
+    sabendo o appointment_id."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT 1 FROM whatsapp_appointments WHERE id = %s AND consultant_id = %s", (appointment_id, consultant_id))
+        if not cur.fetchone():
+            return None
+        cur.execute(
+            """SELECT notes, diagnosis, prescription, updated_at
+               FROM whatsapp_appointment_consultations WHERE appointment_id = %s""",
+            (appointment_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return {"notes": None, "diagnosis": None, "prescription": None, "updated_at": None}
+        return {
+            "notes": row[0], "diagnosis": row[1], "prescription": row[2],
+            "updated_at": row[3].isoformat() if row[3] else None,
+        }
+    finally:
+        conn.close()
+
+
+def upsert_appointment_consultation(appointment_id, consultant_id, data):
+    """Salva o atendimento (substituição completa, mesmo espírito de
+    upsert_patient_record). Confere que o agendamento é desse consultor
+    antes de gravar — só o médico dono da consulta pode registrar."""
+    notes = (data.get("notes") or "").strip() or None
+    diagnosis = (data.get("diagnosis") or "").strip() or None
+    prescription = (data.get("prescription") or "").strip() or None
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT a.client_contact_id, c.account_id
+               FROM whatsapp_appointments a JOIN whatsapp_consultants c ON c.id = a.consultant_id
+               WHERE a.id = %s AND a.consultant_id = %s""",
+            (appointment_id, consultant_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return "forbidden"
+        contact_id, account_id = row
+        cur.execute(
+            """INSERT INTO whatsapp_appointment_consultations
+               (appointment_id, contact_id, account_id, consultant_id, notes, diagnosis, prescription)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (appointment_id) DO UPDATE SET
+                   notes = EXCLUDED.notes,
+                   diagnosis = EXCLUDED.diagnosis,
+                   prescription = EXCLUDED.prescription,
+                   updated_at = NOW()""",
+            (appointment_id, contact_id, account_id, consultant_id, notes, diagnosis, prescription),
+        )
+        conn.commit()
+        return "ok"
+    finally:
+        conn.close()
+
+
 def get_evolution_notes(contact_id):
     """Timeline única de evolução do tratamento — mistura notas da
     secretária e do médico, mais recente primeiro. author_label calculado
@@ -1502,11 +1569,15 @@ def get_patient_appointments(contact_id):
     conn = _conn()
     try:
         cur = conn.cursor()
-        cols_sql = "a.id, a.consultant_id, con.name, a.scheduled_at, a.duration_minutes, a.status, a.subject"
-        cols = ["id", "consultant_id", "consultant_name", "scheduled_at", "duration_minutes", "status", "subject"]
+        cols_sql = ("a.id, a.consultant_id, con.name, a.scheduled_at, a.duration_minutes, a.status, a.subject, "
+                    "cons.notes, cons.diagnosis, cons.prescription")
+        cols = ["id", "consultant_id", "consultant_name", "scheduled_at", "duration_minutes", "status", "subject",
+                "notes", "diagnosis", "prescription"]
+        from_sql = ("FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id "
+                    "LEFT JOIN whatsapp_appointment_consultations cons ON cons.appointment_id = a.id")
 
         cur.execute(
-            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id
+            f"""SELECT {cols_sql} {from_sql}
                 WHERE a.client_contact_id = %s AND a.status = 'pending_consultant' AND a.scheduled_at >= NOW()
                 ORDER BY a.scheduled_at""",
             (contact_id,),
@@ -1514,7 +1585,7 @@ def get_patient_appointments(contact_id):
         pending = [dict(zip(cols, r)) for r in cur.fetchall()]
 
         cur.execute(
-            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id
+            f"""SELECT {cols_sql} {from_sql}
                 WHERE a.client_contact_id = %s AND a.status = 'confirmed' AND a.scheduled_at >= NOW()
                 ORDER BY a.scheduled_at""",
             (contact_id,),
@@ -1522,7 +1593,7 @@ def get_patient_appointments(contact_id):
         upcoming = [dict(zip(cols, r)) for r in cur.fetchall()]
 
         cur.execute(
-            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id
+            f"""SELECT {cols_sql} {from_sql}
                 WHERE a.client_contact_id = %s AND (a.scheduled_at < NOW() OR a.status NOT IN ('confirmed', 'pending_consultant'))
                 ORDER BY a.scheduled_at DESC""",
             (contact_id,),
@@ -3379,6 +3450,32 @@ def api_portal_reschedule_appointment(token, appointment_id):
         return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
     if result == "conflict":
         return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/consultation", methods=["GET"])
+def api_portal_get_consultation(token, appointment_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    result = get_appointment_consultation(appointment_id, consultant["id"])
+    if result is None:
+        return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    return jsonify(result)
+
+
+@app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/consultation", methods=["PATCH"])
+def api_portal_save_consultation(token, appointment_id):
+    """Salvar o atendimento também conclui a consulta (mesmo efeito do botão
+    'Concluir consulta' que a secretária já usa) — um só clique do médico
+    registra os dados clínicos E fecha o ciclo do agendamento."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    result = upsert_appointment_consultation(appointment_id, consultant["id"], request.json or {})
+    if result == "forbidden":
+        return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    mark_appointment_completed(appointment_id)
     return jsonify({"ok": True})
 
 

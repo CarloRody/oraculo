@@ -29,6 +29,14 @@
         margin-bottom: 1.1rem;
     }
     .card h2 { font-size: 1rem; color: #f8fafc; margin-bottom: 0.8rem; }
+    .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid #334155; flex-wrap: wrap; margin-bottom: 1.1rem; }
+    .tab-btn {
+        background: none; border: none; color: #94a3b8; font-size: 0.9rem;
+        padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent;
+    }
+    .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+    .tab-content { display: none; }
+    .tab-content.active { display: block; }
     .empty { color: #64748b; font-size: 0.85rem; padding: 0.5rem 0; }
     .appt-row {
         display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
@@ -82,6 +90,10 @@
 <div class="wrap" id="app">
     <h1>📅 Minha Agenda</h1>
     <p class="subtitle" id="subtitle">Carregando...</p>
+    <div class="tabs" id="topTabs" style="display:none;">
+        <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')">Agenda</button>
+        <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')">Pacientes</button>
+    </div>
     <div id="content"></div>
 </div>
 
@@ -160,91 +172,112 @@ function renderShell(me) {
             <button class="btn btn-block" style="margin-top:1.2rem;" onclick="saveAvailability()">Salvar disponibilidade</button>
         </div>
     `;
+    document.getElementById('topTabs').style.display = 'flex';
     document.getElementById('content').innerHTML = `
-        <div class="card" id="pendingCard" style="display:none;">
-            <h2>⏳ Aguardando sua confirmação</h2>
-            <p class="empty" style="padding-top:0;">Pedidos feitos pelo cliente direto pelo WhatsApp — o cliente só sabe que está confirmado depois que você aprova aqui.</p>
-            <div id="pendingList"></div>
-        </div>
-        <div class="card">
-            <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.8rem; flex-wrap:wrap; gap:0.5rem;">
-                <h2 style="margin:0;">Próximos horários</h2>
-                <div style="display:flex; gap:0.4rem;">
-                    <button class="btn btn-sm" id="viewTabList" onclick="switchAgendaView('list')">Lista</button>
-                    <button class="btn btn-sm btn-secondary" id="viewTabWeek" onclick="switchAgendaView('week')">Semana</button>
+        <div id="agenda-tab" class="tab-content active">
+            <div class="card" id="pendingCard" style="display:none;">
+                <h2>⏳ Aguardando sua confirmação</h2>
+                <p class="empty" style="padding-top:0;">Pedidos feitos pelo cliente direto pelo WhatsApp — o cliente só sabe que está confirmado depois que você aprova aqui.</p>
+                <div id="pendingList"></div>
+            </div>
+            <div class="card">
+                <div style="display:flex; align-items:center; justify-content:space-between; margin-bottom:0.8rem; flex-wrap:wrap; gap:0.5rem;">
+                    <h2 style="margin:0;">Próximos horários</h2>
+                    <div style="display:flex; gap:0.4rem;">
+                        <button class="btn btn-sm" id="viewTabList" onclick="switchAgendaView('list')">Lista</button>
+                        <button class="btn btn-sm btn-secondary" id="viewTabWeek" onclick="switchAgendaView('week')">Semana</button>
+                    </div>
                 </div>
+                <div id="upcomingList"><p class="empty">Carregando...</p></div>
+                <div id="weekView" style="display:none;"></div>
             </div>
-            <div id="upcomingList"><p class="empty">Carregando...</p></div>
-            <div id="weekView" style="display:none;"></div>
-        </div>
-        <div class="card">
-            <h2>+ Novo agendamento</h2>
-            <div class="form-group">
-                <label>Cliente</label>
-                <select class="form-input" id="newContactSelect" onchange="onContactSelectChange()">
-                    <option value="">+ Novo contato (digitar telefone)</option>
-                </select>
+            <div class="card" id="consultationCard" style="display:none;">
+                <h2>Atendimento</h2>
+                <p class="empty" id="consultationInfo" style="padding-top:0;"></p>
+                <div class="form-group"><label>Detalhes da consulta</label><textarea class="form-input" id="consultationNotes" rows="3"></textarea></div>
+                <div class="form-group"><label>Diagnóstico</label><textarea class="form-input" id="consultationDiagnosis" rows="2"></textarea></div>
+                <div class="form-group"><label>Prescrição</label><textarea class="form-input" id="consultationPrescription" rows="2"></textarea></div>
+                <button class="btn btn-block" onclick="saveConsultation()">Salvar e concluir atendimento</button>
+                <button class="btn btn-secondary btn-block" onclick="closeConsultation()">Cancelar</button>
             </div>
-            <div class="form-group">
-                <label>Telefone do cliente (com DDI)</label>
-                <input class="form-input" id="newPhone" placeholder="5511999999999">
-            </div>
-            <div class="form-group"><label>Nome (opcional)</label><input class="form-input" id="newName"></div>
-            <div class="form-group"><label>Assunto (opcional)</label><input class="form-input" id="newSubject" placeholder="Ex: Revisão de contrato"></div>
-            <div class="form-group">
-                <label>Data e horário</label>
-                <div style="display:flex; gap:0.5rem;">
-                    <input type="date" class="form-input" id="newDate">
-                    <input type="time" class="form-input" id="newTime" style="flex:0.7;">
+            <div class="card">
+                <h2>+ Novo agendamento</h2>
+                <div class="form-group">
+                    <label>Cliente</label>
+                    <select class="form-input" id="newContactSelect" onchange="onContactSelectChange()">
+                        <option value="">+ Novo contato (digitar telefone)</option>
+                    </select>
                 </div>
+                <div class="form-group">
+                    <label>Telefone do cliente (com DDI)</label>
+                    <input class="form-input" id="newPhone" placeholder="5511999999999">
+                </div>
+                <div class="form-group"><label>Nome (opcional)</label><input class="form-input" id="newName"></div>
+                <div class="form-group"><label>Assunto (opcional)</label><input class="form-input" id="newSubject" placeholder="Ex: Revisão de contrato"></div>
+                <div class="form-group">
+                    <label>Data e horário</label>
+                    <div style="display:flex; gap:0.5rem;">
+                        <input type="date" class="form-input" id="newDate">
+                        <input type="time" class="form-input" id="newTime" style="flex:0.7;">
+                    </div>
+                </div>
+                <button class="btn btn-block" onclick="createAppointmentManual()">Agendar</button>
+                <details style="margin-top:0.9rem;">
+                    <summary style="cursor:pointer; color:#94a3b8; font-size:0.85rem;">ou escolher a partir dos horários livres já cadastrados</summary>
+                    <div id="newSlots" style="margin-top:0.6rem;"><p class="empty">Toque em "Ver horários" abaixo.</p></div>
+                    <button class="btn btn-secondary btn-block" style="margin-top:0.5rem;" onclick="loadNewSlots()">Ver horários livres</button>
+                </details>
             </div>
-            <button class="btn btn-block" onclick="createAppointmentManual()">Agendar</button>
-            <details style="margin-top:0.9rem;">
-                <summary style="cursor:pointer; color:#94a3b8; font-size:0.85rem;">ou escolher a partir dos horários livres já cadastrados</summary>
-                <div id="newSlots" style="margin-top:0.6rem;"><p class="empty">Toque em "Ver horários" abaixo.</p></div>
-                <button class="btn btn-secondary btn-block" style="margin-top:0.5rem;" onclick="loadNewSlots()">Ver horários livres</button>
-            </details>
-        </div>
-        ${availabilityCard}
-        <div class="card">
-            <h2>Documentos dos pacientes</h2>
-            <p class="empty" style="padding-top:0;">Fotos/PDFs de exames que o paciente manda pelo WhatsApp, em ordem cronológica.</p>
-            <div class="form-group">
-                <label>Paciente</label>
-                <select class="form-input" id="docPatientSelect" onchange="loadPatientDocs()">
-                    <option value="">Selecione...</option>
-                </select>
+            ${availabilityCard}
+            <div class="card">
+                <details>
+                    <summary>Histórico recente</summary>
+                    <div id="historyList" style="margin-top:0.6rem;"><p class="empty">Carregando...</p></div>
+                </details>
             </div>
-            <div id="patientDocs"><p class="empty">Selecione um paciente.</p></div>
-        </div>
-        <div class="card">
-            <h2>Ficha do paciente</h2>
-            <p class="empty" style="padding-top:0;">Cadastro (somente leitura) e evolução do tratamento — pacientes que você já atendeu.</p>
-            <div class="form-group">
-                <label>Paciente</label>
-                <select class="form-input" id="fichaPatientSelect" onchange="loadFichaPatient()">
-                    <option value="">Selecione...</option>
-                </select>
+            <div class="card" id="rescheduleCard" style="display:none;">
+                <h2>Remarcar agendamento</h2>
+                <p class="empty" id="rescheduleInfo"></p>
+                <div id="rescheduleSlots"></div>
+                <button class="btn btn-secondary btn-block" onclick="closeReschedule()">Cancelar</button>
             </div>
-            <div id="fichaCadastroBox"></div>
-            <div id="fichaEvolucaoBox" style="margin-top:1rem;"></div>
         </div>
-        <div class="card">
-            <details>
-                <summary>Histórico recente</summary>
-                <div id="historyList" style="margin-top:0.6rem;"><p class="empty">Carregando...</p></div>
-            </details>
-        </div>
-        <div class="card" id="rescheduleCard" style="display:none;">
-            <h2>Remarcar agendamento</h2>
-            <p class="empty" id="rescheduleInfo"></p>
-            <div id="rescheduleSlots"></div>
-            <button class="btn btn-secondary btn-block" onclick="closeReschedule()">Cancelar</button>
+        <div id="pacientes-tab" class="tab-content">
+            <div class="card">
+                <h2>Documentos dos pacientes</h2>
+                <p class="empty" style="padding-top:0;">Fotos/PDFs de exames que o paciente manda pelo WhatsApp, em ordem cronológica.</p>
+                <div class="form-group">
+                    <label>Paciente</label>
+                    <select class="form-input" id="docPatientSelect" onchange="loadPatientDocs()">
+                        <option value="">Selecione...</option>
+                    </select>
+                </div>
+                <div id="patientDocs"><p class="empty">Selecione um paciente.</p></div>
+            </div>
+            <div class="card">
+                <h2>Ficha do paciente</h2>
+                <p class="empty" style="padding-top:0;">Cadastro (somente leitura) e evolução do tratamento — pacientes que você já atendeu.</p>
+                <div class="form-group">
+                    <label>Paciente</label>
+                    <select class="form-input" id="fichaPatientSelect" onchange="loadFichaPatient()">
+                        <option value="">Selecione...</option>
+                    </select>
+                </div>
+                <div id="fichaCadastroBox"></div>
+                <div id="fichaEvolucaoBox" style="margin-top:1rem;"></div>
+            </div>
         </div>
     `;
     if (me.self_availability_enabled !== false) {
         renderAvailabilityRows(me.weekly_availability || {});
     }
+}
+
+function switchTab(name) {
+    document.querySelectorAll('#content > .tab-content').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('#topTabs > .tab-btn').forEach(b => b.classList.remove('active'));
+    document.getElementById(name + '-tab').classList.add('active');
+    document.getElementById('topTab' + name.charAt(0).toUpperCase() + name.slice(1)).classList.add('active');
 }
 
 const WEEKDAY_KEY_SET = new Set(WEEKDAYS.map(([k]) => k));
@@ -357,6 +390,7 @@ async function loadAppointments() {
                 ${a.subject ? `<div class="when">${esc(a.subject)}</div>` : ''}
             </div>
             <div class="appt-actions">
+                <button class="btn btn-sm" onclick="openConsultation(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g,"\\'")}', '${a.scheduled_at}')">Iniciar atendimento</button>
                 <button class="btn btn-sm btn-secondary" onclick="openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g,"\\'")}')">Remarcar</button>
                 <button class="btn btn-sm btn-danger" onclick="cancelAppt(${a.id})">Cancelar</button>
             </div>
@@ -648,6 +682,43 @@ async function openReschedule(id, clientName) {
 function closeReschedule() {
     rescheduleApptId = null;
     document.getElementById('rescheduleCard').style.display = 'none';
+}
+
+let consultationApptId = null;
+
+async function openConsultation(id, clientName, scheduledAt) {
+    consultationApptId = id;
+    document.getElementById('consultationInfo').textContent = `Paciente: ${clientName} · ${fmtWhen(scheduledAt)}`;
+    document.getElementById('consultationCard').style.display = 'block';
+    document.getElementById('consultationCard').scrollIntoView({ behavior: 'smooth' });
+    document.getElementById('consultationNotes').value = '';
+    document.getElementById('consultationDiagnosis').value = '';
+    document.getElementById('consultationPrescription').value = '';
+    try {
+        const data = await api(`/appointments/${id}/consultation`);
+        document.getElementById('consultationNotes').value = data.notes || '';
+        document.getElementById('consultationDiagnosis').value = data.diagnosis || '';
+        document.getElementById('consultationPrescription').value = data.prescription || '';
+    } catch (e) { /* primeira vez — segue com os campos vazios */ }
+}
+
+function closeConsultation() {
+    consultationApptId = null;
+    document.getElementById('consultationCard').style.display = 'none';
+}
+
+async function saveConsultation() {
+    const notes = document.getElementById('consultationNotes').value.trim();
+    const diagnosis = document.getElementById('consultationDiagnosis').value.trim();
+    const prescription = document.getElementById('consultationPrescription').value.trim();
+    try {
+        await api(`/appointments/${consultationApptId}/consultation`, {
+            method: 'PATCH', body: JSON.stringify({ notes, diagnosis, prescription }),
+        });
+        closeConsultation();
+        loadAppointments();
+        alert('Atendimento registrado e consulta concluída!');
+    } catch (e) { alert(e.message); }
 }
 
 async function confirmReschedule(iso) {

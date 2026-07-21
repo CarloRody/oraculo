@@ -561,6 +561,29 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_patient_records ADD COLUMN IF NOT EXISTS cpf VARCHAR(14);
     """,
+
+    # 27 — registro de atendimento por agendamento (detalhes da consulta,
+    # diagnóstico, prescrição), preenchido pelo médico no portal dele ao
+    # "iniciar atendimento". 1:1 com o agendamento (appointment_id como PK),
+    # mesmo padrão de whatsapp_patient_records (migração #25). contact_id/
+    # account_id denormalizados pra guards diretos sem JOIN extra.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_appointment_consultations (
+        appointment_id INTEGER PRIMARY KEY REFERENCES whatsapp_appointments(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        consultant_id INTEGER NOT NULL REFERENCES whatsapp_consultants(id) ON DELETE CASCADE,
+        notes TEXT,
+        diagnosis TEXT,
+        prescription TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_appointment_consultations_contact
+        ON whatsapp_appointment_consultations(contact_id);
+    CREATE INDEX IF NOT EXISTS idx_appointment_consultations_account
+        ON whatsapp_appointment_consultations(account_id);
+    """,
 ]
 
 
