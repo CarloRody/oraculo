@@ -554,6 +554,13 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_patient_evolution_notes_account
         ON whatsapp_patient_evolution_notes(account_id);
     """,
+
+    # 26 — CPF no cadastro do paciente (campo de texto livre, sem validação
+    # de dígito verificador nem unicidade — mesmo espírito dos outros campos
+    # de whatsapp_patient_records).
+    """
+    ALTER TABLE whatsapp_patient_records ADD COLUMN IF NOT EXISTS cpf VARCHAR(14);
+    """,
 ]
 
 

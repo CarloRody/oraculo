@@ -521,6 +521,7 @@ async function loadFichaPatient() {
         const record = await api(`/contacts/${contactId}/patient-record`);
         cadBox.innerHTML = `
             <div style="font-size:0.85rem; line-height:1.7;">
+                <div><strong>CPF:</strong> ${esc(record.cpf || '—')}</div>
                 <div><strong>Nascimento:</strong> ${record.birth_date ? esc(record.birth_date.split('-').reverse().join('/')) : '—'}</div>
                 <div><strong>Endereço:</strong> ${esc(record.address || '—')}</div>
                 <div><strong>Contato de emergência:</strong> ${esc(record.emergency_contact_name || '—')}${record.emergency_contact_phone ? ' (' + esc(record.emergency_contact_phone) + ')' : ''}</div>
