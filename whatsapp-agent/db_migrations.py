@@ -502,6 +502,58 @@ MIGRATIONS = [
         END IF;
     END $$;
     """,
+
+    # 25 — ficha completa do paciente: cadastro/dados clínicos básicos (1:1
+    # com o contato, contact_id como PK) e linha do tempo de evolução do
+    # tratamento. Ancoradas em contact_id como whatsapp_patient_documents
+    # (migração #23) — persistem entre médicos/consultas do mesmo paciente.
+    # Todos os campos de whatsapp_patient_records são opcionais: cadastro é
+    # preenchido aos poucos. whatsapp_contacts.name (migração #3, nunca
+    # escrita até hoje) passa a ser gravada por esta feature — reaproveitada
+    # em vez de duplicada aqui. Notas de evolução são append-only (só
+    # cria/lista, nunca edita/apaga — prontuário não se reescreve), e podem
+    # vir da secretária OU do médico: nota de secretária sempre tem
+    # consultant_id NULL (exibida como "Secretária" — só existe UMA
+    # secretária por conta, whatsapp_accounts.secretary_contact_id, não vale
+    # a pena um sistema de identidade individual pra isso); nota de médico
+    # sempre tem consultant_id preenchido (exibida com o nome dele). O CHECK
+    # garante essa consistência no banco. account_id fica denormalizado nas
+    # duas tabelas, mesmo padrão de whatsapp_patient_documents, pra permitir
+    # guards diretos sem JOIN extra.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_patient_records (
+        contact_id INTEGER PRIMARY KEY REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        birth_date DATE,
+        address TEXT,
+        emergency_contact_name VARCHAR(150),
+        emergency_contact_phone VARCHAR(20),
+        allergies TEXT,
+        medications_in_use TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_patient_records_account ON whatsapp_patient_records(account_id);
+
+    CREATE TABLE IF NOT EXISTS whatsapp_patient_evolution_notes (
+        id SERIAL PRIMARY KEY,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        appointment_id INTEGER REFERENCES whatsapp_appointments(id) ON DELETE SET NULL,
+        consultant_id INTEGER REFERENCES whatsapp_consultants(id) ON DELETE SET NULL,
+        author_type VARCHAR(20) NOT NULL CHECK (author_type IN ('secretary', 'consultant')),
+        note TEXT NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        CHECK (
+            (author_type = 'consultant' AND consultant_id IS NOT NULL) OR
+            (author_type = 'secretary' AND consultant_id IS NULL)
+        )
+    );
+    CREATE INDEX IF NOT EXISTS idx_patient_evolution_notes_contact
+        ON whatsapp_patient_evolution_notes(contact_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_patient_evolution_notes_account
+        ON whatsapp_patient_evolution_notes(account_id);
+    """,
 ]
 
 

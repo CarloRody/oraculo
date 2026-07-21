@@ -828,6 +828,31 @@ def get_patients_with_documents_for_consultant(consultant_id):
         conn.close()
 
 
+def get_consultant_patients(consultant_id):
+    """Todo paciente que já teve QUALQUER agendamento com esse médico — mais
+    abrangente que get_patients_with_documents_for_consultant (que só pega
+    quem tem documento). Usado pro seletor de paciente da ficha no portal do
+    consultor; mesma regra de negócio de _consultant_sees_contact, aqui
+    devolvendo a lista inteira em vez de um booleano."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT ct.id, COALESCE(ct.name, ct.push_name) AS name, ct.wa_id
+               FROM whatsapp_contacts ct
+               WHERE EXISTS (
+                   SELECT 1 FROM whatsapp_appointments a
+                   WHERE a.consultant_id = %s AND a.client_contact_id = ct.id
+               )
+               ORDER BY COALESCE(ct.name, ct.push_name) NULLS LAST""",
+            (consultant_id,),
+        )
+        cols = ["contact_id", "name", "wa_id"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def get_patient_documents_for_contact(contact_id):
     conn = _conn()
     try:
@@ -899,6 +924,139 @@ def delete_patient_document(doc_id):
             except OSError:
                 pass
     return True
+
+
+def get_patient_record(contact_id):
+    """Ficha do paciente — LEFT JOIN pra responder mesmo sem cadastro ainda
+    (whatsapp_patient_records nasce só quando alguém salva algo pela
+    primeira vez). name vem de whatsapp_contacts (reaproveitada, ver
+    migração #25), o resto de whatsapp_patient_records."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT ct.id, ct.name, ct.push_name, ct.wa_id,
+                      r.birth_date, r.address, r.emergency_contact_name, r.emergency_contact_phone,
+                      r.allergies, r.medications_in_use, r.updated_at
+               FROM whatsapp_contacts ct
+               LEFT JOIN whatsapp_patient_records r ON r.contact_id = ct.id
+               WHERE ct.id = %s""",
+            (contact_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = ["contact_id", "name", "push_name", "wa_id", "birth_date", "address",
+                "emergency_contact_name", "emergency_contact_phone", "allergies", "medications_in_use", "updated_at"]
+        d = dict(zip(cols, row))
+        d["birth_date"] = d["birth_date"].isoformat() if d["birth_date"] else None
+        d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
+        return d
+    finally:
+        conn.close()
+
+
+def upsert_patient_record(contact_id, data):
+    """Salva o cadastro inteiro (substituição completa do formulário, campo
+    vazio vira NULL — mesmo espírito de cp_set_secretary_contact). Grava
+    name em whatsapp_contacts e o resto em whatsapp_patient_records, uma
+    transação só (mesma conexão, um commit)."""
+    name = (data.get("name") or "").strip()[:150] or None
+    birth_date = data.get("birth_date") or None
+    address = (data.get("address") or "").strip() or None
+    emergency_contact_name = (data.get("emergency_contact_name") or "").strip()[:150] or None
+    emergency_contact_phone = (data.get("emergency_contact_phone") or "").strip()[:20] or None
+    allergies = (data.get("allergies") or "").strip() or None
+    medications_in_use = (data.get("medications_in_use") or "").strip() or None
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_contacts WHERE id = %s", (contact_id,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        account_id = row[0]
+        cur.execute("UPDATE whatsapp_contacts SET name = %s WHERE id = %s", (name, contact_id))
+        cur.execute(
+            """INSERT INTO whatsapp_patient_records
+               (contact_id, account_id, birth_date, address, emergency_contact_name,
+                emergency_contact_phone, allergies, medications_in_use)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+               ON CONFLICT (contact_id) DO UPDATE SET
+                   birth_date = EXCLUDED.birth_date,
+                   address = EXCLUDED.address,
+                   emergency_contact_name = EXCLUDED.emergency_contact_name,
+                   emergency_contact_phone = EXCLUDED.emergency_contact_phone,
+                   allergies = EXCLUDED.allergies,
+                   medications_in_use = EXCLUDED.medications_in_use,
+                   updated_at = NOW()""",
+            (contact_id, account_id, birth_date, address, emergency_contact_name,
+             emergency_contact_phone, allergies, medications_in_use),
+        )
+        conn.commit()
+        return True
+    finally:
+        conn.close()
+
+
+def get_evolution_notes(contact_id):
+    """Timeline única de evolução do tratamento — mistura notas da
+    secretária e do médico, mais recente primeiro. author_label calculado
+    aqui (não fica só no dado bruto) porque a UI dos dois portais só
+    precisa exibir, nunca precisa saber author_type pra decidir nada."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT n.id, n.author_type, n.note, n.created_at, n.appointment_id, n.consultant_id, con.name
+               FROM whatsapp_patient_evolution_notes n
+               LEFT JOIN whatsapp_consultants con ON con.id = n.consultant_id
+               WHERE n.contact_id = %s
+               ORDER BY n.created_at DESC""",
+            (contact_id,),
+        )
+        cols = ["id", "author_type", "note", "created_at", "appointment_id", "consultant_id", "consultant_name"]
+        rows = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
+            d["author_label"] = "Secretária" if d["author_type"] == "secretary" else (d["consultant_name"] or "Médico")
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def create_evolution_note(contact_id, account_id, author_type, note, consultant_id=None, appointment_id=None):
+    """Só cria — timeline é append-only, sem edição/exclusão (prontuário não
+    se reescreve). Se appointment_id vier mas não bater com o contato certo
+    (ex: id de outro paciente por engano), ignora o vínculo em vez de
+    quebrar a criação da nota."""
+    note = (note or "").strip()
+    if not note:
+        return None
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if appointment_id:
+            cur.execute(
+                "SELECT 1 FROM whatsapp_appointments WHERE id = %s AND client_contact_id = %s",
+                (appointment_id, contact_id),
+            )
+            if not cur.fetchone():
+                appointment_id = None
+        cur.execute(
+            """INSERT INTO whatsapp_patient_evolution_notes
+               (contact_id, account_id, appointment_id, consultant_id, author_type, note)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+            (contact_id, account_id, appointment_id, consultant_id, author_type, note),
+        )
+        note_id = cur.fetchone()[0]
+        conn.commit()
+        return note_id
+    finally:
+        conn.close()
 
 
 def list_chats(account_id):
@@ -1322,6 +1480,50 @@ def get_consultant_appointments(consultant_id):
                 WHERE a.consultant_id = %s AND (a.scheduled_at < NOW() OR a.status NOT IN ('confirmed', 'pending_consultant'))
                 ORDER BY a.scheduled_at DESC LIMIT 10""",
             (consultant_id,),
+        )
+        history = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        for lst in (pending, upcoming, history):
+            for r in lst:
+                r["scheduled_at"] = r["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+        return pending, upcoming, history
+    finally:
+        conn.close()
+
+
+def get_patient_appointments(contact_id):
+    """Mesma estrutura de get_consultant_appointments (pending/upcoming/
+    history), mas pro lado do PACIENTE — cruza médicos diferentes, por isso
+    inclui consultant_name. Histórico sem LIMIT: para a ficha do paciente o
+    histórico completo importa, diferente do portal do consultor (que só
+    quer os últimos 10 pra não poluir a tela)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols_sql = "a.id, a.consultant_id, con.name, a.scheduled_at, a.duration_minutes, a.status, a.subject"
+        cols = ["id", "consultant_id", "consultant_name", "scheduled_at", "duration_minutes", "status", "subject"]
+
+        cur.execute(
+            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id
+                WHERE a.client_contact_id = %s AND a.status = 'pending_consultant' AND a.scheduled_at >= NOW()
+                ORDER BY a.scheduled_at""",
+            (contact_id,),
+        )
+        pending = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        cur.execute(
+            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id
+                WHERE a.client_contact_id = %s AND a.status = 'confirmed' AND a.scheduled_at >= NOW()
+                ORDER BY a.scheduled_at""",
+            (contact_id,),
+        )
+        upcoming = [dict(zip(cols, r)) for r in cur.fetchall()]
+
+        cur.execute(
+            f"""SELECT {cols_sql} FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id
+                WHERE a.client_contact_id = %s AND (a.scheduled_at < NOW() OR a.status NOT IN ('confirmed', 'pending_consultant'))
+                ORDER BY a.scheduled_at DESC""",
+            (contact_id,),
         )
         history = [dict(zip(cols, r)) for r in cur.fetchall()]
 
@@ -2283,6 +2485,21 @@ def _contact_owner(contact_id):
         conn.close()
 
 
+def _contact_account_id(contact_id):
+    """Diferente de _contact_owner (que resolve até o user_id do cliente,
+    pra comparar com quem está autenticado) — aqui é o whatsapp_accounts.id
+    de verdade, usado pra gravar nas tabelas que denormalizam account_id
+    (ex: whatsapp_patient_evolution_notes)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_contacts WHERE id = %s", (contact_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
 def _patient_document_owner(doc_id):
     conn = _conn()
     try:
@@ -2829,6 +3046,75 @@ def cp_delete_patient_document(doc_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/client-portal/contacts/<int:contact_id>/patient-record", methods=["GET"])
+def cp_get_patient_record(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    record = get_patient_record(contact_id)
+    if not record:
+        return _not_found("Paciente não encontrado")
+    return jsonify(record)
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/patient-record", methods=["PATCH"])
+def cp_update_patient_record(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    if not upsert_patient_record(contact_id, request.json or {}):
+        return _not_found("Paciente não encontrado")
+    return jsonify(get_patient_record(contact_id))
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/appointments", methods=["GET"])
+def cp_get_patient_appointments(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    pending, upcoming, history = get_patient_appointments(contact_id)
+    return jsonify({"pending": pending, "upcoming": upcoming, "history": history})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/evolution-notes", methods=["GET"])
+def cp_list_evolution_notes(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    return jsonify({"notes": get_evolution_notes(contact_id)})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/evolution-notes", methods=["POST"])
+def cp_create_evolution_note(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account_id = _contact_account_id(contact_id)
+    data = request.json or {}
+    note_id = create_evolution_note(
+        contact_id, account_id, "secretary", data.get("note"),
+        appointment_id=data.get("appointment_id"),
+    )
+    if not note_id:
+        return jsonify({"ok": False, "message": "Texto da nota não pode ser vazio"}), 400
+    return jsonify({"ok": True, "id": note_id})
+
+
 # ---------------------------------------------------------------------------
 # Portal do consultor — autenticado por token (link mandado por WhatsApp),
 # nunca por sessão de admin. Cada rota resolve o consultor pelo token e só
@@ -2868,12 +3154,12 @@ def get_account_contacts(account_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT wa_id, COALESCE(name, push_name) FROM whatsapp_contacts
+            """SELECT id, wa_id, COALESCE(name, push_name) FROM whatsapp_contacts
                WHERE account_id = %s AND status = 'active' AND wa_id LIKE '%%@s.whatsapp.net'
                ORDER BY COALESCE(name, push_name) NULLS LAST""",
             (account_id,),
         )
-        return [{"phone": r[0].split("@")[0], "name": r[1]} for r in cur.fetchall()]
+        return [{"id": r[0], "phone": r[1].split("@")[0], "name": r[2]} for r in cur.fetchall()]
     finally:
         conn.close()
 
@@ -2973,6 +3259,54 @@ def api_portal_patient_document_file(token, doc_id):
     if not _consultant_sees_document(consultant["id"], doc_id):
         return jsonify({"ok": False, "message": "Documento não encontrado"}), 404
     return _send_patient_document_file(doc_id)
+
+
+@app.route("/api/consultant-portal/<token>/patients", methods=["GET"])
+def api_portal_patients(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    return jsonify({"patients": get_consultant_patients(consultant["id"])})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/patient-record", methods=["GET"])
+def api_portal_get_patient_record(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    record = get_patient_record(contact_id)
+    if not record:
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    return jsonify(record)
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/evolution-notes", methods=["GET"])
+def api_portal_list_evolution_notes(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    return jsonify({"notes": get_evolution_notes(contact_id)})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/evolution-notes", methods=["POST"])
+def api_portal_create_evolution_note(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    data = request.json or {}
+    note_id = create_evolution_note(
+        contact_id, consultant["account_id"], "consultant", data.get("note"),
+        consultant_id=consultant["id"], appointment_id=data.get("appointment_id"),
+    )
+    if not note_id:
+        return jsonify({"ok": False, "message": "Texto da nota não pode ser vazio"}), 400
+    return jsonify({"ok": True, "id": note_id})
 
 
 @app.route("/api/consultant-portal/<token>/appointments", methods=["POST"])
