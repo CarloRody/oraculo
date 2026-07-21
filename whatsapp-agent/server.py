@@ -864,6 +864,43 @@ def hide_patient_document(doc_id):
         conn.close()
 
 
+def delete_patient_document(doc_id):
+    """Apaga de vez — diferente de hide_patient_document (soft-delete via
+    hidden=TRUE, reversível só no banco). Apaga o arquivo físico do disco e
+    a linha de whatsapp_files; whatsapp_patient_documents.file_id tem ON
+    DELETE CASCADE (migração #23) então a linha da timeline some junto sem
+    precisar de um segundo DELETE. Se o documento nunca chegou a baixar
+    (status pending/failed, sem file_id), apaga só a linha da timeline
+    direto. A mensagem de chat que carregava essa mídia (whatsapp_messages.
+    file_id, ON DELETE SET NULL) só perde a referência, não quebra o
+    histórico de conversa."""
+    doc = get_patient_document(doc_id)
+    if not doc:
+        return False
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT file_id FROM whatsapp_patient_documents WHERE id = %s", (doc_id,))
+        row = cur.fetchone()
+        file_id = row[0] if row else None
+        if file_id:
+            cur.execute("DELETE FROM whatsapp_files WHERE id = %s", (file_id,))
+        else:
+            cur.execute("DELETE FROM whatsapp_patient_documents WHERE id = %s", (doc_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    if doc.get("storage_path"):
+        base = os.path.realpath(MEDIA_STORAGE_DIR)
+        full = os.path.realpath(os.path.join(base, doc["storage_path"]))
+        if full == base or full.startswith(base + os.sep):
+            try:
+                os.remove(full)
+            except OSError:
+                pass
+    return True
+
+
 def list_chats(account_id):
     conn = _conn()
     try:
@@ -2775,6 +2812,19 @@ def cp_hide_patient_document(doc_id):
     err = _require_crm_medico(user_id)
     if err: return err
     if not hide_patient_document(doc_id):
+        return _not_found("Documento não encontrado")
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/patient-documents/<int:doc_id>/permanent", methods=["DELETE"])
+def cp_delete_patient_document(doc_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _patient_document_owner(doc_id) != user_id:
+        return _not_found("Documento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    if not delete_patient_document(doc_id):
         return _not_found("Documento não encontrado")
     return jsonify({"ok": True})
 
