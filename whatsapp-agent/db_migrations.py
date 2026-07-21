@@ -420,6 +420,88 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS weekly_summary_hour SMALLINT NOT NULL DEFAULT 7
         CHECK (weekly_summary_hour BETWEEN 0 AND 23);
     """,
+
+    # 23 — CRM médico: linha do tempo de exames/documentos do paciente,
+    # capturados automaticamente quando ele manda foto/PDF pelo WhatsApp.
+    # Ancorada no CONTATO (contact_id), não na consulta — persiste entre
+    # médicos/consultas do mesmo paciente. appointment_id é best-effort
+    # (consulta mais próxima no tempo daquele contato, pode ficar NULL).
+    # whatsapp_files continua sendo só o registro físico do arquivo (migração
+    # #7); esta tabela é a camada semântica "isso é um documento do paciente
+    # X". status permite o download da Evolution API rodar em background sem
+    # travar o webhook: linha nasce 'pending', vira 'stored' (com file_id) ou
+    # 'failed' (com failure_reason) depois. hidden é soft-delete — nunca
+    # apaga o arquivo de verdade, só some da timeline.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_patient_documents (
+        id SERIAL PRIMARY KEY,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        file_id INTEGER REFERENCES whatsapp_files(id) ON DELETE CASCADE,
+        appointment_id INTEGER REFERENCES whatsapp_appointments(id) ON DELETE SET NULL,
+        message_id INTEGER REFERENCES whatsapp_messages(id) ON DELETE SET NULL,
+        wa_message_id VARCHAR(60),
+        doc_type VARCHAR(20) NOT NULL DEFAULT 'document'
+            CHECK (doc_type IN ('image', 'document')),
+        caption TEXT,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'stored', 'failed')),
+        failure_reason TEXT,
+        hidden BOOLEAN NOT NULL DEFAULT FALSE,
+        captured_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_patient_documents_contact
+        ON whatsapp_patient_documents(contact_id, captured_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_patient_documents_account
+        ON whatsapp_patient_documents(account_id);
+    CREATE UNIQUE INDEX IF NOT EXISTS uq_patient_documents_wa_msg
+        ON whatsapp_patient_documents(account_id, wa_message_id) WHERE wa_message_id IS NOT NULL;
+    """,
+
+    # 24 — checklist multi-destinatário (paciente/médico/secretária) +
+    # identidade persistida da secretária. auto_message_enabled sempre
+    # significou "manda pro paciente" — as 3 colunas novas substituem essa
+    # semântica sem quebrar o comportamento existente (backfill abaixo).
+    # auto_message_enabled e auto_message_sent_at ficam congeladas no schema
+    # (nunca mais lidas/escritas pela aplicação) em vez de removidas — esta
+    # base de migrações nunca fez DROP COLUMN, só ADD; manter é reversível e
+    # sem custo, remover não. O UPDATE de backfill só pode rodar UMA vez (na
+    # criação da coluna), senão sobrescreveria silenciosamente uma edição
+    # feita pela clínica depois da migração em reinícios seguintes do
+    # processo — por isso o DO $$ guardado por information_schema, não um
+    # UPDATE solto. Secretária vira um contato como o médico (contact_id em
+    # whatsapp_contacts), não um telefone cru — reaproveita get_or_create_contact.
+    """
+    ALTER TABLE whatsapp_accounts
+        ADD COLUMN IF NOT EXISTS secretary_contact_id INTEGER REFERENCES whatsapp_contacts(id) ON DELETE SET NULL;
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'whatsapp_checklist_templates' AND column_name = 'notify_patient'
+        ) THEN
+            ALTER TABLE whatsapp_checklist_templates ADD COLUMN notify_patient BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE whatsapp_checklist_templates ADD COLUMN notify_consultant BOOLEAN NOT NULL DEFAULT FALSE;
+            ALTER TABLE whatsapp_checklist_templates ADD COLUMN notify_secretary BOOLEAN NOT NULL DEFAULT FALSE;
+            UPDATE whatsapp_checklist_templates SET notify_patient = TRUE WHERE auto_message_enabled = TRUE;
+        END IF;
+    END $$;
+
+    DO $$
+    BEGIN
+        IF NOT EXISTS (
+            SELECT 1 FROM information_schema.columns
+            WHERE table_name = 'whatsapp_checklist_items' AND column_name = 'auto_message_sent_patient_at'
+        ) THEN
+            ALTER TABLE whatsapp_checklist_items ADD COLUMN auto_message_sent_patient_at TIMESTAMPTZ;
+            ALTER TABLE whatsapp_checklist_items ADD COLUMN auto_message_sent_consultant_at TIMESTAMPTZ;
+            ALTER TABLE whatsapp_checklist_items ADD COLUMN auto_message_sent_secretary_at TIMESTAMPTZ;
+            UPDATE whatsapp_checklist_items SET auto_message_sent_patient_at = auto_message_sent_at
+                WHERE auto_message_sent_at IS NOT NULL;
+        END IF;
+    END $$;
+    """,
 ]
 
 

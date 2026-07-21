@@ -8,21 +8,26 @@ Só consome a API do Oráculo quando faz sentido: o bot de resposta automática
 via HTTP, nunca lê o banco dele diretamente pra isso.
 """
 
+import base64
 import datetime
+import hashlib
+import mimetypes
+import os
 import re
 import secrets
 import threading
 import time
+import uuid
 
 import psycopg2
 import psycopg2.extras
 import requests
-from flask import Flask, jsonify, request, send_from_directory
+from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 
 import booking_flow
 import connectors.evolution as evolution
-from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG
+from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG, WHATSAPP_MEDIA_CONFIG
 from connectors.evolution import EvolutionError
 from db_migrations import migrate_if_needed
 
@@ -40,6 +45,18 @@ app = Flask(__name__, static_folder=None)
 CORS(app)
 
 PUBLIC_DIR = "public"
+
+# Documentos/exames capturados do CRM médico — armazenados FORA de PUBLIC_DIR
+# (que é servido sem autenticação) e servidos só pela rota autenticada
+# /patient-documents/<id>/file. Fallback sensato se whatsapp_agent.media não
+# estiver no config.yaml (contas antigas), pra não quebrar o start do serviço.
+MEDIA_STORAGE_DIR = os.path.abspath(WHATSAPP_MEDIA_CONFIG.get("storage_dir") or "media_store")
+MEDIA_MAX_BYTES = int(WHATSAPP_MEDIA_CONFIG.get("max_bytes") or 10_000_000)
+MEDIA_FETCH_TIMEOUT = int(WHATSAPP_MEDIA_CONFIG.get("fetch_timeout") or 30)
+MEDIA_ALLOWED_MIMETYPES = set(
+    WHATSAPP_MEDIA_CONFIG.get("allowed_mimetypes")
+    or ["image/jpeg", "image/png", "image/webp", "application/pdf"]
+)
 
 
 def _conn():
@@ -103,7 +120,7 @@ def log_event(account_id, event, level="info", detail=None):
 ACCOUNT_COLUMNS = [
     "id", "label", "connection_type", "phone_number", "status",
     "wa_session_name", "ai_auto_reply_enabled", "last_connected_at", "created_at", "user_id", "area_id",
-    "weekly_summary_weekday", "weekly_summary_hour",
+    "weekly_summary_weekday", "weekly_summary_hour", "secretary_contact_id",
 ]
 
 
@@ -127,21 +144,25 @@ def get_accounts(user_id=None):
         where = "WHERE a.user_id = %s" if user_id else ""
         params = (user_id,) if user_id else ()
         cur.execute(
-            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name, cs.nomenclature
+            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name, cs.nomenclature,
+                       sec_ct.wa_id AS secretary_wa_id, sec_ct.push_name AS secretary_push_name
                 FROM whatsapp_accounts a
                 LEFT JOIN users u ON u.id = a.user_id
                 LEFT JOIN areas ar ON ar.id = a.area_id
                 LEFT JOIN whatsapp_client_settings cs ON cs.user_id = a.user_id
+                LEFT JOIN whatsapp_contacts sec_ct ON sec_ct.id = a.secretary_contact_id
                 {where}
                 ORDER BY a.created_at DESC""",
             params,
         )
         rows = []
         for r in cur.fetchall():
-            d = _row_to_account(r[:-3])
-            d["client_email"] = r[-3]
-            d["area_name"] = r[-2]
-            d["nomenclature"] = _merge_nomenclature(r[-1])
+            d = _row_to_account(r[:-5])
+            d["client_email"] = r[-5]
+            d["area_name"] = r[-4]
+            d["nomenclature"] = _merge_nomenclature(r[-3])
+            d["secretary_wa_id"] = r[-2]
+            d["secretary_push_name"] = r[-1]
             rows.append(d)
         return rows
     finally:
@@ -154,21 +175,25 @@ def get_account(account_id):
         cur = conn.cursor()
         cols = ", ".join(f"a.{c}" for c in ACCOUNT_COLUMNS)
         cur.execute(
-            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name, cs.nomenclature
+            f"""SELECT {cols}, u.email AS client_email, ar.name AS area_name, cs.nomenclature,
+                       sec_ct.wa_id AS secretary_wa_id, sec_ct.push_name AS secretary_push_name
                 FROM whatsapp_accounts a
                 LEFT JOIN users u ON u.id = a.user_id
                 LEFT JOIN areas ar ON ar.id = a.area_id
                 LEFT JOIN whatsapp_client_settings cs ON cs.user_id = a.user_id
+                LEFT JOIN whatsapp_contacts sec_ct ON sec_ct.id = a.secretary_contact_id
                 WHERE a.id = %s""",
             (account_id,),
         )
         row = cur.fetchone()
         if not row:
             return None
-        d = _row_to_account(row[:-3])
-        d["client_email"] = row[-3]
-        d["area_name"] = row[-2]
-        d["nomenclature"] = _merge_nomenclature(row[-1])
+        d = _row_to_account(row[:-5])
+        d["client_email"] = row[-5]
+        d["area_name"] = row[-4]
+        d["nomenclature"] = _merge_nomenclature(row[-3])
+        d["secretary_wa_id"] = row[-2]
+        d["secretary_push_name"] = row[-1]
         return d
     finally:
         conn.close()
@@ -428,6 +453,27 @@ def get_or_create_contact(account_id, wa_id, push_name=None):
         conn.close()
 
 
+def set_account_secretary_contact(account_id, phone):
+    """Cadastra/atualiza o contato da secretária da clínica, reaproveitando
+    get_or_create_contact — o mesmo mecanismo já usado pro médico virar
+    consultor — em vez de guardar um telefone cru sem validação/reuso.
+    phone vazio limpa o cadastro (nem toda clínica precisa de secretária)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if not phone:
+            cur.execute("UPDATE whatsapp_accounts SET secretary_contact_id = NULL WHERE id = %s", (account_id,))
+            conn.commit()
+            return None
+        wa_id = f"{phone}@s.whatsapp.net"
+        contact_id = get_or_create_contact(account_id, wa_id)
+        cur.execute("UPDATE whatsapp_accounts SET secretary_contact_id = %s WHERE id = %s", (contact_id, account_id))
+        conn.commit()
+        return contact_id
+    finally:
+        conn.close()
+
+
 def get_or_create_chat(account_id, contact_id, default_auto_reply=True):
     # default_auto_reply vem de whatsapp_accounts.ai_auto_reply_enabled — é o
     # valor com que TODA conversa nova daquela conta começa (conta de
@@ -497,19 +543,23 @@ def update_account_auto_reply_default(account_id, enabled):
         conn.close()
 
 
-def save_message(chat_id, account_id, direction, body, sender_contact_id=None, wa_message_id=None):
+_MEDIA_PREVIEW = {"image": "🖼 Imagem", "document": "📎 Documento"}
+
+
+def save_message(chat_id, account_id, direction, body, sender_contact_id=None,
+                  wa_message_id=None, message_type="text", file_id=None):
     conn = _conn()
     try:
         cur = conn.cursor()
         status = "sent" if direction == "out" else "delivered"
         cur.execute(
             """INSERT INTO whatsapp_messages
-               (chat_id, account_id, wa_message_id, direction, sender_contact_id, message_type, body, status)
-               VALUES (%s, %s, %s, %s, %s, 'text', %s, %s) RETURNING id""",
-            (chat_id, account_id, wa_message_id, direction, sender_contact_id, body, status),
+               (chat_id, account_id, wa_message_id, direction, sender_contact_id, message_type, body, file_id, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (chat_id, account_id, wa_message_id, direction, sender_contact_id, message_type, body, file_id, status),
         )
         message_id = cur.fetchone()[0]
-        preview = (body or "")[:120]
+        preview = (body or _MEDIA_PREVIEW.get(message_type, ""))[:120]
         if direction == "in":
             cur.execute(
                 """UPDATE whatsapp_chats
@@ -524,6 +574,292 @@ def save_message(chat_id, account_id, direction, body, sender_contact_id=None, w
             )
         conn.commit()
         return message_id
+    finally:
+        conn.close()
+
+
+def _set_message_file(message_id, file_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_messages SET file_id = %s WHERE id = %s", (file_id, message_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Documentos/exames do paciente (CRM médico) — captura automática de
+# imagem/PDF recebido pelo WhatsApp, ver plano em
+# vamos-planejar-a-quntiza-o-bubbly-liskov.md
+# ---------------------------------------------------------------------------
+
+def _extract_media_info(message):
+    """Olha o objeto 'message' cru do webhook e devolve
+    {'doc_type','mimetype','caption','file_name'} se for imagem/documento,
+    ou None (texto, áudio, sticker etc. — fora de escopo por ora)."""
+    for key, doc_type in (("imageMessage", "image"), ("documentMessage", "document")):
+        node = message.get(key)
+        if node:
+            return {
+                "doc_type": doc_type,
+                "mimetype": node.get("mimetype"),
+                "caption": node.get("caption"),
+                "file_name": node.get("fileName") or node.get("title"),
+            }
+    return None
+
+
+def _recent_appointment_for_contact(account_id, contact_id):
+    """Consulta mais próxima no tempo daquele paciente naquela clínica — usada
+    só como marcação best-effort de qual consulta o exame provavelmente se
+    refere. Sem consulta encontrada, fica NULL, sem problema (o documento é
+    ancorado no paciente, não na consulta)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT a.id FROM whatsapp_appointments a
+               JOIN whatsapp_consultants c ON c.id = a.consultant_id
+               WHERE c.account_id = %s AND a.client_contact_id = %s
+                 AND a.status IN ('confirmed', 'pending_consultant', 'completed')
+               ORDER BY ABS(EXTRACT(EPOCH FROM (a.scheduled_at - NOW()))) ASC
+               LIMIT 1""",
+            (account_id, contact_id),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _create_pending_patient_document(account_id, contact_id, message_id, wa_message_id, doc_type, caption, appointment_id):
+    """Cria a linha da timeline NA HORA (status pending, sem file_id) — o
+    webhook não espera o download terminar. ON CONFLICT DO NOTHING dedupe
+    reentrega do mesmo wa_message_id pela Evolution API (acontece na
+    prática); devolve None quando já existia (não recria/rebaixa)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_patient_documents
+               (contact_id, account_id, appointment_id, message_id, wa_message_id, doc_type, caption, status)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
+               ON CONFLICT (account_id, wa_message_id) DO NOTHING
+               RETURNING id""",
+            (contact_id, account_id, appointment_id, message_id, wa_message_id, doc_type, caption),
+        )
+        row = cur.fetchone()
+        conn.commit()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def _fail_patient_document(doc_id, reason):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_patient_documents SET status = 'failed', failure_reason = %s WHERE id = %s",
+            (reason[:500], doc_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+_EXT_BY_MIMETYPE = {
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+    "image/webp": ".webp",
+    "application/pdf": ".pdf",
+}
+
+
+def _download_patient_media(account, doc_id, contact_id, message_key, media):
+    """Roda numa thread separada — TODO o corpo fica dentro de um único
+    try/except pra nunca derrubar a thread nem, por consequência, afetar a
+    resposta que o webhook já mandou pra Evolution API. Qualquer falha vira
+    status='failed' + failure_reason, visível na timeline em vez de sumir."""
+    try:
+        data = evolution.get_media_base64(account["wa_session_name"], message_key, timeout=MEDIA_FETCH_TIMEOUT)
+        raw = base64.b64decode(data.get("base64") or "")
+        if not raw:
+            _fail_patient_document(doc_id, "Resposta da Evolution API veio sem conteúdo")
+            return
+        if len(raw) > MEDIA_MAX_BYTES:
+            _fail_patient_document(doc_id, f"Arquivo maior que o limite ({len(raw)} bytes)")
+            return
+        mimetype = data.get("mimetype") or media.get("mimetype") or ""
+        if mimetype not in MEDIA_ALLOWED_MIMETYPES:
+            _fail_patient_document(doc_id, f"Tipo de arquivo não permitido: {mimetype}")
+            return
+
+        checksum = hashlib.sha256(raw).hexdigest()
+        ext = _EXT_BY_MIMETYPE.get(mimetype) or mimetypes.guess_extension(mimetype) or ""
+        rel_dir = os.path.join(str(account["id"]), str(contact_id))
+        rel_path = os.path.join(rel_dir, f"{uuid.uuid4().hex}{ext}")
+        full_dir = os.path.join(MEDIA_STORAGE_DIR, rel_dir)
+        os.makedirs(full_dir, exist_ok=True)
+        full_path = os.path.join(MEDIA_STORAGE_DIR, rel_path)
+        with open(full_path, "wb") as f:
+            f.write(raw)
+
+        conn = _conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                """INSERT INTO whatsapp_files
+                   (account_id, mime_type, file_type, original_name, storage_path, size_bytes, checksum_sha256)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                (account["id"], mimetype, media["doc_type"], media.get("file_name"), rel_path, len(raw), checksum),
+            )
+            file_id = cur.fetchone()[0]
+            cur.execute(
+                "UPDATE whatsapp_patient_documents SET status = 'stored', file_id = %s WHERE id = %s",
+                (file_id, doc_id),
+            )
+            cur.execute(
+                "SELECT message_id FROM whatsapp_patient_documents WHERE id = %s", (doc_id,)
+            )
+            row = cur.fetchone()
+            conn.commit()
+        finally:
+            conn.close()
+        if row and row[0]:
+            _set_message_file(row[0], file_id)
+    except EvolutionError as e:
+        _fail_patient_document(doc_id, str(e)[:400])
+        log_event(account["id"], "patient_media_capture_failed", level="error",
+                  detail={"doc_id": doc_id, "error": str(e)})
+    except Exception as e:
+        _fail_patient_document(doc_id, str(e)[:400])
+        log_event(account["id"], "patient_media_capture_failed", level="error",
+                  detail={"doc_id": doc_id, "error": str(e)})
+
+
+def _enqueue_patient_media(account, contact_id, message_id, message_key, media, wa_message_id):
+    appointment_id = _recent_appointment_for_contact(account["id"], contact_id)
+    doc_id = _create_pending_patient_document(
+        account_id=account["id"], contact_id=contact_id, message_id=message_id,
+        wa_message_id=wa_message_id, doc_type=media["doc_type"], caption=media.get("caption"),
+        appointment_id=appointment_id,
+    )
+    if doc_id is None:
+        return  # já capturado antes (reentrega do webhook) — não duplica
+    threading.Thread(target=_download_patient_media, args=(account, doc_id, contact_id, message_key, media),
+                      daemon=True).start()
+
+
+def get_patient_document(doc_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT d.id, d.account_id, d.status, f.storage_path, f.mime_type, f.original_name
+               FROM whatsapp_patient_documents d
+               LEFT JOIN whatsapp_files f ON f.id = d.file_id
+               WHERE d.id = %s""",
+            (doc_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "id": row[0], "account_id": row[1], "status": row[2],
+            "storage_path": row[3], "mime_type": row[4], "original_name": row[5],
+        }
+    finally:
+        conn.close()
+
+
+def get_patients_with_documents(account_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT ct.id, COALESCE(ct.name, ct.push_name) AS name, ct.wa_id,
+                      COUNT(*) AS doc_count, MAX(d.captured_at) AS last_document_at
+               FROM whatsapp_patient_documents d
+               JOIN whatsapp_contacts ct ON ct.id = d.contact_id
+               WHERE d.account_id = %s AND d.hidden = FALSE
+               GROUP BY ct.id, ct.name, ct.push_name, ct.wa_id
+               ORDER BY MAX(d.captured_at) DESC""",
+            (account_id,),
+        )
+        cols = ["contact_id", "name", "wa_id", "doc_count", "last_document_at"]
+        rows = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            d["last_document_at"] = d["last_document_at"].isoformat() if d["last_document_at"] else None
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def get_patients_with_documents_for_consultant(consultant_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT ct.id, COALESCE(ct.name, ct.push_name) AS name, ct.wa_id,
+                      COUNT(*) AS doc_count, MAX(d.captured_at) AS last_document_at
+               FROM whatsapp_patient_documents d
+               JOIN whatsapp_contacts ct ON ct.id = d.contact_id
+               WHERE d.hidden = FALSE
+                 AND EXISTS (
+                     SELECT 1 FROM whatsapp_appointments a
+                     WHERE a.consultant_id = %s AND a.client_contact_id = d.contact_id
+                 )
+               GROUP BY ct.id, ct.name, ct.push_name, ct.wa_id
+               ORDER BY MAX(d.captured_at) DESC""",
+            (consultant_id,),
+        )
+        cols = ["contact_id", "name", "wa_id", "doc_count", "last_document_at"]
+        rows = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            d["last_document_at"] = d["last_document_at"].isoformat() if d["last_document_at"] else None
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def get_patient_documents_for_contact(contact_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT d.id, d.doc_type, d.caption, d.status, d.failure_reason, d.captured_at,
+                      d.appointment_id, f.original_name, f.mime_type, f.size_bytes
+               FROM whatsapp_patient_documents d
+               LEFT JOIN whatsapp_files f ON f.id = d.file_id
+               WHERE d.contact_id = %s AND d.hidden = FALSE
+               ORDER BY d.captured_at DESC""",
+            (contact_id,),
+        )
+        cols = ["id", "doc_type", "caption", "status", "failure_reason", "captured_at",
+                "appointment_id", "original_name", "mime_type", "size_bytes"]
+        rows = []
+        for r in cur.fetchall():
+            d = dict(zip(cols, r))
+            d["captured_at"] = d["captured_at"].isoformat() if d["captured_at"] else None
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def hide_patient_document(doc_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_patient_documents SET hidden = TRUE WHERE id = %s", (doc_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -1005,13 +1341,15 @@ def get_checklist_template(account_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT id, step_key, label, sort_order, auto_message_enabled, auto_message_template
+            """SELECT id, step_key, label, sort_order, notify_patient, notify_consultant, notify_secretary,
+                      auto_message_template
                FROM whatsapp_checklist_templates
                WHERE account_id = %s AND active
                ORDER BY sort_order""",
             (account_id,),
         )
-        cols = ["id", "step_key", "label", "sort_order", "auto_message_enabled", "auto_message_template"]
+        cols = ["id", "step_key", "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary",
+                "auto_message_template"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -1042,16 +1380,18 @@ def set_checklist_template(account_id, steps):
             if not label:
                 continue
             auto_template = (step.get("auto_message_template") or "").strip()[:2000] or None
-            auto_enabled = bool(step.get("auto_message_enabled")) and bool(auto_template)
+            notify_patient = bool(step.get("notify_patient")) and bool(auto_template)
+            notify_consultant = bool(step.get("notify_consultant")) and bool(auto_template)
+            notify_secretary = bool(step.get("notify_secretary")) and bool(auto_template)
 
             step_id = step.get("id")
             if isinstance(step_id, int) and step_id in existing:
                 cur.execute(
                     """UPDATE whatsapp_checklist_templates
-                       SET label = %s, sort_order = %s, auto_message_enabled = %s,
-                           auto_message_template = %s, active = TRUE
+                       SET label = %s, sort_order = %s, notify_patient = %s, notify_consultant = %s,
+                           notify_secretary = %s, auto_message_template = %s, active = TRUE
                        WHERE id = %s AND account_id = %s""",
-                    (label, idx, auto_enabled, auto_template, step_id, account_id),
+                    (label, idx, notify_patient, notify_consultant, notify_secretary, auto_template, step_id, account_id),
                 )
                 kept_ids.add(step_id)
             else:
@@ -1063,9 +1403,10 @@ def set_checklist_template(account_id, steps):
                 used_keys.add(key)
                 cur.execute(
                     """INSERT INTO whatsapp_checklist_templates
-                       (account_id, step_key, label, sort_order, auto_message_enabled, auto_message_template)
-                       VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
-                    (account_id, key, label, idx, auto_enabled, auto_template),
+                       (account_id, step_key, label, sort_order, notify_patient, notify_consultant,
+                        notify_secretary, auto_message_template)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (account_id, key, label, idx, notify_patient, notify_consultant, notify_secretary, auto_template),
                 )
                 kept_ids.add(cur.fetchone()[0])
 
@@ -1086,15 +1427,18 @@ def get_checklist_items_for_appointment(appointment_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT i.id, i.status, i.done_at, i.auto_message_sent_at,
-                      t.label, t.sort_order, t.auto_message_enabled
+            """SELECT i.id, i.status, i.done_at,
+                      i.auto_message_sent_patient_at, i.auto_message_sent_consultant_at, i.auto_message_sent_secretary_at,
+                      t.label, t.sort_order, t.notify_patient, t.notify_consultant, t.notify_secretary
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                WHERE i.appointment_id = %s
                ORDER BY t.sort_order""",
             (appointment_id,),
         )
-        cols = ["id", "status", "done_at", "auto_message_sent_at", "label", "sort_order", "auto_message_enabled"]
+        cols = ["id", "status", "done_at",
+                "auto_message_sent_patient_at", "auto_message_sent_consultant_at", "auto_message_sent_secretary_at",
+                "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -1110,7 +1454,7 @@ def get_checklist_items_for_account(account_id, status=None):
         where_status = "AND i.status = %s" if status else ""
         params = [account_id] + ([status] if status else [])
         cur.execute(
-            f"""SELECT i.id, i.status, i.done_at, t.label, t.auto_message_enabled,
+            f"""SELECT i.id, i.status, i.done_at, t.label, t.notify_patient, t.notify_consultant, t.notify_secretary,
                        a.id, a.scheduled_at, a.subject,
                        con.id, con.name,
                        ct.id, ct.push_name, ct.wa_id
@@ -1123,7 +1467,7 @@ def get_checklist_items_for_account(account_id, status=None):
                 ORDER BY ct.push_name, a.scheduled_at DESC, t.sort_order""",
             params,
         )
-        cols = ["id", "status", "done_at", "label", "auto_message_enabled",
+        cols = ["id", "status", "done_at", "label", "notify_patient", "notify_consultant", "notify_secretary",
                 "appointment_id", "scheduled_at", "subject",
                 "consultant_id", "consultant_name",
                 "client_contact_id", "client_name", "client_wa_id"]
@@ -1151,33 +1495,45 @@ def mark_checklist_item(item_id, new_status):
             conn.commit()
             return None
         cur.execute(
-            """SELECT i.auto_message_sent_at, t.auto_message_enabled, t.auto_message_template,
+            """SELECT i.auto_message_sent_patient_at, i.auto_message_sent_consultant_at, i.auto_message_sent_secretary_at,
+                      t.notify_patient, t.notify_consultant, t.notify_secretary, t.auto_message_template,
                       a.scheduled_at, a.subject, acc.wa_session_name, acc.label,
-                      con.name, ct.wa_id, ct.push_name
+                      con.name, ct.wa_id, ct.push_name, cons_ct.wa_id, sec_ct.wa_id
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                JOIN whatsapp_appointments a ON a.id = i.appointment_id
                JOIN whatsapp_consultants con ON con.id = a.consultant_id
                JOIN whatsapp_accounts acc ON acc.id = con.account_id
                JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+               JOIN whatsapp_contacts cons_ct ON cons_ct.id = con.contact_id
+               LEFT JOIN whatsapp_contacts sec_ct ON sec_ct.id = acc.secretary_contact_id
                WHERE i.id = %s""",
             (item_id,),
         )
         row = cur.fetchone()
         conn.commit()
-        cols = ["auto_message_sent_at", "auto_message_enabled", "auto_message_template",
+        cols = ["auto_message_sent_patient_at", "auto_message_sent_consultant_at", "auto_message_sent_secretary_at",
+                "notify_patient", "notify_consultant", "notify_secretary", "auto_message_template",
                 "scheduled_at", "subject", "wa_session_name", "account_label",
-                "consultant_name", "client_wa_id", "client_push_name"]
+                "consultant_name", "client_wa_id", "client_push_name", "consultant_wa_id", "secretary_wa_id"]
         return dict(zip(cols, row)) if row else None
     finally:
         conn.close()
 
 
-def _mark_checklist_auto_message_sent(item_id):
+_CHECKLIST_RECIPIENT_COLUMNS = {
+    "patient": "auto_message_sent_patient_at",
+    "consultant": "auto_message_sent_consultant_at",
+    "secretary": "auto_message_sent_secretary_at",
+}
+
+
+def _mark_checklist_auto_message_sent(item_id, recipient):
+    column = _CHECKLIST_RECIPIENT_COLUMNS[recipient]
     conn = _conn()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE whatsapp_checklist_items SET auto_message_sent_at = NOW() WHERE id = %s", (item_id,))
+        cur.execute(f"UPDATE whatsapp_checklist_items SET {column} = NOW() WHERE id = %s", (item_id,))
         conn.commit()
     finally:
         conn.close()
@@ -1879,6 +2235,44 @@ def _checklist_item_owner(item_id):
         conn.close()
 
 
+def _contact_owner(contact_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_contacts WHERE id = %s", (contact_id,))
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def _patient_document_owner(doc_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_patient_documents WHERE id = %s", (doc_id,))
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def _send_patient_document_file(doc_id):
+    doc = get_patient_document(doc_id)
+    if not doc or doc["status"] != "stored" or not doc.get("storage_path"):
+        return _not_found("Documento não disponível")
+    base = os.path.realpath(MEDIA_STORAGE_DIR)
+    full = os.path.realpath(os.path.join(base, doc["storage_path"]))
+    if not (full == base or full.startswith(base + os.sep)) or not os.path.isfile(full):
+        return _not_found("Arquivo não encontrado")
+    return send_file(
+        full,
+        mimetype=doc["mime_type"] or "application/octet-stream",
+        as_attachment=False,
+        download_name=doc["original_name"] or f"documento-{doc_id}",
+    )
+
+
 # ---- Contas: conectar/desconectar (criar/vincular conexão continua sendo só admin) ----
 
 @app.route("/api/client-portal/accounts", methods=["GET"])
@@ -2214,21 +2608,52 @@ def cp_set_checklist_template(account_id):
     if err: return err
     data = request.json or {}
     steps = data.get("steps") or []
-    # Sem essa checagem, set_checklist_template() derruba auto_message_enabled
-    # pra False em silêncio quando o texto vem vazio (ver server.py mais
-    # abaixo) — e quem tá preenchendo o formulário só descobre que "não
-    # salvou" ao reabrir a tela, sem nenhuma explicação do porquê.
+    account = get_account(account_id)
+    # Sem essa checagem, set_checklist_template() derruba os 3 flags de
+    # destinatário pra False em silêncio quando o texto vem vazio (ver
+    # server.py mais abaixo) — e quem tá preenchendo o formulário só descobre
+    # que "não salvou" ao reabrir a tela, sem nenhuma explicação do porquê.
     for step in steps:
         if not isinstance(step, dict):
             continue
         label = (step.get("label") or "").strip()
-        if label and step.get("auto_message_enabled") and not (step.get("auto_message_template") or "").strip():
+        wants_message = step.get("notify_patient") or step.get("notify_consultant") or step.get("notify_secretary")
+        if label and wants_message and not (step.get("auto_message_template") or "").strip():
             return jsonify({
                 "ok": False,
                 "message": f'A etapa "{label}" está marcada pra enviar mensagem automática, mas o texto da '
                            f'mensagem está vazio. Preencha o texto ou desmarque a opção.',
             }), 400
+        # Marcar "avisar a secretária" sem telefone de secretária cadastrado
+        # nunca manda nada (mark_checklist_item não tem pra quem mandar) —
+        # bloqueado aqui, na configuração, em vez de só se descobrir depois
+        # que um paciente já devia ter passado por essa etapa.
+        if label and step.get("notify_secretary") and not account.get("secretary_contact_id"):
+            return jsonify({
+                "ok": False,
+                "message": f'A etapa "{label}" está marcada pra notificar a secretária, mas nenhum telefone de '
+                           f'secretária foi cadastrado para esta clínica. Cadastre o telefone da secretária primeiro.',
+            }), 400
     return jsonify({"ok": True, "steps": set_checklist_template(account_id, steps)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/secretary-contact", methods=["PATCH"])
+def cp_set_secretary_contact(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    phone = re.sub(r"\D", "", (request.json or {}).get("phone") or "")
+    set_account_secretary_contact(account_id, phone)
+    account = get_account(account_id)
+    return jsonify({
+        "ok": True,
+        "secretary_contact_id": account.get("secretary_contact_id"),
+        "secretary_wa_id": account.get("secretary_wa_id"),
+        "secretary_push_name": account.get("secretary_push_name"),
+    })
 
 
 @app.route("/api/client-portal/appointments/<int:appointment_id>/checklist", methods=["GET"])
@@ -2268,7 +2693,7 @@ def cp_update_checklist_item(item_id):
     result = mark_checklist_item(item_id, new_status)
     if not result:
         return _not_found("Item não encontrado")
-    if new_status == "done" and result["auto_message_enabled"] and not result["auto_message_sent_at"]:
+    if new_status == "done":
         local_scheduled_at = result["scheduled_at"].astimezone(booking_flow.LOCAL_TZ)
         ctx = {
             "paciente": result["client_push_name"] or _phone_from_wa_id(result["client_wa_id"]),
@@ -2279,12 +2704,78 @@ def cp_update_checklist_item(item_id):
             "clinica": result["account_label"],
         }
         texto = _render_checklist_message(result["auto_message_template"], ctx)
-        try:
-            evolution.send_text(result["wa_session_name"], _phone_from_wa_id(result["client_wa_id"]), texto)
-            _mark_checklist_auto_message_sent(item_id)
-        except EvolutionError as e:
-            log_event(None, "checklist_auto_message_failed", level="error",
-                      detail={"item_id": item_id, "error": str(e)})
+        # Um texto só, renderizado 1x — os 3 checkboxes da etapa só decidem
+        # quem recebe essa mesma mensagem. Cada destinatário tem sua própria
+        # marca de "já enviado" e falha independente dos outros (ex: número
+        # do médico inválido não deve impedir o envio pro paciente).
+        candidates = [
+            ("patient", result["notify_patient"], result["client_wa_id"], result["auto_message_sent_patient_at"]),
+            ("consultant", result["notify_consultant"], result["consultant_wa_id"], result["auto_message_sent_consultant_at"]),
+            ("secretary", result["notify_secretary"], result["secretary_wa_id"], result["auto_message_sent_secretary_at"]),
+        ]
+        for recipient, wants, wa_id, already_sent in candidates:
+            if not wants or already_sent:
+                continue
+            if not wa_id:
+                # Só deveria acontecer pra secretary (patient/consultant
+                # sempre têm wa_id) — cp_set_checklist_template já bloqueia
+                # notify_secretary sem telefone cadastrado; isso aqui é
+                # defesa em profundidade, não trava a conclusão do item.
+                log_event(None, "checklist_auto_message_skipped_no_contact", level="warning",
+                          detail={"item_id": item_id, "recipient": recipient})
+                continue
+            try:
+                evolution.send_text(result["wa_session_name"], _phone_from_wa_id(wa_id), texto)
+                _mark_checklist_auto_message_sent(item_id, recipient)
+            except EvolutionError as e:
+                log_event(None, "checklist_auto_message_failed", level="error",
+                          detail={"item_id": item_id, "recipient": recipient, "error": str(e)})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/patients-with-documents", methods=["GET"])
+def cp_patients_with_documents(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    return jsonify({"patients": get_patients_with_documents(account_id)})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/documents", methods=["GET"])
+def cp_list_patient_documents(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    return jsonify({"documents": get_patient_documents_for_contact(contact_id)})
+
+
+@app.route("/api/client-portal/patient-documents/<int:doc_id>/file", methods=["GET"])
+def cp_get_patient_document_file(doc_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _patient_document_owner(doc_id) != user_id:
+        return _not_found("Documento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    return _send_patient_document_file(doc_id)
+
+
+@app.route("/api/client-portal/patient-documents/<int:doc_id>", methods=["DELETE"])
+def cp_hide_patient_document(doc_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _patient_document_owner(doc_id) != user_id:
+        return _not_found("Documento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    if not hide_patient_document(doc_id):
+        return _not_found("Documento não encontrado")
     return jsonify({"ok": True})
 
 
@@ -2376,6 +2867,62 @@ def api_portal_free_slots(token):
         return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
     slots = booking_flow.compute_free_slots(consultant)
     return jsonify({"slots": [s.isoformat() for s in slots]})
+
+
+def _consultant_sees_contact(consultant_id, contact_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM whatsapp_appointments WHERE consultant_id = %s AND client_contact_id = %s LIMIT 1",
+            (consultant_id, contact_id),
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+def _consultant_sees_document(consultant_id, doc_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT 1 FROM whatsapp_patient_documents d
+               JOIN whatsapp_appointments a ON a.client_contact_id = d.contact_id
+               WHERE d.id = %s AND a.consultant_id = %s LIMIT 1""",
+            (doc_id, consultant_id),
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
+@app.route("/api/consultant-portal/<token>/patients-with-documents", methods=["GET"])
+def api_portal_patients_with_documents(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    return jsonify({"patients": get_patients_with_documents_for_consultant(consultant["id"])})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/documents", methods=["GET"])
+def api_portal_patient_documents(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    return jsonify({"documents": get_patient_documents_for_contact(contact_id)})
+
+
+@app.route("/api/consultant-portal/<token>/patient-documents/<int:doc_id>/file", methods=["GET"])
+def api_portal_patient_document_file(token, doc_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_document(consultant["id"], doc_id):
+        return jsonify({"ok": False, "message": "Documento não encontrado"}), 404
+    return _send_patient_document_file(doc_id)
 
 
 @app.route("/api/consultant-portal/<token>/appointments", methods=["POST"])
@@ -2593,7 +3140,17 @@ def webhook_evolution():
         if wa_id:
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
             chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
-            save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id, wa_message_id=wa_message_id)
+
+            # Captura de exame/documento — canal lateral que não reordena nem
+            # altera a cadeia de prioridade abaixo (confirmação de consultor →
+            # "minha agenda" → booking_flow → IA); só roda pra contas em modo
+            # CRM médico, pra não acumular arquivo de conta sem esse recurso.
+            media = _extract_media_info(message)
+            message_type = media["doc_type"] if media else "text"
+            message_id = save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id,
+                                      wa_message_id=wa_message_id, message_type=message_type)
+            if media and plan_booking_mode(account.get("user_id")) == "crm_medico":
+                _enqueue_patient_media(account, contact_id, message_id, key, media, wa_message_id)
 
             # pending_consultant_id roda sempre (não só quando há selected_id) —
             # a resposta de confirmação aceita tanto tocar no botão quanto

@@ -156,6 +156,21 @@
     table.credits-table { width: 100%; border-collapse: collapse; margin-top: 1rem; font-size: 0.85rem; }
     table.credits-table th, table.credits-table td { text-align: left; padding: 0.5rem 0.6rem; border-bottom: 1px solid #1a2744; }
     table.credits-table th { color: #94a3b8; font-weight: 600; font-size: 0.75rem; text-transform: uppercase; }
+
+    /* Checklist */
+    .checklist-pill {
+        display: inline-block;
+        padding: 0.3rem 0.7rem;
+        border-radius: 14px;
+        font-size: 0.78rem;
+        border: 1px solid #334155;
+        cursor: default;
+    }
+    .checklist-pill-pending { background: #1a2744; color: #94a3b8; cursor: pointer; }
+    .checklist-pill-pending:hover { background: #22314f; }
+    .checklist-pill-done { background: #1f4a2d; color: #4ade80; }
+    .checklist-pill-skipped { background: #1a2744; color: #64748b; text-decoration: line-through; }
+    .step-card { background: #0f172a; border: 1px solid #334155; border-radius: 10px; padding: 1rem; margin-bottom: 0.75rem; }
 </style>
 </head>
 <body id="app">
@@ -174,6 +189,7 @@
         <button class="tab-btn" onclick="switchTab('accounts')">Contas</button>
         <button class="tab-btn" onclick="switchTab('chats')">Conversas</button>
         <button class="tab-btn" onclick="switchTab('agenda')">Agenda</button>
+        <button class="tab-btn" id="checklistTabBtn" style="display:none;" onclick="switchTab('checklist')">Checklist</button>
         <button class="tab-btn" onclick="switchTab('credits')">Extrato</button>
         <button class="tab-btn" onclick="switchTab('help')">Ajuda</button>
     </div>
@@ -252,6 +268,46 @@
         <div class="card" style="max-width:1000px;">
             <h2>Próximos agendamentos</h2>
             <div id="appointmentsList"><p class="empty">Selecione uma conta.</p></div>
+        </div>
+    </div>
+
+    <div id="checklist-tab" class="tab-content">
+        <div class="card" style="max-width:1000px;">
+            <div class="form-row" style="align-items:center;">
+                <label style="color:#94a3b8; font-size:0.85rem;">Conta:</label>
+                <select class="form-input" id="checklistAccountSelect" onchange="onChecklistAccountChange()"></select>
+            </div>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2>Secretária da clínica</h2>
+            <p class="subtitle">Telefone de WhatsApp usado nas notificações automáticas do checklist e no reenvio manual do resumo semanal.</p>
+            <div style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap;">
+                <div class="form-group" style="flex:1 1 220px; min-width:0; margin-bottom:0;">
+                    <label>Telefone (com DDI)</label>
+                    <input class="form-input" id="secretaryPhoneInput" placeholder="5511999999999">
+                </div>
+                <button class="btn btn-sm" onclick="saveSecretaryContact()">Salvar</button>
+            </div>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2>Configurar checklist da clínica</h2>
+            <p class="subtitle">Etapas aplicadas a toda consulta marcada como concluída. Placeholders disponíveis na mensagem automática: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>.</p>
+            <div id="templateEditor"></div>
+            <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
+                <button class="btn btn-sm btn-secondary" onclick="addTemplateStep()">+ Adicionar etapa</button>
+                <button class="btn btn-sm" onclick="saveChecklistTemplate()">Salvar checklist</button>
+            </div>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2>Checklist de pacientes</h2>
+            <div class="tabs" style="margin-bottom:1rem;">
+                <button class="tab-btn active" id="checklistViewPending" onclick="switchChecklistView('pending')">Pendentes</button>
+                <button class="tab-btn" id="checklistViewDone" onclick="switchChecklistView('done')">Concluídos</button>
+            </div>
+            <div id="checklistBoard"><p class="empty">Carregando...</p></div>
         </div>
     </div>
 
@@ -374,6 +430,14 @@ function esc(s) {
     return d.innerHTML;
 }
 
+function fmtWhen(iso) {
+    const [datePart, timePart] = iso.split('T');
+    const [y, m, d] = datePart.split('-');
+    const days = ['Dom', 'Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb'];
+    const dt = new Date(iso);
+    return `${days[dt.getDay()]} ${d}/${m} às ${timePart}`;
+}
+
 function logout() {
     localStorage.removeItem('oraculo_api_key');
     window.location.href = SAAS + '/index.html';
@@ -425,6 +489,7 @@ function switchTab(name) {
     event.target.classList.add('active');
     if (name === 'chats') initChatsTab();
     if (name === 'agenda') initAgendaTab();
+    if (name === 'checklist') initChecklistTab();
     if (name === 'credits') initCreditsTab();
 }
 
@@ -1106,6 +1171,181 @@ async function submitConsultant() {
     loadConsultants();
 }
 
+// ---- Checklist (migrado de painel-secretaria.html — editor de etapas +
+// quadro de acompanhamento, visível só pra clínica em modo CRM médico, ver
+// checagem de booking_mode no boot mais abaixo). Mantém seu próprio
+// currentChecklistAccountId, mesmo padrão da aba Agenda (currentAgendaAccountId)
+// — cada aba guarda a conta selecionada independentemente. ----
+let currentChecklistAccountId = null;
+let checklistAccounts = [];
+let checklistView = 'pending';
+let templateSteps = [];
+
+async function initChecklistTab() {
+    checklistAccounts = await fetchAccounts();
+    const sel = document.getElementById('checklistAccountSelect');
+    if (!checklistAccounts.length) {
+        sel.innerHTML = '<option value="">Nenhuma conta vinculada</option>';
+        return;
+    }
+    sel.innerHTML = checklistAccounts.map(a => `<option value="${a.id}">${esc(a.label)}</option>`).join('');
+    if (!currentChecklistAccountId || !checklistAccounts.some(a => a.id === currentChecklistAccountId)) {
+        currentChecklistAccountId = checklistAccounts[0].id;
+    }
+    sel.value = currentChecklistAccountId;
+    loadSecretaryContactField();
+    await Promise.all([loadChecklistBoard(), loadChecklistTemplate()]);
+}
+
+function onChecklistAccountChange() {
+    currentChecklistAccountId = Number(document.getElementById('checklistAccountSelect').value);
+    loadSecretaryContactField();
+    Promise.all([loadChecklistBoard(), loadChecklistTemplate()]);
+}
+
+function loadSecretaryContactField() {
+    const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
+    document.getElementById('secretaryPhoneInput').value = (acc && acc.secretary_wa_id) ? acc.secretary_wa_id.split('@')[0] : '';
+}
+
+async function saveSecretaryContact() {
+    const phone = document.getElementById('secretaryPhoneInput').value.trim();
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/secretary-contact`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar telefone da secretária.');
+    const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
+    if (acc) acc.secretary_wa_id = data.secretary_wa_id;
+    alert('Telefone da secretária salvo!');
+}
+
+function switchChecklistView(view) {
+    checklistView = view;
+    document.getElementById('checklistViewPending').classList.toggle('active', view === 'pending');
+    document.getElementById('checklistViewDone').classList.toggle('active', view === 'done');
+    loadChecklistBoard();
+}
+
+async function loadChecklistBoard() {
+    const el = document.getElementById('checklistBoard');
+    if (!currentChecklistAccountId) { el.innerHTML = '<p class="empty">Nenhuma conta vinculada.</p>'; return; }
+    el.innerHTML = '<p class="empty">Carregando...</p>';
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/checklist-items?status=${checklistView}`);
+    const data = await res.json();
+    if (!res.ok) { el.innerHTML = '<p class="empty">Erro ao carregar checklist.</p>'; return; }
+    const items = data.items || [];
+    if (!items.length) {
+        el.innerHTML = `<p class="empty">Nenhum item ${checklistView === 'pending' ? 'pendente' : 'concluído'} no momento.</p>`;
+        return;
+    }
+    // agrupa por paciente + consulta de origem (mesmo paciente com 2
+    // consultas tem 2 checklists independentes, ver plano)
+    const groups = new Map();
+    for (const it of items) {
+        const key = `${it.client_contact_id}:${it.appointment_id}`;
+        if (!groups.has(key)) groups.set(key, { ...it, rows: [] });
+        groups.get(key).rows.push(it);
+    }
+    el.innerHTML = [...groups.values()].map(g => `
+        <div class="account-row" style="flex-direction:column; align-items:flex-start; gap:0.5rem;">
+            <div>
+                <strong>${esc(g.client_name || g.client_wa_id)}</strong>
+                <span style="color:#64748b; font-size:0.8rem;"> · ${esc(g.consultant_name)} · ${fmtWhen(g.scheduled_at)}</span>
+                ${g.subject ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(g.subject)}</div>` : ''}
+            </div>
+            <div style="display:flex; gap:0.4rem; flex-wrap:wrap;">
+                ${g.rows.map(it => `
+                    <span class="checklist-pill checklist-pill-${it.status}"
+                          ${it.status === 'pending' ? `onclick="markChecklistItem(${it.id}, ${!!(it.notify_patient || it.notify_consultant || it.notify_secretary)})"` : ''}>
+                        ${it.status === 'done' ? '✓ ' : it.status === 'skipped' ? '— ' : ''}${esc(it.label)}
+                    </span>
+                `).join('')}
+            </div>
+        </div>
+    `).join('');
+}
+
+async function markChecklistItem(itemId, autoMessageEnabled) {
+    if (autoMessageEnabled && !confirm('Marcar como feito? Isso vai enviar uma mensagem automática pelo WhatsApp pra quem estiver marcado (paciente/médico/secretária).')) return;
+    const res = await authFetch(API + `/api/client-portal/checklist-items/${itemId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'done' }),
+    });
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        alert(data.message || 'Erro ao atualizar item.');
+        return;
+    }
+    loadChecklistBoard();
+}
+
+async function loadChecklistTemplate() {
+    if (!currentChecklistAccountId) return;
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/checklist-template`);
+    const data = await res.json();
+    templateSteps = (data.steps || []).map(s => ({ ...s }));
+    renderTemplateEditor();
+}
+
+function renderTemplateEditor() {
+    const el = document.getElementById('templateEditor');
+    if (!templateSteps.length) {
+        el.innerHTML = '<p class="empty">Nenhuma etapa configurada ainda — adicione a primeira abaixo.</p>';
+        return;
+    }
+    el.innerHTML = templateSteps.map((s, i) => `
+        <div class="step-card">
+            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:flex-end;">
+                <div class="form-group" style="flex:1 1 200px; min-width:0; margin-bottom:0;">
+                    <label>Etapa ${i + 1}</label>
+                    <input class="form-input" value="${esc(s.label)}" oninput="templateSteps[${i}].label = this.value">
+                </div>
+                <button class="btn btn-sm btn-secondary" ${i === 0 ? 'disabled' : ''} onclick="moveTemplateStep(${i}, -1)">▲</button>
+                <button class="btn btn-sm btn-secondary" ${i === templateSteps.length - 1 ? 'disabled' : ''} onclick="moveTemplateStep(${i}, 1)">▼</button>
+                <button class="btn btn-sm btn-danger" onclick="removeTemplateStep(${i})">Excluir</button>
+            </div>
+            <div class="form-group" style="margin-top:0.6rem; margin-bottom:0; display:flex; gap:1rem; flex-wrap:wrap;">
+                <label><input type="checkbox" ${s.notify_patient ? 'checked' : ''} onchange="templateSteps[${i}].notify_patient = this.checked"> Avisar paciente</label>
+                <label><input type="checkbox" ${s.notify_consultant ? 'checked' : ''} onchange="templateSteps[${i}].notify_consultant = this.checked"> Avisar médico</label>
+                <label><input type="checkbox" ${s.notify_secretary ? 'checked' : ''} onchange="templateSteps[${i}].notify_secretary = this.checked"> Avisar secretária</label>
+            </div>
+            <div class="form-group" style="margin-top:0.4rem; margin-bottom:0;">
+                <textarea class="form-input" rows="2" placeholder="Ex: Olá {{paciente}}, tudo bem? Passando pra lembrar do seu retorno com {{medico}}."
+                    oninput="templateSteps[${i}].auto_message_template = this.value">${esc(s.auto_message_template || '')}</textarea>
+            </div>
+        </div>
+    `).join('');
+}
+
+function addTemplateStep() {
+    templateSteps.push({ label: '', sort_order: templateSteps.length, notify_patient: false, notify_consultant: false, notify_secretary: false, auto_message_template: '' });
+    renderTemplateEditor();
+}
+
+function removeTemplateStep(i) {
+    templateSteps.splice(i, 1);
+    renderTemplateEditor();
+}
+
+function moveTemplateStep(i, delta) {
+    const j = i + delta;
+    if (j < 0 || j >= templateSteps.length) return;
+    [templateSteps[i], templateSteps[j]] = [templateSteps[j], templateSteps[i]];
+    renderTemplateEditor();
+}
+
+async function saveChecklistTemplate() {
+    const steps = templateSteps.filter(s => (s.label || '').trim());
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/checklist-template`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ steps }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar checklist.');
+    templateSteps = (data.steps || []).map(s => ({ ...s }));
+    renderTemplateEditor();
+    alert('Checklist salvo!');
+}
+
 // ---- Extrato (dado vive no ai_oraculo_saas, porta 5001 — mesma chave) ----
 function clearCreditsMonth() {
     document.getElementById('creditsMonthPicker').value = '';
@@ -1164,11 +1404,24 @@ async function loadClientSubtitle() {
 }
 
 // ---- Início ----
+async function initChecklistTabVisibility() {
+    // Precisa acontecer no boot (não sob demanda como o secretaryPanelLink
+    // dentro da aba Agenda) porque aqui é o BOTÃO DA ABA inteiro que precisa
+    // sumir antes de qualquer clique — "módulo de clínica" = mesmo gate do
+    // plano (crm_medico) já usado pro Painel da Secretária.
+    try {
+        const res = await authFetch(API + '/api/client-portal/booking-mode');
+        const data = await res.json();
+        document.getElementById('checklistTabBtn').style.display = data.booking_mode === 'crm_medico' ? 'inline-block' : 'none';
+    } catch (e) { /* silencioso — aba só não aparece */ }
+}
+
 if (initAuth()) {
     document.getElementById('portalRoot').style.display = 'block';
     loadClientSubtitle();
     initPesquisasTab();
     renderAccounts();
+    initChecklistTabVisibility();
     setInterval(renderAccounts, 15000);
 }
 </script>
