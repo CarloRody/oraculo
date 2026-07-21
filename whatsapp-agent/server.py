@@ -1245,6 +1245,7 @@ CONSULTANT_COLUMNS = [
     "id", "account_id", "contact_id", "name", "context", "slot_duration_minutes",
     "weekly_availability", "reminder_hours_before", "status", "confirmed_at", "created_at",
     "portal_token", "self_availability_enabled",
+    "cpf", "crm", "address", "alt_phone", "specialties",
 ]
 
 
@@ -2378,7 +2379,8 @@ def api_update_consultant(consultant_id):
     if not get_consultant(consultant_id):
         return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
     data = request.json or {}
-    allowed = ("name", "context", "slot_duration_minutes", "weekly_availability", "reminder_hours_before", "status", "self_availability_enabled")
+    allowed = ("name", "context", "slot_duration_minutes", "weekly_availability", "reminder_hours_before", "status", "self_availability_enabled",
+               "cpf", "crm", "address", "alt_phone", "specialties")
     fields = {k: v for k, v in data.items() if k in allowed}
     if "status" in fields and fields["status"] not in ("active", "inactive"):
         return jsonify({"ok": False, "message": "status só pode ser alternado entre active/inactive por aqui (confirmação inicial é feita pelo próprio consultor no WhatsApp)"}), 400
@@ -3206,6 +3208,11 @@ def api_portal_me(token):
         "slot_duration_minutes": consultant["slot_duration_minutes"],
         "weekly_availability": consultant["weekly_availability"],
         "self_availability_enabled": consultant["self_availability_enabled"],
+        "cpf": consultant["cpf"],
+        "crm": consultant["crm"],
+        "address": consultant["address"],
+        "alt_phone": consultant["alt_phone"],
+        "specialties": consultant["specialties"],
     })
 
 
@@ -3488,6 +3495,23 @@ def api_portal_update_availability(token):
     if "weekly_availability" not in data:
         return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
     update_consultant(consultant["id"], {"weekly_availability": data["weekly_availability"]})
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/profile", methods=["PATCH"])
+def api_portal_update_profile(token):
+    """Auto-atendimento do próprio médico — mesmos campos que a secretária
+    edita via api_update_consultant, mas sem os campos operacionais
+    (status/agenda), que continuam só com ela."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    data = request.json or {}
+    allowed = ("cpf", "crm", "address", "alt_phone", "specialties")
+    fields = {k: v for k, v in data.items() if k in allowed}
+    if not fields:
+        return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
+    update_consultant(consultant["id"], fields)
     return jsonify({"ok": True})
 
 

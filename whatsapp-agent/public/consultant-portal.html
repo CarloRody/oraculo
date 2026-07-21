@@ -277,6 +277,17 @@ function renderShell(me) {
             </div>
         </div>
         <div id="config-tab" class="tab-content">
+            <div class="card">
+                <h2>Meus dados</h2>
+                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <div style="flex:1 1 180px;"><label>CPF</label><input class="form-input" id="myCpf" placeholder="000.000.000-00" value="${esc(me.cpf || '')}"></div>
+                    <div style="flex:1 1 180px;"><label>CRM</label><input class="form-input" id="myCrm" placeholder="CRM/UF 000000" value="${esc(me.crm || '')}"></div>
+                </div>
+                <div class="form-group"><label>Endereço</label><textarea class="form-input" id="myAddress" rows="2" placeholder="Rua, número, bairro, cidade...">${esc(me.address || '')}</textarea></div>
+                <div class="form-group" style="max-width:260px;"><label>Telefone alternativo</label><input class="form-input" id="myAltPhone" placeholder="5511999999999" value="${esc(me.alt_phone || '')}"></div>
+                <div class="form-group"><label>Especialidades</label><textarea class="form-input" id="mySpecialties" rows="2" placeholder="Ex: Clínica geral, Cardiologia...">${esc(me.specialties || '')}</textarea></div>
+                <button class="btn btn-block" onclick="saveMyProfile()">Salvar meus dados</button>
+            </div>
             ${availabilityCard}
         </div>
     `;
@@ -363,6 +374,20 @@ async function saveAvailability() {
     try {
         await api('/availability', { method: 'PATCH', body: JSON.stringify({ weekly_availability }) });
         alert('Disponibilidade salva!');
+    } catch (e) { alert(e.message); }
+}
+
+async function saveMyProfile() {
+    const payload = {
+        cpf: document.getElementById('myCpf').value.trim(),
+        crm: document.getElementById('myCrm').value.trim(),
+        address: document.getElementById('myAddress').value.trim(),
+        alt_phone: document.getElementById('myAltPhone').value.trim(),
+        specialties: document.getElementById('mySpecialties').value.trim(),
+    };
+    try {
+        await api('/profile', { method: 'PATCH', body: JSON.stringify(payload) });
+        alert('Seus dados foram salvos!');
     } catch (e) { alert(e.message); }
 }
 

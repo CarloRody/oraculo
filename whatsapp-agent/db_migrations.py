@@ -584,6 +584,18 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_appointment_consultations_account
         ON whatsapp_appointment_consultations(account_id);
     """,
+
+    # 28 — cadastro do médico: CPF, CRM, endereço, telefone alternativo,
+    # especialidades. Campos de texto livre (mesmo espírito dos outros
+    # cadastros da plataforma), editáveis tanto pela secretária (painel dela)
+    # quanto pelo próprio médico (Minha Agenda, aba Configurações).
+    """
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS cpf VARCHAR(14);
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS crm VARCHAR(20);
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS address TEXT;
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS alt_phone VARCHAR(20);
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS specialties TEXT;
+    """,
 ]
 
 
