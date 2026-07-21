@@ -37,17 +37,17 @@ def _headers():
     return {"apikey": API_KEY, "Content-Type": "application/json"}
 
 
-def _request(method, path, expected_statuses=(200, 201), **kwargs):
+def _request(method, path, expected_statuses=(200, 201), timeout=None, **kwargs):
     url = f"{BASE_URL}{path}"
     try:
-        res = requests.request(method, url, headers=_headers(), timeout=TIMEOUT, **kwargs)
+        res = requests.request(method, url, headers=_headers(), timeout=timeout or TIMEOUT, **kwargs)
     except requests.exceptions.ConnectionError as e:
         raise EvolutionError(
             f"Não foi possível conectar à Evolution API em {BASE_URL} — "
             f"o serviço está rodando? ({e})"
         )
     except requests.exceptions.Timeout:
-        raise EvolutionError(f"Evolution API não respondeu em {TIMEOUT}s ({url})")
+        raise EvolutionError(f"Evolution API não respondeu em {timeout or TIMEOUT}s ({url})")
     if res.status_code not in expected_statuses:
         raise EvolutionError(f"Evolution API retornou {res.status_code}: {res.text[:300]}")
     return res.json() if res.content else {}
@@ -147,6 +147,21 @@ def send_list(instance_name, number, title, description, button_text, sections, 
         ],
     }
     return _request("POST", f"/message/sendList/{instance_name}", json=payload)
+
+
+def get_media_base64(instance_name, message_key, timeout=None):
+    """Baixa a mídia de uma mensagem recebida (imagem/documento) — usado pela
+    captura de exames do CRM médico. Retorna {'base64', 'mimetype',
+    'fileName', ...}. Endpoint POST /chat/getBase64FromMediaMessage/{instance},
+    body {"message": {"key": ...}} — message_key é o objeto 'key' cru vindo
+    do webhook ({remoteJid, fromMe, id}). timeout maior que o padrão porque
+    mídia pode levar mais tempo que uma chamada JSON comum."""
+    return _request(
+        "POST",
+        f"/chat/getBase64FromMediaMessage/{instance_name}",
+        json={"message": {"key": message_key}},
+        timeout=timeout,
+    )
 
 
 def logout(instance_name):
