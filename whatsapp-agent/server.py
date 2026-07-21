@@ -453,6 +453,33 @@ def get_or_create_contact(account_id, wa_id, push_name=None):
         conn.close()
 
 
+def create_patient_contact(account_id, phone, name):
+    """Cadastra um paciente diretamente, antes de qualquer agendamento —
+    grava em 'name' (o campo que a ficha do paciente usa, migração #25), não
+    em push_name (que é só o nome do perfil de WhatsApp). Se o telefone já
+    existe como contato, só atualiza o nome em vez de duplicar."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        wa_id = f"{phone}@s.whatsapp.net"
+        cur.execute("SELECT id FROM whatsapp_contacts WHERE account_id = %s AND wa_id = %s", (account_id, wa_id))
+        row = cur.fetchone()
+        if row:
+            contact_id = row[0]
+            if name:
+                cur.execute("UPDATE whatsapp_contacts SET name = %s WHERE id = %s", (name, contact_id))
+        else:
+            cur.execute(
+                "INSERT INTO whatsapp_contacts (account_id, wa_id, name) VALUES (%s, %s, %s) RETURNING id",
+                (account_id, wa_id, name),
+            )
+            contact_id = cur.fetchone()[0]
+        conn.commit()
+        return contact_id
+    finally:
+        conn.close()
+
+
 def set_account_secretary_contact(account_id, phone):
     """Cadastra/atualiza o contato da secretária da clínica, reaproveitando
     get_or_create_contact — o mesmo mecanismo já usado pro médico virar
@@ -2818,6 +2845,21 @@ def cp_list_contacts(account_id):
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
     return jsonify({"contacts": get_account_contacts(account_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/patients", methods=["POST"])
+def cp_create_patient(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    data = request.json or {}
+    phone = re.sub(r"\D", "", data.get("phone") or "")
+    name = (data.get("name") or "").strip() or None
+    if not phone:
+        return jsonify({"ok": False, "message": "Informe o telefone do paciente"}), 400
+    contact_id = create_patient_contact(account_id, phone, name)
+    return jsonify({"ok": True, "contact_id": contact_id})
 
 
 @app.route("/api/client-portal/consultants/<int:consultant_id>/free-slots", methods=["GET"])
