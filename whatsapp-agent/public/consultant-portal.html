@@ -93,6 +93,7 @@
     <div class="tabs" id="topTabs" style="display:none;">
         <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')">Agenda</button>
         <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')">Pacientes</button>
+        <button class="tab-btn" id="topTabConfig" onclick="switchTab('config')">Configurações</button>
     </div>
     <div id="content"></div>
 </div>
@@ -228,7 +229,6 @@ function renderShell(me) {
                     <button class="btn btn-secondary btn-block" style="margin-top:0.5rem;" onclick="loadNewSlots()">Ver horários livres</button>
                 </details>
             </div>
-            ${availabilityCard}
             <div class="card">
                 <details>
                     <summary>Histórico recente</summary>
@@ -266,6 +266,9 @@ function renderShell(me) {
                 <div id="fichaCadastroBox"></div>
                 <div id="fichaEvolucaoBox" style="margin-top:1rem;"></div>
             </div>
+        </div>
+        <div id="config-tab" class="tab-content">
+            ${availabilityCard}
         </div>
     `;
     if (me.self_availability_enabled !== false) {
