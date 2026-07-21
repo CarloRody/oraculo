@@ -480,6 +480,21 @@ def create_patient_contact(account_id, phone, name):
         conn.close()
 
 
+def archive_patient_contact(contact_id):
+    """'Apagar' um paciente arquiva o contato em vez de excluir de verdade —
+    ele some da lista/seletor (get_account_contacts só traz status='active'),
+    mas agendamentos/documentos/notas de evolução ficam intactos no banco,
+    reversível se precisar restaurar (status volta pra 'active' direto no banco)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_contacts SET status = 'archived' WHERE id = %s", (contact_id,))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def set_account_secretary_contact(account_id, phone):
     """Cadastra/atualiza o contato da secretária da clínica, reaproveitando
     get_or_create_contact — o mesmo mecanismo já usado pro médico virar
@@ -3188,6 +3203,19 @@ def cp_update_patient_record(contact_id):
     if not upsert_patient_record(contact_id, request.json or {}):
         return _not_found("Paciente não encontrado")
     return jsonify(get_patient_record(contact_id))
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>", methods=["DELETE"])
+def cp_archive_patient(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    if not archive_patient_contact(contact_id):
+        return _not_found("Paciente não encontrado")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/client-portal/contacts/<int:contact_id>/appointments", methods=["GET"])
