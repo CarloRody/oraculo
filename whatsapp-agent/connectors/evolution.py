@@ -149,6 +149,23 @@ def send_list(instance_name, number, title, description, button_text, sections, 
     return _request("POST", f"/message/sendList/{instance_name}", json=payload)
 
 
+def send_media(instance_name, number, media_base64, mimetype, file_name, mediatype="document", caption=None):
+    """Envia um arquivo (imagem/documento) em base64 pro número informado —
+    usado pelo reenvio de documentos do paciente (painel da secretária).
+    Endpoint POST /message/sendMedia/{instance}, mesmo estilo de
+    send_text/get_media_base64. mediatype: 'image' ou 'document'."""
+    body = {
+        "number": number,
+        "mediatype": mediatype,
+        "mimetype": mimetype,
+        "media": media_base64,
+        "fileName": file_name,
+    }
+    if caption:
+        body["caption"] = caption
+    return _request("POST", f"/message/sendMedia/{instance_name}", json=body)
+
+
 def get_media_base64(instance_name, message_key, timeout=None):
     """Baixa a mídia de uma mensagem recebida (imagem/documento) — usado pela
     captura de exames do CRM médico. Retorna {'base64', 'mimetype',

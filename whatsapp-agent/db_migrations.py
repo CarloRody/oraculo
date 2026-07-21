@@ -596,6 +596,34 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS alt_phone VARCHAR(20);
     ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS specialties TEXT;
     """,
+
+    # 29 — consentimento LGPD antes de capturar documentos de um contato.
+    # lgpd_consent_status é o status atual (consultado no caminho quente do
+    # webhook, sem JOIN extra); whatsapp_lgpd_consents é o histórico
+    # append-only de cada pedido, com o JSON cru da Evolution API (pedido e
+    # resposta) guardado como prova do consentimento. Todo contato nasce
+    # 'none' — inclusive quem já tinha documento capturado antes desta
+    # feature existir (decisão: todo mundo precisa responder de novo).
+    """
+    ALTER TABLE whatsapp_contacts ADD COLUMN IF NOT EXISTS lgpd_consent_status VARCHAR(20) NOT NULL DEFAULT 'none'
+        CHECK (lgpd_consent_status IN ('none', 'pending', 'accepted', 'declined'));
+
+    CREATE TABLE IF NOT EXISTS whatsapp_lgpd_consents (
+        id SERIAL PRIMARY KEY,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        consent_text TEXT NOT NULL,
+        trigger_raw_payload JSONB,
+        requested_at TIMESTAMPTZ DEFAULT NOW(),
+        response VARCHAR(20) CHECK (response IN ('accepted', 'declined')),
+        response_text TEXT,
+        response_wa_message_id VARCHAR(60),
+        response_raw_payload JSONB,
+        responded_at TIMESTAMPTZ
+    );
+    CREATE INDEX IF NOT EXISTS idx_lgpd_consents_contact ON whatsapp_lgpd_consents(contact_id, requested_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_lgpd_consents_account ON whatsapp_lgpd_consents(account_id);
+    """,
 ]
 
 

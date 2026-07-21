@@ -794,12 +794,116 @@ def _enqueue_patient_media(account, contact_id, message_id, message_key, media, 
                       daemon=True).start()
 
 
+def _lgpd_consent_text(account_label):
+    """Termo de consentimento LGPD mandado antes de capturar o 1º documento
+    de um contato. O texto exato (já com o nome da clínica) é gravado em
+    whatsapp_lgpd_consents.consent_text a cada pedido — mesmo que este
+    modelo mude no futuro, o que foi prometido pra cada paciente fica
+    provado no banco. Texto puro (sem botão): WhatsApp Web/Desktop não
+    renderiza bem os formatos de botão nativo da Evolution API, mesmo
+    motivo já documentado em _send_consultant_invite_message."""
+    return (
+        f"Olá! Este é um comunicado automático de *{account_label}*, sobre o envio de documentos, "
+        f"fotos e exames pelo WhatsApp.\n\n"
+        f"De acordo com a Lei Geral de Proteção de Dados (LGPD - Lei nº 13.709/2018), pedimos sua "
+        f"autorização antes de guardar qualquer documento que você nos enviar por aqui.\n\n"
+        f"📋 O que fazemos com seus dados:\n"
+        f"- Guardamos as fotos/documentos (exames, receitas, laudos etc.) que você enviar, vinculados "
+        f"ao seu cadastro como paciente desta clínica.\n"
+        f"- Usamos essas informações exclusivamente para o seu atendimento e acompanhamento clínico "
+        f"pela equipe médica.\n"
+        f"- Não compartilhamos, vendemos ou usamos seus dados pra qualquer outra finalidade.\n"
+        f"- O acesso é restrito à equipe autorizada da clínica.\n\n"
+        f"🔒 Seus direitos:\n"
+        f"Você pode, a qualquer momento, pedir a exclusão dos seus documentos ou revogar esta "
+        f"autorização, falando diretamente com a secretaria.\n\n"
+        f"Você concorda com o armazenamento dos documentos que enviar por este WhatsApp, para os fins "
+        f"descritos acima?\n\n"
+        f"Responda SIM para autorizar ou NÃO para recusar."
+    )
+
+
+def get_lgpd_consent_status(contact_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT lgpd_consent_status FROM whatsapp_contacts WHERE id = %s", (contact_id,))
+        row = cur.fetchone()
+        return row[0] if row else "none"
+    finally:
+        conn.close()
+
+
+def request_lgpd_consent(account, contact_id, wa_id, raw_payload):
+    """Dispara o termo de consentimento pra um contato que ainda nunca
+    respondeu (status 'none') — cria o registro de auditoria (com o JSON cru
+    do webhook que disparou o pedido) e marca como 'pending'. Roda numa
+    thread separada (chamada do webhook), mesmo espírito de
+    _download_patient_media: não pode travar a resposta ao webhook."""
+    account_label = account.get("label") or "nossa clínica"
+    text = _lgpd_consent_text(account_label)
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_lgpd_consents (contact_id, account_id, consent_text, trigger_raw_payload)
+               VALUES (%s, %s, %s, %s)""",
+            (contact_id, account["id"], text, psycopg2.extras.Json(raw_payload)),
+        )
+        cur.execute("UPDATE whatsapp_contacts SET lgpd_consent_status = 'pending' WHERE id = %s", (contact_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    try:
+        evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), text)
+    except EvolutionError as e:
+        log_event(account["id"], "lgpd_consent_request_failed", level="error",
+                  detail={"contact_id": contact_id, "error": str(e)})
+
+
+def get_pending_lgpd_consent_id(contact_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id FROM whatsapp_lgpd_consents
+               WHERE contact_id = %s AND responded_at IS NULL
+               ORDER BY requested_at DESC LIMIT 1""",
+            (contact_id,),
+        )
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def resolve_lgpd_consent(consent_id, contact_id, accepted, response_text, response_wa_message_id, raw_payload):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_lgpd_consents
+               SET response = %s, response_text = %s, response_wa_message_id = %s,
+                   response_raw_payload = %s, responded_at = NOW()
+               WHERE id = %s""",
+            ("accepted" if accepted else "declined", response_text, response_wa_message_id,
+             psycopg2.extras.Json(raw_payload), consent_id),
+        )
+        cur.execute(
+            "UPDATE whatsapp_contacts SET lgpd_consent_status = %s WHERE id = %s",
+            ("accepted" if accepted else "declined", contact_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def get_patient_document(doc_id):
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT d.id, d.account_id, d.status, f.storage_path, f.mime_type, f.original_name
+            """SELECT d.id, d.account_id, d.status, f.storage_path, f.mime_type, f.original_name, d.doc_type
                FROM whatsapp_patient_documents d
                LEFT JOIN whatsapp_files f ON f.id = d.file_id
                WHERE d.id = %s""",
@@ -810,7 +914,7 @@ def get_patient_document(doc_id):
             return None
         return {
             "id": row[0], "account_id": row[1], "status": row[2],
-            "storage_path": row[3], "mime_type": row[4], "original_name": row[5],
+            "storage_path": row[3], "mime_type": row[4], "original_name": row[5], "doc_type": row[6],
         }
     finally:
         conn.close()
@@ -2644,6 +2748,49 @@ def _send_patient_document_file(doc_id):
     )
 
 
+def send_patient_document_to_contact(doc_id, target_contact_id):
+    """Reenvia um documento já armazenado pra outro contato (ou o mesmo) via
+    WhatsApp — lê o arquivo do disco e manda em base64 pela Evolution API.
+    Mesmo guard de path-traversal de _send_patient_document_file."""
+    doc = get_patient_document(doc_id)
+    if not doc or doc["status"] != "stored" or not doc.get("storage_path"):
+        return "not_found"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT wa_id FROM whatsapp_contacts WHERE id = %s AND account_id = %s",
+            (target_contact_id, doc["account_id"]),
+        )
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return "contact_not_found"
+    target_wa_id = row[0]
+
+    account = get_account(doc["account_id"])
+    base = os.path.realpath(MEDIA_STORAGE_DIR)
+    full = os.path.realpath(os.path.join(base, doc["storage_path"]))
+    if not (full == base or full.startswith(base + os.sep)) or not os.path.isfile(full):
+        return "file_missing"
+    with open(full, "rb") as f:
+        media_base64 = base64.b64encode(f.read()).decode("ascii")
+
+    try:
+        evolution.send_media(
+            account["wa_session_name"], _phone_from_wa_id(target_wa_id), media_base64,
+            doc["mime_type"] or "application/octet-stream",
+            doc["original_name"] or f"documento-{doc_id}",
+            mediatype="image" if doc["doc_type"] == "image" else "document",
+        )
+    except EvolutionError as e:
+        log_event(doc["account_id"], "patient_document_resend_failed", level="error",
+                  detail={"doc_id": doc_id, "target_contact_id": target_contact_id, "error": str(e)})
+        return "send_failed"
+    return "ok"
+
+
 # ---- Contas: conectar/desconectar (criar/vincular conexão continua sendo só admin) ----
 
 @app.route("/api/client-portal/accounts", methods=["GET"])
@@ -3128,6 +3275,28 @@ def cp_patients_with_documents(account_id):
     err = _require_crm_medico(user_id)
     if err: return err
     return jsonify({"patients": get_patients_with_documents(account_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/documents/resend", methods=["POST"])
+def cp_resend_documents(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    doc_ids = data.get("document_ids") or []
+    target_contact_id = data.get("target_contact_id")
+    if not doc_ids or not target_contact_id:
+        return jsonify({"ok": False, "message": "Escolha o destino e ao menos um documento"}), 400
+    sent = 0
+    for doc_id in doc_ids:
+        if _patient_document_owner(doc_id) != user_id:
+            continue
+        if send_patient_document_to_contact(doc_id, target_contact_id) == "ok":
+            sent += 1
+    return jsonify({"ok": True, "sent": sent, "failed": len(doc_ids) - sent})
 
 
 @app.route("/api/client-portal/contacts/<int:contact_id>/documents", methods=["GET"])
@@ -3727,7 +3896,16 @@ def webhook_evolution():
             message_id = save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id,
                                       wa_message_id=wa_message_id, message_type=message_type)
             if media and plan_booking_mode(account.get("user_id")) == "crm_medico":
-                _enqueue_patient_media(account, contact_id, message_id, key, media, wa_message_id)
+                # LGPD: só captura de contato que já respondeu SIM ao termo de
+                # consentimento. 'none' dispara o termo (documento é descartado,
+                # o paciente reenvia depois de aceitar); 'pending'/'declined'
+                # descartam em silêncio, sem repetir o pedido (ver plano).
+                consent_status = get_lgpd_consent_status(contact_id)
+                if consent_status == "accepted":
+                    _enqueue_patient_media(account, contact_id, message_id, key, media, wa_message_id)
+                elif consent_status == "none":
+                    threading.Thread(target=request_lgpd_consent, args=(account, contact_id, wa_id, payload),
+                                      daemon=True).start()
 
             # pending_consultant_id roda sempre (não só quando há selected_id) —
             # a resposta de confirmação aceita tanto tocar no botão quanto
@@ -3743,6 +3921,12 @@ def webhook_evolution():
             elif pending_consultant_id and not selected_id:
                 answer = booking_flow.parse_yes_no(body)
 
+            # LGPD: mesmo mecanismo de sim/não tolerante (parse_yes_no) já
+            # usado pra confirmação de consultor — só é avaliado quando há um
+            # pedido de consentimento em aberto pra esse contato.
+            pending_consent_id = get_pending_lgpd_consent_id(contact_id)
+            consent_answer = booking_flow.parse_yes_no(body) if pending_consent_id and not selected_id else None
+
             wants_portal_link = bool(body) and "minha agenda" in body.strip().lower()
             active_consultant = get_active_consultant_by_wa_id(account["id"], wa_id) if wants_portal_link else None
 
@@ -3754,6 +3938,16 @@ def webhook_evolution():
                     reply = f"Cadastro confirmado! Você já pode receber agendamentos.\n\nAcesse sua agenda quando quiser: {link}"
                 else:
                     reply = "Ok, cadastro cancelado."
+                try:
+                    evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), reply)
+                except EvolutionError:
+                    pass
+            elif pending_consent_id and consent_answer is not None:
+                resolve_lgpd_consent(pending_consent_id, contact_id, consent_answer, body, wa_message_id, payload)
+                reply = ("Consentimento registrado, obrigado! Agora você já pode nos mandar (ou reenviar) "
+                         "seus documentos/exames por aqui."
+                         if consent_answer else
+                         "Tudo bem, não vamos processar documentos enviados por você por aqui.")
                 try:
                     evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), reply)
                 except EvolutionError:
