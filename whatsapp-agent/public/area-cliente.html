@@ -94,6 +94,8 @@
         background: rgba(0,0,0,0.6);
         align-items: center; justify-content: center;
         z-index: 100;
+        padding: 1.5rem;
+        box-sizing: border-box;
     }
     .modal-overlay.active { display: flex; }
     .modal {
@@ -103,6 +105,8 @@
         padding: 2rem;
         text-align: center;
         max-width: 360px;
+        max-height: 100%;
+        overflow-y: auto;
     }
     .modal h3 { color: #f8fafc; margin-bottom: 1rem; }
     .modal img { width: 260px; height: 260px; border-radius: 8px; background: #fff; padding: 8px; }
