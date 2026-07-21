@@ -645,7 +645,7 @@ def _create_pending_patient_document(account_id, contact_id, message_id, wa_mess
             """INSERT INTO whatsapp_patient_documents
                (contact_id, account_id, appointment_id, message_id, wa_message_id, doc_type, caption, status)
                VALUES (%s, %s, %s, %s, %s, %s, %s, 'pending')
-               ON CONFLICT (account_id, wa_message_id) DO NOTHING
+               ON CONFLICT (account_id, wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING
                RETURNING id""",
             (contact_id, account_id, appointment_id, message_id, wa_message_id, doc_type, caption),
         )
