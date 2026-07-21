@@ -1362,6 +1362,29 @@ def api_whatsapp_received_usage():
     return jsonify({"ok": True, "charged": price_charged is not None})
 
 
+@app.route('/api/whatsapp/sent-usage', methods=['POST'])
+def api_whatsapp_sent_usage():
+    """Espelha api_whatsapp_received_usage (mesma precificação, mesmo gate),
+    só que pra mensagens ENVIADAS por fluxos internos do whatsapp-agent
+    (agendamento, convite de consultor, LGPD, lembretes, checklist, reenvio
+    de documento, envio manual do operador) — tudo que não é nem a API paga
+    de envio (já cobrada por plan_area_pricing.price_per_message_sent) nem a
+    resposta automática de IA (já cobrada por token em /api/chat)."""
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida ou ausente"}), 401
+
+    should_charge, price = unrelated_message_pricing(user_id)
+    price_charged = None
+    if should_charge and price is not None:
+        new_balance = apply_credit_transaction(user_id, -price, 'consumption', "WhatsApp — mensagem de sistema enviada")
+        if new_balance is not None:
+            price_charged = price
+
+    log_whatsapp_message_usage(user_id, None, 'sent', price_charged)
+    return jsonify({"ok": True, "charged": price_charged is not None})
+
+
 @app.route('/api/agent-research', methods=['POST'])
 def agent_research():
     """Pesquisa com 3 agentes: o primeiro responde só com a documentação

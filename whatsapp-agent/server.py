@@ -856,6 +856,7 @@ def request_lgpd_consent(account, contact_id, wa_id, raw_payload):
         conn.close()
     try:
         evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), text)
+        report_whatsapp_sent_usage(account["id"])
     except EvolutionError as e:
         log_event(account["id"], "lgpd_consent_request_failed", level="error",
                   detail={"contact_id": contact_id, "error": str(e)})
@@ -1957,7 +1958,7 @@ def mark_checklist_item(item_id, new_status):
             """SELECT i.auto_message_sent_patient_at, i.auto_message_sent_consultant_at, i.auto_message_sent_secretary_at,
                       t.notify_patient, t.notify_consultant, t.notify_secretary, t.auto_message_template,
                       a.scheduled_at, a.subject, acc.wa_session_name, acc.label,
-                      con.name, ct.wa_id, ct.push_name, cons_ct.wa_id, sec_ct.wa_id
+                      con.name, ct.wa_id, ct.push_name, cons_ct.wa_id, sec_ct.wa_id, acc.id
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                JOIN whatsapp_appointments a ON a.id = i.appointment_id
@@ -1974,7 +1975,8 @@ def mark_checklist_item(item_id, new_status):
         cols = ["auto_message_sent_patient_at", "auto_message_sent_consultant_at", "auto_message_sent_secretary_at",
                 "notify_patient", "notify_consultant", "notify_secretary", "auto_message_template",
                 "scheduled_at", "subject", "wa_session_name", "account_label",
-                "consultant_name", "client_wa_id", "client_push_name", "consultant_wa_id", "secretary_wa_id"]
+                "consultant_name", "client_wa_id", "client_push_name", "consultant_wa_id", "secretary_wa_id",
+                "account_id"]
         return dict(zip(cols, row)) if row else None
     finally:
         conn.close()
@@ -2017,7 +2019,7 @@ def _due_reminders():
         cur = conn.cursor()
         cur.execute(
             """SELECT a.id, a.scheduled_at, con.name, con.reminder_hours_before, acc.wa_session_name,
-                      client_ct.wa_id, client_ct.push_name, cons_ct.wa_id
+                      client_ct.wa_id, client_ct.push_name, cons_ct.wa_id, con.account_id
                FROM whatsapp_appointments a
                JOIN whatsapp_consultants con ON con.id = a.consultant_id
                JOIN whatsapp_accounts acc ON acc.id = con.account_id
@@ -2028,7 +2030,7 @@ def _due_reminders():
                  AND a.scheduled_at <= NOW() + make_interval(hours => con.reminder_hours_before)"""
         )
         cols = ["id", "scheduled_at", "consultant_name", "reminder_hours_before", "wa_session_name",
-                "client_wa_id", "client_push_name", "consultant_wa_id"]
+                "client_wa_id", "client_push_name", "consultant_wa_id", "account_id"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -2058,7 +2060,7 @@ def _due_weekly_consultants():
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT con.id, con.name, acc.wa_session_name, acc.label, ct.wa_id
+            """SELECT con.id, con.name, acc.wa_session_name, acc.label, ct.wa_id, con.account_id
                FROM whatsapp_consultants con
                JOIN whatsapp_accounts acc ON acc.id = con.account_id
                JOIN whatsapp_contacts ct ON ct.id = con.contact_id
@@ -2073,7 +2075,7 @@ def _due_weekly_consultants():
                  AND (con.last_weekly_summary_sent_at IS NULL
                       OR (con.last_weekly_summary_sent_at AT TIME ZONE 'America/Sao_Paulo') < occ.most_recent_occurrence)"""
         )
-        cols = ["id", "name", "wa_session_name", "account_label", "wa_id"]
+        cols = ["id", "name", "wa_session_name", "account_label", "wa_id", "account_id"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -2111,8 +2113,10 @@ def _reminder_loop():
                 try:
                     evolution.send_text(appt["wa_session_name"], client_phone,
                                          f"Lembrete: você tem um agendamento com {appt['consultant_name']} em {when}.")
+                    report_whatsapp_sent_usage(appt["account_id"])
                     evolution.send_text(appt["wa_session_name"], consultant_phone,
                                          f"Lembrete: você tem um agendamento com {appt['client_push_name'] or client_phone} em {when}.")
+                    report_whatsapp_sent_usage(appt["account_id"])
                 except EvolutionError as e:
                     log_event(None, "reminder_send_failed", level="error",
                               detail={"appointment_id": appt["id"], "error": str(e)})
@@ -2137,6 +2141,7 @@ def _reminder_loop():
                              f"nenhuma consulta confirmada nos próximos 7 dias.")
                 try:
                     evolution.send_text(consultant["wa_session_name"], _phone_from_wa_id(consultant["wa_id"]), texto)
+                    report_whatsapp_sent_usage(consultant["account_id"])
                 except EvolutionError as e:
                     log_event(None, "weekly_summary_send_failed", level="error",
                               detail={"consultant_id": consultant["id"], "error": str(e)})
@@ -2411,6 +2416,7 @@ def api_send_message(chat_id):
 
     wa_message_id = ((result or {}).get("key") or {}).get("id")
     message_id = save_message(chat_id, chat["account_id"], "out", text, wa_message_id=wa_message_id)
+    report_whatsapp_sent_usage(chat["account_id"])
     return jsonify({"ok": True, "id": message_id})
 
 
@@ -2439,6 +2445,7 @@ def api_start_chat(account_id):
 
     wa_message_id = ((result or {}).get("key") or {}).get("id")
     save_message(chat_id, account_id, "out", text, wa_message_id=wa_message_id)
+    report_whatsapp_sent_usage(account_id)
     return jsonify({"ok": True, "chat_id": chat_id, "wa_message_id": wa_message_id})
 
 
@@ -2462,6 +2469,7 @@ def _send_consultant_invite_message(consultant):
         f"Você foi cadastrado como {term} ({consultant['name']}) pra receber agendamentos por aqui. "
         f"Confirma o cadastro? Responda SIM ou NÃO.",
     )
+    report_whatsapp_sent_usage(consultant["account_id"])
 
 
 def _send_consultant_confirmation(consultant_id):
@@ -2557,6 +2565,7 @@ def api_resend_portal_link(consultant_id):
     try:
         evolution.send_text(consultant["wa_session_name"], _phone_from_wa_id(consultant["wa_id"]),
                              f"Aqui está o link atualizado da sua agenda: {portal_link(token)}")
+        report_whatsapp_sent_usage(consultant["account_id"])
     except EvolutionError as e:
         return jsonify({"ok": False, "message": f"Token atualizado, mas não consegui mandar por WhatsApp: {e}"}), 502
     return jsonify({"ok": True})
@@ -2788,6 +2797,7 @@ def send_patient_document_to_contact(doc_id, target_contact_id):
         log_event(doc["account_id"], "patient_document_resend_failed", level="error",
                   detail={"doc_id": doc_id, "target_contact_id": target_contact_id, "error": str(e)})
         return "send_failed"
+    report_whatsapp_sent_usage(doc["account_id"])
     return "ok"
 
 
@@ -2873,6 +2883,7 @@ def cp_resend_weekly_summary(account_id):
         texto = f"Resumo da semana — {account['label']}: nenhuma consulta confirmada nos próximos 7 dias."
     try:
         evolution.send_text(account["wa_session_name"], phone, texto)
+        report_whatsapp_sent_usage(account_id)
     except EvolutionError as e:
         log_event(account_id, "weekly_summary_resend_failed", level="error", detail={"error": str(e)})
         return jsonify({"ok": False, "message": "Erro ao enviar pelo WhatsApp. Confirme o número e tente de novo."}), 502
@@ -3260,6 +3271,7 @@ def cp_update_checklist_item(item_id):
             try:
                 evolution.send_text(result["wa_session_name"], _phone_from_wa_id(wa_id), texto)
                 _mark_checklist_auto_message_sent(item_id, recipient)
+                report_whatsapp_sent_usage(result["account_id"])
             except EvolutionError as e:
                 log_event(None, "checklist_auto_message_failed", level="error",
                           detail={"item_id": item_id, "recipient": recipient, "error": str(e)})
@@ -3820,11 +3832,13 @@ def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):
 
 
 def _handle_unrelated_received_usage(account):
-    """Reporta pro Oráculo 1 mensagem recebida numa conexão SEM área vinculada
-    — "não relacionada às áreas selecionadas" no cadastro do cliente. O
-    Oráculo decide se isso é contado só ou também cobrado (plans.
-    charge_unrelated_received_messages). Roda em thread separada, erro só
-    loga — nunca derruba o webhook."""
+    """Reporta pro Oráculo 1 mensagem recebida que não foi paga pela resposta
+    de IA (essa já cobra por token, num lançamento só pro turno inteiro) —
+    cobre tanto a conta sem área vinculada quanto qualquer mensagem tratada
+    por confirmação de consultor, consentimento LGPD, "minha agenda" ou
+    agendamento (ver chamada em webhook_evolution). O Oráculo decide se isso
+    é contado só ou também cobrado (plans.charge_unrelated_received_messages).
+    Roda em thread separada, erro só loga — nunca derruba o webhook."""
     api_key = _client_api_key(account["user_id"]) if account.get("user_id") else None
     if not api_key:
         return  # conta sem cliente vinculado — nada pra medir/cobrar
@@ -3833,6 +3847,29 @@ def _handle_unrelated_received_usage(account):
         requests.post(f"{base_url}/api/whatsapp/received-usage", headers={"X-Oraculo-Key": api_key}, timeout=10)
     except Exception as e:
         log_event(account["id"], "received_usage_report_failed", level="error", detail={"error": str(e)})
+
+
+def report_whatsapp_sent_usage(account_id):
+    """Reporta pro Oráculo 1 mensagem ENVIADA por um fluxo interno (fora da
+    API paga de envio e fora da resposta de IA, já cobradas por outros
+    mecanismos) — mesmo princípio de _handle_unrelated_received_usage, só que
+    direction='sent'. Recebe só o account_id (sempre disponível em quem manda
+    mensagem, evita carregar o dict inteiro da conta em cada call site) e
+    dispara em thread própria — nunca bloqueia nem falha o envio real da
+    mensagem, só loga se der erro."""
+    def _run():
+        account = get_account(account_id)
+        if not account or not account.get("user_id"):
+            return
+        api_key = _client_api_key(account["user_id"])
+        if not api_key:
+            return
+        base_url = (ORACULO_API_CONFIG.get("base_url") or "http://127.0.0.1:5001").rstrip("/")
+        try:
+            requests.post(f"{base_url}/api/whatsapp/sent-usage", headers={"X-Oraculo-Key": api_key}, timeout=10)
+        except Exception as e:
+            log_event(account_id, "sent_usage_report_failed", level="error", detail={"error": str(e)})
+    threading.Thread(target=_run, daemon=True).start()
 
 
 @app.route("/webhooks/evolution", methods=["POST"])
@@ -3930,6 +3967,7 @@ def webhook_evolution():
             wants_portal_link = bool(body) and "minha agenda" in body.strip().lower()
             active_consultant = get_active_consultant_by_wa_id(account["id"], wa_id) if wants_portal_link else None
 
+            ai_handled = False
             if pending_consultant_id and answer is not None:
                 new_status = "active" if answer else "declined"
                 set_consultant_status(pending_consultant_id, new_status)
@@ -3940,6 +3978,7 @@ def webhook_evolution():
                     reply = "Ok, cadastro cancelado."
                 try:
                     evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), reply)
+                    report_whatsapp_sent_usage(account["id"])
                 except EvolutionError:
                     pass
             elif pending_consent_id and consent_answer is not None:
@@ -3950,21 +3989,31 @@ def webhook_evolution():
                          "Tudo bem, não vamos processar documentos enviados por você por aqui.")
                 try:
                     evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id), reply)
+                    report_whatsapp_sent_usage(account["id"])
                 except EvolutionError:
                     pass
             elif active_consultant:
                 try:
                     evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id),
                                          f"Sua agenda: {portal_link(active_consultant['portal_token'])}")
+                    report_whatsapp_sent_usage(account["id"])
                 except EvolutionError:
                     pass
             elif booking_flow.handle_incoming(account, chat_id, contact_id, wa_id, body, selected_id, push_name):
                 pass  # tratado pelo fluxo de agendamento — não cai na IA nem na medição de recebida-sem-área
             elif account.get("area_id"):
+                ai_handled = True
                 threading.Thread(
                     target=_handle_ai_auto_reply, args=(account, chat_id, wa_id, body), daemon=True
                 ).start()
-            else:
+
+            # Cobrança/contagem da mensagem recebida — em todo ramo exceto o
+            # de IA (essa já é cobrada por token, um lançamento só pro turno
+            # inteiro em _handle_ai_auto_reply/api/chat). Antes só rodava no
+            # fallback "sem nada a ver" — agora cobre confirmação de
+            # consultor, resposta de LGPD, "minha agenda" e qualquer passo do
+            # agendamento também (ver plano de cobrança).
+            if not ai_handled:
                 threading.Thread(target=_handle_unrelated_received_usage, args=(account,), daemon=True).start()
 
     return jsonify({"ok": True})

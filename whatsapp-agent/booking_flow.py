@@ -279,6 +279,7 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
     própria criação, por isso o padrão é False.
 
     Retorna True se criou, False se o horário já não estava livre."""
+    import server  # tardio — ver docstring do módulo
     status = "pending_consultant" if requires_confirmation else "confirmed"
     if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject, status=status):
         return False
@@ -292,17 +293,18 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
         client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
     try:
         evolution.send_text(consultant["wa_session_name"], client_phone, client_msg)
+        server.report_whatsapp_sent_usage(consultant["account_id"])
     except EvolutionError:
         pass
     if notify_consultant:
         if requires_confirmation:
-            import server  # tardio — ver docstring do módulo
             consultant_msg = (f"Novo agendamento pra confirmar: {client_push_name or client_phone} em {when}.{subject_line}\n"
                                f"Confirme no seu painel: {server.portal_link(consultant['portal_token'])}")
         else:
             consultant_msg = f"Novo agendamento: {client_push_name or client_phone} em {when}.{subject_line}"
         try:
             evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]), consultant_msg)
+            server.report_whatsapp_sent_usage(consultant["account_id"])
         except EvolutionError:
             pass
     return True
@@ -317,7 +319,8 @@ def _get_appointment_full(appointment_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT a.id, a.consultant_id, con.name, con.slot_duration_minutes, acc.wa_session_name,
-                      a.client_contact_id, ct.wa_id, ct.push_name, a.scheduled_at, a.duration_minutes, a.status
+                      a.client_contact_id, ct.wa_id, ct.push_name, a.scheduled_at, a.duration_minutes, a.status,
+                      con.account_id
                FROM whatsapp_appointments a
                JOIN whatsapp_consultants con ON con.id = a.consultant_id
                JOIN whatsapp_accounts acc ON acc.id = con.account_id
@@ -329,7 +332,8 @@ def _get_appointment_full(appointment_id):
         if not row:
             return None
         cols = ["id", "consultant_id", "consultant_name", "slot_duration_minutes", "wa_session_name",
-                "client_contact_id", "client_wa_id", "client_push_name", "scheduled_at", "duration_minutes", "status"]
+                "client_contact_id", "client_wa_id", "client_push_name", "scheduled_at", "duration_minutes", "status",
+                "account_id"]
         return dict(zip(cols, row))
     finally:
         conn.close()
@@ -353,10 +357,12 @@ def cancel_appointment_and_notify(appointment_id, consultant_id):
         conn.commit()
     finally:
         conn.close()
+    import server  # tardio — ver docstring do módulo
     when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
     try:
         evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
                              f"Seu agendamento com {appt['consultant_name']} em {when} foi cancelado.")
+        server.report_whatsapp_sent_usage(appt["account_id"])
     except EvolutionError:
         pass
     return "ok"
@@ -380,10 +386,12 @@ def confirm_appointment_and_notify(appointment_id, consultant_id):
         conn.commit()
     finally:
         conn.close()
+    import server  # tardio — ver docstring do módulo
     when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
     try:
         evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
                              f"Seu agendamento com {appt['consultant_name']} em {when} foi confirmado pelo profissional! ✅")
+        server.report_whatsapp_sent_usage(appt["account_id"])
     except EvolutionError:
         pass
     return "ok"
@@ -408,11 +416,13 @@ def decline_appointment_and_notify(appointment_id, consultant_id):
         conn.commit()
     finally:
         conn.close()
+    import server  # tardio — ver docstring do módulo
     when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
     try:
         evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
                              f"Seu pedido de agendamento com {appt['consultant_name']} em {when} não pôde ser confirmado. "
                              f"Digite \"agendar\" pra escolher outro horário.")
+        server.report_whatsapp_sent_usage(appt["account_id"])
     except EvolutionError:
         pass
     return "ok"
@@ -452,11 +462,13 @@ def reschedule_appointment_and_notify(appointment_id, consultant_id, new_schedul
     finally:
         conn.close()
 
+    import server  # tardio — ver docstring do módulo
     old_when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
     new_when = new_scheduled_at.strftime("%d/%m às %H:%M")
     try:
         evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
                              f"Seu agendamento com {appt['consultant_name']} foi remarcado de {old_when} para {new_when}.")
+        server.report_whatsapp_sent_usage(appt["account_id"])
     except EvolutionError:
         pass
     return "ok"
@@ -640,8 +652,10 @@ def _resend_current_step(account, wa_id, state):
 
 
 def _send_text(account, phone, text):
+    import server  # tardio — ver docstring do módulo
     try:
         evolution.send_text(account["wa_session_name"], phone, text)
+        server.report_whatsapp_sent_usage(account["id"])
     except EvolutionError:
         pass
 
@@ -682,8 +696,10 @@ def _send_consultant_list(account, wa_id, consultants, urgent=False, reminder=Fa
         )
     parts.append(intro)
     parts.append(numbered)
+    import server  # tardio — ver docstring do módulo
     try:
         evolution.send_text(account["wa_session_name"], _phone(wa_id), "\n\n".join(parts))
+        server.report_whatsapp_sent_usage(account["id"])
     except EvolutionError:
         pass
     return [c["id"] for c in consultants]
@@ -701,8 +717,10 @@ def _send_slot_list(account, wa_id, consultant, slots, reminder=False):
     numbered = "\n".join(lines)
     intro = ("Não consegui entender 🙏 Aqui está a lista de novo, é só digitar o número:" if reminder
              else f"Escolha um horário com {consultant['name']}, digite o número:")
+    import server  # tardio — ver docstring do módulo
     try:
         evolution.send_text(account["wa_session_name"], _phone(wa_id), f"{intro}\n\n{numbered}")
+        server.report_whatsapp_sent_usage(account["id"])
     except EvolutionError:
         pass
     return [s.isoformat() for s in slots]
@@ -710,6 +728,7 @@ def _send_slot_list(account, wa_id, consultant, slots, reminder=False):
 
 def _send_confirm_buttons(account, wa_id, consultant, scheduled_at):
     when = scheduled_at.strftime("%d/%m às %H:%M")
+    import server  # tardio — ver docstring do módulo
     try:
         evolution.send_buttons(
             account["wa_session_name"], _phone(wa_id), "Confirmar agendamento",
@@ -717,5 +736,6 @@ def _send_confirm_buttons(account, wa_id, consultant, scheduled_at):
             f"Toque num botão acima ou responda SIM ou NÃO.",
             [{"id": "booking_confirm_yes", "text": "Sim, confirmar"}, {"id": "booking_confirm_no", "text": "Não"}],
         )
+        server.report_whatsapp_sent_usage(account["id"])
     except EvolutionError:
         pass
