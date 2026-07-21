@@ -118,6 +118,15 @@ function fmtWhen(iso) {
     return `${days[dt.getDay()]} ${d}/${m} às ${timePart}`;
 }
 
+function calcAge(birthDateStr) {
+    if (!birthDateStr) return null;
+    const [y, m, d] = birthDateStr.split('-').map(Number);
+    const today = new Date();
+    let age = today.getFullYear() - y;
+    if (today.getMonth() + 1 < m || (today.getMonth() + 1 === m && today.getDate() < d)) age--;
+    return age;
+}
+
 function statusLabel(s) {
     return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu', pending_consultant: 'Expirou sem confirmação' }[s] || s;
 }
@@ -244,17 +253,6 @@ function renderShell(me) {
         </div>
         <div id="pacientes-tab" class="tab-content">
             <div class="card">
-                <h2>Documentos dos pacientes</h2>
-                <p class="empty" style="padding-top:0;">Fotos/PDFs de exames que o paciente manda pelo WhatsApp, em ordem cronológica.</p>
-                <div class="form-group">
-                    <label>Paciente</label>
-                    <select class="form-input" id="docPatientSelect" onchange="loadPatientDocs()">
-                        <option value="">Selecione...</option>
-                    </select>
-                </div>
-                <div id="patientDocs"><p class="empty">Selecione um paciente.</p></div>
-            </div>
-            <div class="card">
                 <h2>Ficha do paciente</h2>
                 <p class="empty" style="padding-top:0;">Cadastro (somente leitura) e evolução do tratamento — pacientes que você já atendeu.</p>
                 <div class="form-group">
@@ -265,6 +263,17 @@ function renderShell(me) {
                 </div>
                 <div id="fichaCadastroBox"></div>
                 <div id="fichaEvolucaoBox" style="margin-top:1rem;"></div>
+            </div>
+            <div class="card">
+                <h2>Documentos dos pacientes</h2>
+                <p class="empty" style="padding-top:0;">Fotos/PDFs de exames que o paciente manda pelo WhatsApp, em ordem cronológica.</p>
+                <div class="form-group">
+                    <label>Paciente</label>
+                    <select class="form-input" id="docPatientSelect" onchange="loadPatientDocs()">
+                        <option value="">Selecione...</option>
+                    </select>
+                </div>
+                <div id="patientDocs"><p class="empty">Selecione um paciente.</p></div>
             </div>
         </div>
         <div id="config-tab" class="tab-content">
@@ -559,7 +568,7 @@ async function loadFichaPatient() {
         cadBox.innerHTML = `
             <div style="font-size:0.85rem; line-height:1.7;">
                 <div><strong>CPF:</strong> ${esc(record.cpf || '—')}</div>
-                <div><strong>Nascimento:</strong> ${record.birth_date ? esc(record.birth_date.split('-').reverse().join('/')) : '—'}</div>
+                <div><strong>Nascimento:</strong> ${record.birth_date ? esc(record.birth_date.split('-').reverse().join('/')) + ` (${calcAge(record.birth_date)} anos)` : '—'}</div>
                 <div><strong>Endereço:</strong> ${esc(record.address || '—')}</div>
                 <div><strong>Contato de emergência:</strong> ${esc(record.emergency_contact_name || '—')}${record.emergency_contact_phone ? ' (' + esc(record.emergency_contact_phone) + ')' : ''}</div>
                 <div style="margin-top:0.5rem;"><strong>⚠️ Alergias:</strong> ${esc(record.allergies || '—')}</div>
