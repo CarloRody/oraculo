@@ -585,10 +585,50 @@ def get_or_create_group(account_id, wa_group_id):
             log_event(account_id, "group_info_fetch_failed", level="error",
                       detail={"group_id": group_id, "error": str(e)})
             return
-        if info:
-            update_group_info(group_id, info.get("subject"), info.get("desc"), info.get("size"))
+        if not info:
+            return
+        name = info.get("subject") or _group_fallback_name(account_id, info.get("participants"))
+        update_group_info(group_id, name, info.get("desc"), info.get("size"))
     threading.Thread(target=_fetch_info, daemon=True).start()
     return group_id
+
+
+def _group_fallback_name(account_id, participants):
+    """Muitos grupos (principalmente de 2 pessoas, ou criados às pressas) não
+    têm 'subject' definido no WhatsApp — a Evolution API devolve string
+    vazia nesse caso. O próprio app do WhatsApp, nesse caso, mostra os nomes
+    dos participantes em vez de deixar em branco; fazemos o mesmo aqui,
+    resolvendo cada telefone contra contatos já conhecidos dessa conta (quem
+    não é conhecido aparece pelos últimos 4 dígitos do número)."""
+    if not participants:
+        return "Grupo"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        labels = []
+        for p in participants[:4]:
+            wa_id = p.get("phoneNumber") or p.get("id")
+            if not wa_id:
+                continue
+            cur.execute(
+                "SELECT name, push_name FROM whatsapp_contacts WHERE account_id = %s AND wa_id = %s",
+                (account_id, wa_id),
+            )
+            row = cur.fetchone()
+            if row and (row[0] or row[1]):
+                labels.append(row[0] or row[1])
+            else:
+                digits = re.sub(r"\D", "", wa_id)
+                labels.append(f"...{digits[-4:]}" if digits else "?")
+    finally:
+        conn.close()
+    if not labels:
+        return "Grupo"
+    extra = len(participants) - len(labels)
+    label = ", ".join(labels)
+    if extra > 0:
+        label += f" e mais {extra}"
+    return label
 
 
 def update_group_info(group_id, name, description, participants_count):
