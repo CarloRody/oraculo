@@ -540,9 +540,9 @@ let allAreas = [];
 
 function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
 
-// ---- WhatsApp (serviço próprio, porta 5005 — não faz parte do admin.html) ----
+// ---- WhatsApp (serviço próprio, montado em /whatsapp — não faz parte do admin.html) ----
 function openWhatsApp() {
-    window.open(window.location.protocol + '//' + window.location.hostname + ':5005/', '_blank');
+    window.open('/whatsapp/', '_blank');
 }
 
 // ---- Tabs ----
@@ -1044,11 +1044,11 @@ function showClientEditModal(userId) {
     loadClientWhatsappUsage(userId);
 }
 
-// Link da Área do Cliente (whatsapp-agent, porta 5005) — mesma chave do
-// cliente embutida em ?k=, igual ao link do Monitor Agent/Backup Manager.
+// Link da Área do Cliente (whatsapp-agent, montado em /whatsapp) — mesma
+// chave do cliente embutida em ?k=, igual ao link do Monitor Agent/Backup Manager.
 function clientPortalLinkFor(apiKey) {
     if (!apiKey) return '';
-    return `${window.location.protocol}//${window.location.hostname}:5005/area-cliente?k=${encodeURIComponent(apiKey)}`;
+    return `/whatsapp/area-cliente?k=${encodeURIComponent(apiKey)}`;
 }
 
 function updateClientPortalLinkField() {

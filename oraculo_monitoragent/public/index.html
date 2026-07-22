@@ -23,14 +23,14 @@
 
     // Acesso é por cliente (não mais uma lista global igual pra todo mundo) —
     // manda a chave pra API resolver as páginas liberadas DESSE cliente.
-    fetch(location.protocol + '//' + location.hostname + ':5001/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
+    fetch(location.origin + '/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.restricted) return; // sem restrição configurada pra esse cliente = acesso total
             var allowed = data.pages || [];
             if (allowed.indexOf('monitor') === -1) {
                 alert('Você não tem acesso a esta ferramenta.');
-                location.href = location.protocol + '//' + location.hostname + ':5001/index.html';
+                location.href = location.origin + '/index.html';
             }
         })
         .catch(function() { /* falha ao checar não bloqueia — falha aberta */ });
@@ -264,11 +264,11 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 </div>
 
 <script>
-const BASE = window.location.origin;
+const BASE = window.location.origin + '/monitor';
 let refreshInterval;
 let areasCache = [];
 
-document.getElementById('backLink').href = `${window.location.protocol}//${window.location.hostname}:5001/index.html`;
+document.getElementById('backLink').href = `${window.location.origin}/index.html`;
 
 async function api(path, opts={}) {
   const r = await fetch(BASE + path, opts);

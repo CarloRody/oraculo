@@ -150,7 +150,6 @@
 
 <script>
 const API = window.location.protocol + '//' + window.location.host;
-const HOST = window.location.hostname;
 
 async function loadStatus() {
     const dbEl = document.getElementById('db-status');
@@ -242,9 +241,9 @@ function setupMaintenanceLinks() {
     // origem e limpa da URL. Sem chave salva = admin, link continua limpo.
     const key = getStoredApiKey();
     const suffix = key ? `?k=${encodeURIComponent(key)}` : '';
-    document.getElementById('areaClienteLink').href = `${window.location.protocol}//${HOST}:5005/area-cliente${suffix}`;
-    document.getElementById('monitorLink').href = `${window.location.protocol}//${HOST}:5003/${suffix}`;
-    document.getElementById('backupLink').href = `${window.location.protocol}//${HOST}:5004/${suffix}`;
+    document.getElementById('areaClienteLink').href = `/whatsapp/area-cliente${suffix}`;
+    document.getElementById('monitorLink').href = `/monitor/${suffix}`;
+    document.getElementById('backupLink').href = `/backup/${suffix}`;
 }
 
 // Sem chave salva = admin, mostra todos os cards (comportamento de sempre).

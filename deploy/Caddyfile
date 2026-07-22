@@ -1,0 +1,28 @@
+# Proxy reverso único na frente dos 4 serviços web do Oráculo — roteamento
+# por caminho (não por subdomínio, decisão do usuário), cada app continua
+# funcionando exatamente como hoje na própria porta (Caddy só é quem decide
+# pra onde encaminhar). Copiado pra /etc/caddy/Caddyfile no deploy.
+#
+# Fase 1 (agora, sem domínio comprado ainda): TLS autoassinado (`tls internal`),
+# acessado pelo IP público direto — navegador mostra aviso de segurança,
+# esperado/temporário. Fase 2 (quando o domínio estiver comprado e apontado):
+# trocar o endereço do bloco abaixo pro domínio e remover a linha `tls internal`
+# — sem isso, o Caddy assume automático via Let's Encrypt sozinho. Nada mais
+# no arquivo muda entre as duas fases.
+
+https://177.212.159.231 {
+    tls internal
+
+    handle_path /whatsapp/* {
+        reverse_proxy 127.0.0.1:5005
+    }
+    handle_path /monitor/* {
+        reverse_proxy 127.0.0.1:5003
+    }
+    handle_path /backup/* {
+        reverse_proxy 127.0.0.1:5004
+    }
+    handle {
+        reverse_proxy 127.0.0.1:5001
+    }
+}

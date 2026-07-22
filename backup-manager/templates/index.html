@@ -23,14 +23,14 @@
 
     // Acesso é por cliente (não mais uma lista global igual pra todo mundo) —
     // manda a chave pra API resolver as páginas liberadas DESSE cliente.
-    fetch(location.protocol + '//' + location.hostname + ':5001/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
+    fetch(location.origin + '/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
         .then(function(r) { return r.json(); })
         .then(function(data) {
             if (!data.restricted) return; // sem restrição configurada pra esse cliente = acesso total
             var allowed = data.pages || [];
             if (allowed.indexOf('backup') === -1) {
                 alert('Você não tem acesso a esta ferramenta.');
-                location.href = location.protocol + '//' + location.hostname + ':5001/index.html';
+                location.href = location.origin + '/index.html';
             }
         })
         .catch(function() { /* falha ao checar não bloqueia — falha aberta */ });
@@ -232,12 +232,12 @@ input:focus,select:focus{outline:none;border-color:#38bdf8}
 <script>
 const $ = id => document.getElementById(id);
 
-$('backLink').href = `${window.location.protocol}//${window.location.hostname}:5001/index.html`;
+$('backLink').href = `${window.location.origin}/index.html`;
 
 function esc(s) { return s != null ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;') : ''; }
 
 async function api(url, opts) {
-  const res = await fetch(url, opts);
+  const res = await fetch('/backup' + url, opts);
   let data = {};
   try { data = await res.json(); } catch(e) {}
   if (!res.ok) throw new Error(data.message || data.error || `HTTP ${res.status}`);

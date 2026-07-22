@@ -229,7 +229,7 @@
                 <label style="color:#94a3b8; font-size:0.85rem;">Conta:</label>
                 <select class="form-input" id="agendaAccountSelect" onchange="onAgendaAccountChange()"></select>
                 <button class="btn btn-sm" id="addConsultantBtn" onclick="openConsultantModal()">+ Consultor</button>
-                <a class="btn btn-sm btn-secondary" id="secretaryPanelLink" href="/painel-secretaria" style="display:none;">🗓️ Painel da Secretária</a>
+                <a class="btn btn-sm btn-secondary" id="secretaryPanelLink" href="/whatsapp/painel-secretaria" style="display:none;">🗓️ Painel da Secretária</a>
             </div>
             <p id="agendaDisabledNotice" style="display:none; color:#fbbf24; font-size:0.85rem; margin-top:0.5rem;">
                 A agenda não está ativada no seu plano — fale com o administrador do Oráculo pra ativar.
@@ -285,7 +285,7 @@
 
         <div class="card" style="max-width:1000px;">
             <h2>Configurar checklist da clínica</h2>
-            <p class="subtitle">Etapas aplicadas a toda consulta marcada como concluída. Placeholders disponíveis na mensagem automática: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>. A secretária marca as etapas como concluídas pelo <a href="/painel-secretaria" style="color:#60a5fa;">Painel da Secretária</a>.</p>
+            <p class="subtitle">Etapas aplicadas a toda consulta marcada como concluída. Placeholders disponíveis na mensagem automática: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>. A secretária marca as etapas como concluídas pelo <a href="/whatsapp/painel-secretaria" style="color:#60a5fa;">Painel da Secretária</a>.</p>
             <div id="templateEditor"></div>
             <div style="display:flex; gap:0.5rem; margin-top:0.5rem;">
                 <button class="btn btn-sm btn-secondary" onclick="addTemplateStep()">+ Adicionar etapa</button>
@@ -402,8 +402,8 @@
 </div>
 
 <script>
-const API = window.location.origin;
-const SAAS = window.location.protocol + '//' + window.location.hostname + ':5001';
+const API = window.location.origin + '/whatsapp';
+const SAAS = window.location.origin;
 let API_KEY = '';
 let pollTimer = null;
 
