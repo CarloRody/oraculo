@@ -5,12 +5,16 @@
 #
 # Fase 1 (agora, sem domínio comprado ainda): TLS autoassinado (`tls internal`),
 # acessado pelo IP público direto — navegador mostra aviso de segurança,
-# esperado/temporário. Fase 2 (quando o domínio estiver comprado e apontado):
-# trocar o endereço do bloco abaixo pro domínio e remover a linha `tls internal`
-# — sem isso, o Caddy assume automático via Let's Encrypt sozinho. Nada mais
-# no arquivo muda entre as duas fases.
+# esperado/temporário. Endereço do bloco é ":443" (qualquer host) em vez do
+# IP literal — IP não é um valor válido de SNI (RFC 6066), então navegador/
+# curl não mandam SNI nenhum ao conectar por IP, e o Caddy não teria como
+# escolher o site certo se o bloco fosse endereçado pelo IP. Fase 2 (quando
+# o domínio estiver comprado e apontado): trocar ":443" pro domínio e remover
+# a linha `tls internal` — sem isso, o Caddy assume automático via Let's
+# Encrypt sozinho (domínio é SNI válido, sem esse problema). Nada mais no
+# arquivo muda entre as duas fases.
 
-https://177.212.159.231 {
+:443 {
     tls internal
 
     handle_path /whatsapp/* {
