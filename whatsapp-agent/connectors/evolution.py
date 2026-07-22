@@ -181,6 +181,17 @@ def get_media_base64(instance_name, message_key, timeout=None):
     )
 
 
+def get_group_info(instance_name, group_jid):
+    """Busca metadados do grupo (nome/subject, descrição, tamanho) — usado só
+    na primeira vez que uma mensagem de um grupo chega, pra popular
+    whatsapp_groups com um nome de verdade em vez do JID cru. Endpoint GET
+    /group/findGroupInfos/{instance}?groupJid=..., shape confirmado lendo
+    GroupController.findGroupInfo/whatsapp.baileys.service.ts direto no
+    servidor (campo 'subject' é o nome do grupo, 'size' o número de
+    participantes, 'desc' a descrição)."""
+    return _request("GET", f"/group/findGroupInfos/{instance_name}", params={"groupJid": group_jid})
+
+
 def logout(instance_name):
     return _request("DELETE", f"/instance/logout/{instance_name}", expected_statuses=(200, 201, 404))
 

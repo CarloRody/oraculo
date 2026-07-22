@@ -543,14 +543,103 @@ def get_or_create_chat(account_id, contact_id, default_auto_reply=True):
         conn.close()
 
 
+def _is_group_jid(wa_id):
+    """Grupo do WhatsApp: remoteJid termina em '@g.us' (contato individual
+    termina em '@s.whatsapp.net'). Usado no webhook pra desviar mensagem de
+    grupo do fluxo normal de contato (ver get_or_create_group)."""
+    return bool(wa_id) and wa_id.endswith("@g.us")
+
+
+def get_or_create_group(account_id, wa_group_id):
+    """Equivalente a get_or_create_contact, mas pra grupo — grava só o JID de
+    cara (nome ainda desconhecido) e dispara uma busca em background pelo
+    nome de verdade (evolution.get_group_info) só na primeira vez que o
+    grupo aparece, pra não bater na Evolution API a cada mensagem nem travar
+    a resposta do webhook esperando essa chamada extra."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM whatsapp_groups WHERE account_id = %s AND wa_group_id = %s",
+            (account_id, wa_group_id),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        cur.execute(
+            "INSERT INTO whatsapp_groups (account_id, wa_group_id) VALUES (%s, %s) RETURNING id",
+            (account_id, wa_group_id),
+        )
+        group_id = cur.fetchone()[0]
+        conn.commit()
+    finally:
+        conn.close()
+
+    def _fetch_info():
+        account = get_account(account_id)
+        if not account:
+            return
+        try:
+            info = evolution.get_group_info(account["wa_session_name"], wa_group_id)
+        except EvolutionError as e:
+            log_event(account_id, "group_info_fetch_failed", level="error",
+                      detail={"group_id": group_id, "error": str(e)})
+            return
+        if info:
+            update_group_info(group_id, info.get("subject"), info.get("desc"), info.get("size"))
+    threading.Thread(target=_fetch_info, daemon=True).start()
+    return group_id
+
+
+def update_group_info(group_id, name, description, participants_count):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_groups SET name = %s, description = %s, participants_count = %s WHERE id = %s",
+            (name, description, participants_count, group_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_or_create_group_chat(account_id, group_id):
+    """Equivalente a get_or_create_chat, mas pra conversa de grupo
+    (chat_type='group', group_id preenchido, contact_id NULL — mesmo CHECK
+    de whatsapp_chats)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM whatsapp_chats WHERE account_id = %s AND group_id = %s",
+            (account_id, group_id),
+        )
+        row = cur.fetchone()
+        if row:
+            return row[0]
+        cur.execute(
+            """INSERT INTO whatsapp_chats (account_id, chat_type, group_id, ai_auto_reply_enabled)
+               VALUES (%s, 'group', %s, FALSE) RETURNING id""",
+            (account_id, group_id),
+        )
+        chat_id = cur.fetchone()[0]
+        conn.commit()
+        return chat_id
+    finally:
+        conn.close()
+
+
 def get_chat(chat_id):
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT c.id, c.account_id, c.contact_id, ct.wa_id, a.wa_session_name, c.ai_auto_reply_enabled
+            """SELECT c.id, c.account_id, c.contact_id, c.chat_type, ct.wa_id, g.wa_group_id,
+                      a.wa_session_name, c.ai_auto_reply_enabled
                FROM whatsapp_chats c
-               JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               LEFT JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               LEFT JOIN whatsapp_groups g ON g.id = c.group_id
                JOIN whatsapp_accounts a ON a.id = c.account_id
                WHERE c.id = %s""",
             (chat_id,),
@@ -558,7 +647,13 @@ def get_chat(chat_id):
         row = cur.fetchone()
         if not row:
             return None
-        return dict(zip(["id", "account_id", "contact_id", "wa_id", "wa_session_name", "ai_auto_reply_enabled"], row))
+        d = dict(zip(["id", "account_id", "contact_id", "chat_type", "wa_id", "group_wa_id",
+                      "wa_session_name", "ai_auto_reply_enabled"], row))
+        if d["chat_type"] == "group":
+            d["wa_id"] = d.pop("group_wa_id")
+        else:
+            d.pop("group_wa_id")
+        return d
     finally:
         conn.close()
 
@@ -1281,22 +1376,32 @@ def list_chats(account_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT c.id, c.unread_count, c.is_pinned, c.last_message_at, c.last_message_preview,
-                      ct.name, ct.push_name, ct.wa_id, c.ai_auto_reply_enabled
+                      c.chat_type, ct.name, ct.push_name, ct.wa_id, c.ai_auto_reply_enabled,
+                      g.name, g.wa_group_id, g.participants_count
                FROM whatsapp_chats c
-               JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               LEFT JOIN whatsapp_contacts ct ON ct.id = c.contact_id
+               LEFT JOIN whatsapp_groups g ON g.id = c.group_id
                WHERE c.account_id = %s AND c.is_archived = FALSE
                ORDER BY c.last_message_at DESC NULLS LAST""",
             (account_id,),
         )
         cols = ["id", "unread_count", "is_pinned", "last_message_at", "last_message_preview",
-                "contact_name", "push_name", "wa_id", "ai_auto_reply_enabled"]
+                "chat_type", "contact_name", "push_name", "wa_id", "ai_auto_reply_enabled",
+                "group_name", "group_wa_id", "group_participants_count"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
             if r.get("last_message_at"):
                 r["last_message_at"] = str(r["last_message_at"])
             contact_name = r.pop("contact_name")
             push_name = r.pop("push_name")
-            r["display_name"] = contact_name or push_name or r["wa_id"]
+            group_name = r.pop("group_name")
+            group_wa_id = r.pop("group_wa_id")
+            r["is_group"] = r["chat_type"] == "group"
+            if r["is_group"]:
+                r["wa_id"] = group_wa_id
+                r["display_name"] = group_name or group_wa_id
+            else:
+                r["display_name"] = contact_name or push_name or r["wa_id"]
         return rows
     finally:
         conn.close()
@@ -3920,7 +4025,23 @@ def webhook_evolution():
         body = list_title or message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
         wa_message_id = key.get("id")
         push_name = data.get("pushName")
-        if wa_id:
+        if wa_id and _is_group_jid(wa_id):
+            # Mensagem de grupo — vira conversa reconhecida como grupo
+            # (whatsapp_groups/chat_type='group'), fica salva no histórico e
+            # é cobrada normalmente, mas NÃO passa por confirmação de
+            # consultor/LGPD/"minha agenda"/agendamento/IA: esses fluxos
+            # pressupõem uma conversa 1:1 (estado de agendamento por chat_id,
+            # resposta endereçada a uma pessoa só) e não fazem sentido dentro
+            # de um grupo com várias pessoas (ver plano de reconhecimento de
+            # grupo).
+            group_id = get_or_create_group(account["id"], wa_id)
+            chat_id = get_or_create_group_chat(account["id"], group_id)
+            media = _extract_media_info(message)
+            message_type = media["doc_type"] if media else "text"
+            save_message(chat_id, account["id"], "in", body, sender_contact_id=None,
+                        wa_message_id=wa_message_id, message_type=message_type)
+            threading.Thread(target=_handle_unrelated_received_usage, args=(account,), daemon=True).start()
+        elif wa_id:
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
             chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
 
