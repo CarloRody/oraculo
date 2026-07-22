@@ -7,13 +7,21 @@
 # usando o hostname DDNS que já existe e já resolve pra esta VPS
 # (carlorody.jflddns.com.br) em vez do IP puro — IP literal não é um valor
 # válido de SNI (RFC 6066), então navegador/curl não mandam SNI nenhum ao
-# conectar por IP direto, e o Caddy não tem como escolher o certificado
-# certo sem isso. Usando um hostname de verdade (mesmo o DDNS grátis) esse
-# problema não existe. Navegador mostra aviso de segurança (autoassinado),
-# esperado/temporário. Fase 2 (quando o domínio de verdade estiver comprado
-# e apontado): trocar o endereço do bloco abaixo pro domínio novo e remover
-# a linha `tls internal` — sem ela, o Caddy assume automático via Let's
-# Encrypt sozinho.
+# conectar por IP direto (nem o IP público, nem o IP da rede local), e sem
+# `default_sni` o Caddy não teria como escolher o certificado certo nesse
+# caso. Com `default_sni`, qualquer conexão sem SNI (por IP, seja da rede
+# local ou pública) é tratada como se tivesse pedido esse hostname — assim
+# acessar por IP direto também funciona, além do hostname. Navegador mostra
+# aviso de segurança (autoassinado), esperado/temporário. Fase 2 (quando o
+# domínio de verdade estiver comprado e apontado): trocar o endereço do
+# bloco abaixo pro domínio novo, atualizar o default_sni pro mesmo domínio
+# (ou remover, se acesso por IP não for mais necessário), e remover a linha
+# `tls internal` — sem ela, o Caddy assume automático via Let's Encrypt
+# sozinho.
+
+{
+    default_sni carlorody.jflddns.com.br
+}
 
 https://carlorody.jflddns.com.br {
     tls internal
