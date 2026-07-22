@@ -4,23 +4,18 @@
 # pra onde encaminhar). Copiado pra /etc/caddy/Caddyfile no deploy.
 #
 # Fase 1 (agora, sem domínio comprado ainda): TLS autoassinado (`tls internal`),
-# acessado pelo IP público direto — navegador mostra aviso de segurança,
-# esperado/temporário. IP não é um valor válido de SNI (RFC 6066), então
-# navegador/curl não mandam SNI nenhum ao conectar por IP — sem o
-# `default_sni` abaixo, o Caddy não tem como saber qual site/certificado
-# servir numa conexão sem SNI. Fase 2 (quando o domínio estiver comprado e
-# apontado): tirar o bloco de opções globais inteiro (default_sni só existe
-# por causa do IP), trocar o endereço do site pro domínio, e remover a linha
-# `tls internal` — sem ela, o Caddy assume automático via Let's Encrypt
-# sozinho (domínio é SNI válido, sem esse problema).
+# usando o hostname DDNS que já existe e já resolve pra esta VPS
+# (carlorody.jflddns.com.br) em vez do IP puro — IP literal não é um valor
+# válido de SNI (RFC 6066), então navegador/curl não mandam SNI nenhum ao
+# conectar por IP direto, e o Caddy não tem como escolher o certificado
+# certo sem isso. Usando um hostname de verdade (mesmo o DDNS grátis) esse
+# problema não existe. Navegador mostra aviso de segurança (autoassinado),
+# esperado/temporário. Fase 2 (quando o domínio de verdade estiver comprado
+# e apontado): trocar o endereço do bloco abaixo pro domínio novo e remover
+# a linha `tls internal` — sem ela, o Caddy assume automático via Let's
+# Encrypt sozinho.
 
-{
-    servers {
-        default_sni 177.212.159.231
-    }
-}
-
-https://177.212.159.231 {
+https://carlorody.jflddns.com.br {
     tls internal
 
     handle_path /whatsapp/* {
