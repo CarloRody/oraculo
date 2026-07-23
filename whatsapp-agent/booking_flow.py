@@ -485,13 +485,21 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
     state = server.get_chat_booking_state(chat_id)
     phone = _phone(wa_id)
 
+    if server.plan_booking_mode(account.get("user_id")) != "consultores":
+        # 'crm_medico' desliga o self-service do paciente de propósito — nesse
+        # modo só a secretária cria agendamentos pelo painel dela. 'none'
+        # continua sem agenda nenhuma, igual antes. Checagem incondicional
+        # (não só quando state is None): sem isso, uma conversa de agendamento
+        # já em andamento ANTES do plano trocar pra crm_medico continuava
+        # respondendo como se nada tivesse mudado, porque o passo abaixo só
+        # reavaliava o modo pra conversa nova — encontrado com uma conversa
+        # presa em "choosing_consultant" que sobrou de um teste anterior.
+        if state is not None:
+            server.set_chat_booking_state(chat_id, None)
+        return False
+
     if state is None:
         if not _is_trigger(text):
-            return False
-        if server.plan_booking_mode(account.get("user_id")) != "consultores":
-            # 'crm_medico' desliga o self-service do paciente de propósito —
-            # nesse modo só a secretária cria agendamentos pelo painel dela.
-            # 'none' continua sem agenda nenhuma, igual antes.
             return False
         consultants = [c for c in server.get_consultants(account["id"]) if c["status"] == "active"]
         if not consultants:
