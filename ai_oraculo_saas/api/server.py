@@ -3414,6 +3414,10 @@ def admin_set_user_allowed_pages(user_id):
 # Serve frontend static files
 FRONTEND_DIR = os.path.join(os.path.dirname(__file__), '..', 'frontend')
 
+@app.route('/')
+def serve_frontend_root():
+    return send_from_directory(FRONTEND_DIR, "index.html")
+
 @app.route('/<path:filename>')
 def serve_frontend(filename):
     """Serve HTML/frontend files."""
