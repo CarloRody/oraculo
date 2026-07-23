@@ -3052,6 +3052,41 @@ def admin_restart_services():
     return jsonify({"success": True, "message": "Reiniciando serviços..."})
 
 
+# OpenClaw ("ocmanager", painel na porta 9876) é uma ferramenta à parte, instalada
+# na mesma VPS mas fora do escopo do Oráculo — roda como serviço systemd próprio
+# (com PATH do node/nvm já fixado no unit file), então não tem o problema de PATH
+# ausente que existe ao chamar systemctl a partir de um shell não-interativo.
+@app.route('/admin/openclaw/status', methods=['GET'])
+def admin_openclaw_status():
+    try:
+        result = subprocess.run(
+            ["systemctl", "is-active", "ocmanager"],
+            capture_output=True, text=True, timeout=5
+        )
+        status = result.stdout.strip()
+        return jsonify({"active": status == "active", "status": status})
+    except Exception as e:
+        return jsonify({"error": f"Falha ao consultar status do OpenClaw: {e}"}), 500
+
+
+@app.route('/admin/openclaw/restart', methods=['POST'])
+def admin_openclaw_restart():
+    try:
+        subprocess.run(["systemctl", "restart", "ocmanager"], check=True, timeout=15)
+    except Exception as e:
+        return jsonify({"error": f"Falha ao reiniciar OpenClaw: {e}"}), 500
+    return jsonify({"success": True, "message": "OpenClaw reiniciado."})
+
+
+@app.route('/admin/openclaw/stop', methods=['POST'])
+def admin_openclaw_stop():
+    try:
+        subprocess.run(["systemctl", "stop", "ocmanager"], check=True, timeout=15)
+    except Exception as e:
+        return jsonify({"error": f"Falha ao parar OpenClaw: {e}"}), 500
+    return jsonify({"success": True, "message": "OpenClaw parado."})
+
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """Upload de arquivo (PDF ou TXT) com extração automática e RAG."""

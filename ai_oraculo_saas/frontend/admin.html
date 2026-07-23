@@ -182,6 +182,15 @@
         <h2 style="color:#60a5fa; margin-bottom:1.5rem;">Saúde do Sistema</h2>
         <div id="health-info"></div>
 
+        <h3 style="color:#60a5fa; margin:2rem 0 1rem;">🤖 OpenClaw</h3>
+        <div class="card-item">
+            <div id="openclaw-status" style="margin-bottom:1rem; font-size:0.9rem; color:#94a3b8;">Carregando...</div>
+            <div style="display:flex; gap:0.6rem;">
+                <button class="btn" onclick="restartOpenclaw()" id="openclawRestartBtn">Reiniciar</button>
+                <button class="btn btn-danger" onclick="stopOpenclaw()" id="openclawStopBtn">Parar</button>
+            </div>
+        </div>
+
         <h3 style="color:#60a5fa; margin:2rem 0 1rem;">🌐 DDNS</h3>
         <div class="card-item">
             <div id="ddns-status" style="margin-bottom:1rem; font-size:0.9rem; color:#94a3b8;">Carregando...</div>
@@ -1501,6 +1510,43 @@ async function loadHealth() {
     } catch(e) { document.getElementById('health-info').innerHTML = '<p style="color:#ef4444;">Não foi possível conectar ao admin server.</p>'; }
 }
 
+// ---- OpenClaw (serviço systemd "ocmanager", ferramenta à parte do Oráculo) ----
+async function loadOpenclawStatus() {
+    const statusEl = document.getElementById('openclaw-status');
+    try {
+        const res = await fetch(ADMIN_API + '/admin/openclaw/status');
+        const data = await res.json();
+        if (!res.ok) { statusEl.innerHTML = `<span style="color:#ef4444;">${esc(data.error || 'Erro ao consultar status.')}</span>`; return; }
+        statusEl.innerHTML = data.active
+            ? '<span style="color:#22c55e;">● Ativo</span>'
+            : `<span style="color:#ef4444;">● Parado (${esc(data.status)})</span>`;
+    } catch(e) { statusEl.innerHTML = '<span style="color:#ef4444;">Não foi possível consultar o status do OpenClaw.</span>'; }
+}
+
+async function restartOpenclaw() {
+    if (!confirm('Reiniciar o OpenClaw agora?')) return;
+    const statusEl = document.getElementById('openclaw-status');
+    statusEl.innerHTML = '<span style="color:#facc15;">Reiniciando...</span>';
+    try {
+        const res = await fetch(ADMIN_API + '/admin/openclaw/restart', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Erro ao reiniciar OpenClaw.'); }
+    } catch(e) { alert('Erro ao reiniciar OpenClaw.'); }
+    setTimeout(loadOpenclawStatus, 2000);
+}
+
+async function stopOpenclaw() {
+    if (!confirm('Parar o OpenClaw agora? Ele não vai reiniciar sozinho até você clicar em "Reiniciar".')) return;
+    const statusEl = document.getElementById('openclaw-status');
+    statusEl.innerHTML = '<span style="color:#facc15;">Parando...</span>';
+    try {
+        const res = await fetch(ADMIN_API + '/admin/openclaw/stop', { method: 'POST' });
+        const data = await res.json();
+        if (!res.ok) { alert(data.error || 'Erro ao parar OpenClaw.'); }
+    } catch(e) { alert('Erro ao parar OpenClaw.'); }
+    loadOpenclawStatus();
+}
+
 // ---- DDNS ----
 async function loadDdns() {
     try {
@@ -1612,7 +1658,7 @@ async function saveClientAccess() {
 }
 
 // ---- Init ----
-loadStats(); loadDocs(); loadHealth(); loadDdns(); loadModels();
+loadStats(); loadDocs(); loadHealth(); loadOpenclawStatus(); loadDdns(); loadModels();
 // loadClients() lê allAreas (marca quem já tem base de conhecimento própria),
 // então precisa esperar loadAreas() terminar antes de rodar.
 Promise.all([loadAreas(), loadPlans()]).then(loadClients);
