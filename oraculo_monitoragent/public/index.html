@@ -630,13 +630,13 @@ function updateCrawlStatus() {
     `Árvore #${currentCrawl.crawl_id} • domínio: ${currentCrawl.domain} • profundidade máx ${currentCrawl.max_depth} • ${total} documento(s) na árvore`;
 }
 
-function renderCrawlLevel(page, links) {
+function renderCrawlLevel(page, links, parentPageId) {
   document.getElementById('crawlHeaderActions').style.display = 'flex';
   document.getElementById('crawlToolbar').style.display = 'block';
 
   const groupId = 'crawlGroup_' + page.id;
   crawlLinksByGroup[groupId] = links;
-  crawlNodes[page.id] = { id: page.id, depth: page.depth, links, advanced: false, groupId };
+  crawlNodes[page.id] = { id: page.id, depth: page.depth, links, advanced: false, groupId, parentPageId };
 
   const terms = patternTerms();
   const linksHtml = links.length ? links.map((l, i) => {
@@ -661,11 +661,13 @@ function renderCrawlLevel(page, links) {
         <button class="btn btn-scan" onclick="advanceCrawl(${page.id}, '${groupId}', this)">Buscar links selecionados →</button>
       </div>` : '');
 
-  const indent = 16 * (page.depth - 1);
+  // Sem indentação manual por profundidade: agora que os filhos são
+  // aninhados de verdade no DOM (dentro do crawl-node-body do pai), o
+  // padding de cada nível já cria o efeito de degrau sozinho.
   const block = document.createElement('div');
   block.id = groupId + '_block';
   block.className = 'crawl-node collapsed'; // já vem recolhido — clique no cabeçalho pra abrir
-  block.style.cssText = `margin:10px 0;margin-left:${indent}px;padding:12px;background:#1a2540;border-radius:8px;border:1px solid #253552`;
+  block.style.cssText = `margin:10px 0;padding:12px;background:#1a2540;border-radius:8px;border:1px solid #253552`;
   block.innerHTML = `
     <div class="crawl-node-head" onclick="toggleNodeCollapse('${groupId}')">
       <span class="crawl-caret">▸</span>
@@ -679,8 +681,14 @@ function renderCrawlLevel(page, links) {
     <div class="crawl-node-body">
       ${linksHtml}
       ${actionsHtml}
+      <div class="crawl-children" id="${groupId}_children"></div>
     </div>`;
-  document.getElementById('crawlContainer').appendChild(block);
+
+  // Aninha de verdade dentro do nó pai (não só indenta visualmente) — assim
+  // recolher o pai esconde a subárvore inteira, incluindo níveis mais fundos.
+  const parentNode = parentPageId != null ? crawlNodes[parentPageId] : null;
+  const parentChildrenEl = parentNode ? document.getElementById(parentNode.groupId + '_children') : null;
+  (parentChildrenEl || document.getElementById('crawlContainer')).appendChild(block);
   updateNodeSelCount(groupId);
   applyDisplayFilter();
   updateCrawlStatus();
@@ -779,7 +787,7 @@ async function advanceCrawl(parentPageId, groupId, btn) {
     if (!r.pages.length) {
       showToast('Nenhuma página nova foi buscada (fora do domínio, já visitada, ou sem conteúdo suficiente).', true);
     } else {
-      r.pages.forEach(p => renderCrawlLevel(p, p.links));
+      r.pages.forEach(p => renderCrawlLevel(p, p.links, parentPageId));
       showToast(`${r.pages.length} documento(s) criado(s) no nível ${r.depth}.`);
     }
     updateCrawlStatus();
@@ -821,7 +829,7 @@ async function autoCrawlAll(btn) {
       if (r.pages.length) {
         created += r.pages.length;
         r.pages.forEach(p => {
-          renderCrawlLevel(p, p.links);
+          renderCrawlLevel(p, p.links, node.id);
           const child = crawlNodes[p.id];
           if (child && child.links.length && child.depth < currentCrawl.max_depth) frontier.push(child);
         });
