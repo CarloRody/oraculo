@@ -297,7 +297,13 @@ document.getElementById('backLink').href = `${window.location.origin}/index.html
 
 async function api(path, opts={}) {
   const r = await fetch(BASE + path, opts);
-  if (!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+  if (!r.ok) {
+    // FastAPI manda o motivo real em {"detail": "..."} — sem isso o toast só
+    // dizia "502 Bad Gateway", que não ajuda a entender timeout de scraping.
+    let detail = null;
+    try { detail = (await r.json()).detail; } catch(e) {}
+    throw new Error(detail || `${r.status} ${r.statusText}`);
+  }
   return r.json();
 }
 
@@ -381,7 +387,7 @@ async function refresh() {
           <div class="url-card-actions">
             <button class="btn btn-scan" onclick="scanUrl(${u.id}, this)">🔍 Scan</button>
             <button class="btn btn-links" onclick="extractLinks(${u.id}, this)">🔗 Links</button>
-            <button class="btn btn-links" onclick="startCrawlTree(${u.id}, this)">🌳 Árvore</button>
+            <button class="btn btn-links" onclick="startCrawlTree(${u.id}, this, '${u.fetch_mode}')">🌳 Árvore</button>
             <button class="btn btn-del" onclick="delUrl(${u.id})">🗑 Remover</button>
           </div>
         </div>
@@ -591,16 +597,20 @@ function applyDisplayFilter() {
   });
 }
 
-async function startCrawlTree(urlId, btn) {
+async function startCrawlTree(urlId, btn, fetchMode) {
   const depthStr = prompt('Quantos níveis de profundidade? (1 a 5, ex: 3 = página + filhas + netas)', '3');
   if (!depthStr) return;
   const maxDepth = Math.max(1, Math.min(5, parseInt(depthStr) || 3));
+  // Modo JS Browser pode levar até ~1min (renderiza a página num navegador
+  // headless — alguns sites com proteção anti-bot ou Confluence são lentos
+  // nisso) — sem avisar, a espera parece travamento em vez de carregamento.
+  const busyText = fetchMode === 'js_browser' ? 'Carregando (JS, pode levar ~1min)...' : 'Carregando...';
   try {
-    const r = await withButtonLoading(btn, '...', () => api('/crawl/start', {
+    const r = await withButtonLoading(btn, busyText, () => api('/crawl/start', {
       method: 'POST', headers: {'Content-Type':'application/json'},
       body: JSON.stringify({ url_id: urlId, max_depth: maxDepth })
     }));
-    currentCrawl = { crawl_id: r.crawl_id, max_depth: r.max_depth, domain: r.domain };
+    currentCrawl = { crawl_id: r.crawl_id, max_depth: r.max_depth, domain: r.domain, fetch_mode: r.fetch_mode };
     crawlLinksByGroup = {};
     crawlNodes = {};
     selectedForMonitoring = new Set();
@@ -760,8 +770,11 @@ async function advanceCrawl(parentPageId, groupId, btn) {
   });
   if (!selected.length) { showToast('Marque pelo menos um link antes de avançar.', true); return; }
 
+  const busyText = currentCrawl.fetch_mode === 'js_browser'
+    ? `Buscando ${selected.length} página(s) (JS, pode levar ~1min cada)...`
+    : 'Buscando...';
   try {
-    const r = await withButtonLoading(btn, 'Buscando...', () => advanceNode(parentPageId, selected));
+    const r = await withButtonLoading(btn, busyText, () => advanceNode(parentPageId, selected));
     markNodeAdvanced(groupId);
     if (!r.pages.length) {
       showToast('Nenhuma página nova foi buscada (fora do domínio, já visitada, ou sem conteúdo suficiente).', true);

@@ -632,6 +632,7 @@ def crawl_start(data: CrawlStart):
         "crawl_id": crawl_id,
         "max_depth": max_depth,
         "domain": root_netloc(root_url),
+        "fetch_mode": fetch_mode,
         "root_page": {
             "id": root_page_id, "url": root_url, "title": doc_name,
             "depth": 1, "tutor_doc_id": tutor_doc_id,
