@@ -171,6 +171,7 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 .crawl-node-body{margin-top:8px}
 .crawl-node.collapsed .crawl-node-body{display:none}
 .sel-count{font-size:.72rem;color:#5a6b8c;font-weight:400}
+.link-exists{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:.68rem;font-weight:600;background:#2d5a3d;color:#7fe0b8;vertical-align:middle}
 </style>
 </head>
 <body>
@@ -629,11 +630,14 @@ function renderCrawlLevel(page, links) {
 
   const terms = patternTerms();
   const linksHtml = links.length ? links.map((l, i) => {
-    const pre = terms.length && linkMatchesPattern(l.url) ? ' checked' : '';
+    // Links que já são documento na área não vêm pré-marcados (mesmo casando
+    // com o padrão) — só recebem o selo "já existe" pra você decidir.
+    const pre = !l.exists && terms.length && linkMatchesPattern(l.url) ? ' checked' : '';
+    const badge = l.exists ? ' <span class="link-exists">já existe</span>' : '';
     return `
     <label class="link-row" style="display:flex;align-items:center;gap:8px;cursor:pointer">
       <input type="checkbox" data-group="${groupId}" data-idx="${i}"${pre} onchange="updateNodeSelCount('${groupId}')">
-      <span><b>${esc(l.name)}</b> — <code>${esc(l.url)}</code></span>
+      <span><b>${esc(l.name)}</b> — <code>${esc(l.url)}</code>${badge}</span>
     </label>`;
   }).join('') : '<p style="color:#888;padding:6px 0">Nenhum link encontrado nesta página.</p>';
 
@@ -696,7 +700,8 @@ function markMatchingInNode(groupId) {
   if (!patternTerms().length) { showToast('Defina um padrão de URL primeiro.', true); return; }
   const links = crawlLinksByGroup[groupId] || [];
   document.querySelectorAll(`input[data-group="${groupId}"]`).forEach(cb => {
-    cb.checked = linkMatchesPattern(links[+cb.dataset.idx].url);
+    const l = links[+cb.dataset.idx];
+    cb.checked = !l.exists && linkMatchesPattern(l.url); // não marca os que já existem
   });
   updateNodeSelCount(groupId);
 }

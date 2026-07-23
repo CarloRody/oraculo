@@ -561,6 +561,20 @@ def extract_links_route(url_id: int | None = None, url: str | None = None):
 # review session itself (depth, dedup, which Tutor doc each page became).
 # ---------------------------------------------------------------------------
 
+def _annotate_links_existing(links, area_id):
+    """Marca cada link candidato com exists=True quando a URL já é documento
+    nesta área — a UI usa isso pra mostrar o selo 'já existe'. Não reordena
+    nem remove nada; só acrescenta o campo. Uma query em lote (não uma por
+    link)."""
+    import rag_wrapper as rw
+    if not links:
+        return links
+    existing = rw.find_existing_urls(area_id, [l.get("url") for l in links])
+    for l in links:
+        l["exists"] = l.get("url") in existing
+    return links
+
+
 @app.post("/crawl/start")
 def crawl_start(data: CrawlStart):
     """Start a knowledge-tree crawl from a monitored URL: fetch the root
@@ -622,7 +636,7 @@ def crawl_start(data: CrawlStart):
             "id": root_page_id, "url": root_url, "title": doc_name,
             "depth": 1, "tutor_doc_id": tutor_doc_id,
         },
-        "links": page.get("links", []),
+        "links": _annotate_links_existing(page.get("links", []), area_id),
     }
 
 
@@ -697,7 +711,10 @@ def crawl_advance(crawl_id: int, data: CrawlAdvance):
             fetched.append({
                 "id": page_id, "url": link.url, "title": doc_name,
                 "depth": next_depth, "tutor_doc_id": tutor_doc_id,
-                "links": page.get("links", []) if next_depth < crawl["max_depth"] else [],
+                "links": _annotate_links_existing(
+                    page.get("links", []) if next_depth < crawl["max_depth"] else [],
+                    crawl["area_id"],
+                ),
             })
 
         conn.commit()

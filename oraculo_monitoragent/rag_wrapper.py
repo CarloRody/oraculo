@@ -118,6 +118,28 @@ def find_existing_document(area_id, url):
         conn.close()
 
 
+def find_existing_urls(area_id, urls):
+    """Versão em lote de find_existing_document: das URLs informadas, devolve o
+    conjunto (set) das que já são documento nesta área. Uma query só em vez de
+    uma por link — usada pra marcar 'já existe' nos links candidatos da árvore."""
+    urls = [u for u in (urls or []) if u]
+    if not urls:
+        return set()
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT DISTINCT url FROM documents WHERE area_id = %s AND url = ANY(%s)",
+            (area_id, urls),
+        )
+        return {row[0] for row in cur.fetchall()}
+    except Exception as e:
+        print(f"Error finding existing urls for area {area_id}: {e}")
+        return set()
+    finally:
+        conn.close()
+
+
 def update_document_for_recrawl(doc_id, content_text, name, parent_doc_id, fetch_mode):
     """Atualiza um documento existente com o conteúdo/posição na árvore
     redescobertos numa nova recuperação de árvore — recrawl pode achar a
