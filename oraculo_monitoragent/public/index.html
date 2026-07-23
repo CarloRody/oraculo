@@ -664,11 +664,11 @@ function renderCrawlLevel(page, links) {
   const indent = 16 * (page.depth - 1);
   const block = document.createElement('div');
   block.id = groupId + '_block';
-  block.className = 'crawl-node';
+  block.className = 'crawl-node collapsed'; // já vem recolhido — clique no cabeçalho pra abrir
   block.style.cssText = `margin:10px 0;margin-left:${indent}px;padding:12px;background:#1a2540;border-radius:8px;border:1px solid #253552`;
   block.innerHTML = `
     <div class="crawl-node-head" onclick="toggleNodeCollapse('${groupId}')">
-      <span class="crawl-caret">▾</span>
+      <span class="crawl-caret">▸</span>
       <span style="color:#fff;font-weight:600">Nível ${page.depth}: ${esc(page.title)}
       <span style="color:#5a6b8c;font-size:.78rem;font-weight:400">(documento #${page.tutor_doc_id})</span></span>
       <span class="sel-count" id="${groupId}_count"></span>
