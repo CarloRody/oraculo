@@ -793,33 +793,100 @@ function bioTrendHtml(biometrics, prevBiometrics) {
     return rows.length ? `<div style="font-size:0.8rem; color:#94a3b8; margin-top:0.15rem;">${rows.join('')}</div>` : '';
 }
 
+// Linha de agendamento completa (status, assunto, notas/diagnóstico/
+// prescrição da consulta, tendência de sinais vitais) — mesmo conteúdo que
+// a ficha do paciente mostra no painel da secretária, só que embutido aqui
+// pra o médico não precisar sair do fluxo de atendimento pra revisar tudo.
+function apptRowFull(a, prev) {
+    return `
+        <div style="padding:0.5rem 0; border-bottom:1px solid #1a2744;">
+            <div style="font-size:0.82rem;">${fmtWhen(a.scheduled_at)}${a.consultant_name ? ' · ' + esc(a.consultant_name) : ''} <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span></div>
+            ${a.subject ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(a.subject)}</div>` : ''}
+            ${a.notes ? `<div style="font-size:0.78rem; color:#94a3b8;"><strong>Notas:</strong> ${esc(a.notes)}</div>` : ''}
+            ${a.diagnosis ? `<div style="font-size:0.78rem; color:#94a3b8;"><strong>Diagnóstico:</strong> ${esc(a.diagnosis)}</div>` : ''}
+            ${a.prescription ? `<div style="font-size:0.78rem; color:#94a3b8;"><strong>Prescrição:</strong> ${esc(a.prescription)}</div>` : ''}
+            ${bioTrendHtml(a.biometrics, prev && prev.biometrics)}
+        </div>
+    `;
+}
+
 async function loadConsultationPatientBox(appointmentId, contactId) {
     const box = document.getElementById('consultationPatientBox');
     box.innerHTML = '<p class="empty">Carregando dados do paciente...</p>';
     try {
-        const [record, apptData] = await Promise.all([
+        const [record, apptData, evoData, docsData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
             api(`/contacts/${contactId}/appointments`),
+            api(`/contacts/${contactId}/evolution-notes`),
+            api(`/contacts/${contactId}/documents`),
         ]);
         const sexLabel = record.biological_sex === 'male' ? 'Masculino' : record.biological_sex === 'female' ? 'Feminino' : '—';
+        const birthHtml = record.birth_date
+            ? esc(record.birth_date.split('-').reverse().join('/')) + ` (${calcAge(record.birth_date)} anos)`
+            : '—';
+
         // Exclui a própria consulta que está sendo atendida agora (ainda sem
-        // biometria salva) do histórico — evita uma linha vazia confusa no topo.
-        const history = (apptData.history || []).filter(h => h.id !== appointmentId);
-        const historyHtml = history.length
-            ? history.slice(0, 5).map((h, i) => `
-                <div style="margin-top:0.4rem; padding-top:0.4rem; border-top:1px solid #2a2a4a;">
-                    <div style="font-size:0.78rem; color:#64748b;">${fmtWhen(h.scheduled_at)}${h.consultant_name ? ' · ' + esc(h.consultant_name) : ''}</div>
-                    ${bioTrendHtml(h.biometrics, history[i + 1] && history[i + 1].biometrics) || '<div style="font-size:0.78rem; color:#64748b;">Sem sinais vitais registrados.</div>'}
+        // dados salvos) das listas — evita uma linha vazia/confusa no topo.
+        const pending = (apptData.pending || []).filter(a => a.id !== appointmentId);
+        const upcoming = (apptData.upcoming || []).filter(a => a.id !== appointmentId);
+        const history = (apptData.history || []).filter(a => a.id !== appointmentId);
+
+        let apptHtml = '';
+        if (pending.length) apptHtml += `<h5 style="font-size:0.78rem; color:#64748b; margin:0.5rem 0 0.2rem;">Aguardando confirmação</h5>` + pending.map(a => apptRowFull(a)).join('');
+        if (upcoming.length) apptHtml += `<h5 style="font-size:0.78rem; color:#64748b; margin:0.5rem 0 0.2rem;">Próximos</h5>` + upcoming.map(a => apptRowFull(a)).join('');
+        // history vem do mais recente pro mais antigo — a linha anterior de
+        // cada item é a próxima do array, usada pra calcular a seta de
+        // tendência (↑/↓) de cada sinal vital.
+        if (history.length) apptHtml += `<h5 style="font-size:0.78rem; color:#64748b; margin:0.5rem 0 0.2rem;">Histórico</h5>` + history.map((a, i) => apptRowFull(a, history[i + 1])).join('');
+        if (!apptHtml) apptHtml = '<p class="empty" style="padding:0.3rem 0;">Nenhum outro agendamento.</p>';
+
+        const notes = evoData.notes || [];
+        const evoHtml = notes.length
+            ? notes.map(n => `
+                <div style="padding:0.5rem 0; border-bottom:1px solid #1a2744;">
+                    <div style="font-size:0.75rem; color:#64748b;">${esc(n.author_label)} · ${fmtDateTime(n.created_at)}</div>
+                    <div style="font-size:0.82rem; white-space:pre-wrap;">${esc(n.note)}</div>
                 </div>`).join('')
-            : '<p class="empty" style="padding:0.3rem 0;">Nenhuma consulta anterior.</p>';
+            : '<p class="empty" style="padding:0.3rem 0;">Nenhuma nota de evolução ainda.</p>';
+
+        const docs = docsData.documents || [];
+        const docsHtml = docs.length
+            ? docs.map(d => {
+                const fileUrl = API + `/patient-documents/${d.id}/file`;
+                return `
+                <div style="padding:0.4rem 0; border-bottom:1px solid #1a2744; display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                    <div>
+                        <div style="font-size:0.82rem;">${docTypeLabel(d)} ${d.original_name ? esc(d.original_name) : ''}</div>
+                        <div style="font-size:0.75rem; color:#64748b;">${fmtDateTime(d.captured_at)}</div>
+                        ${d.caption ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
+                    </div>
+                    ${d.status === 'stored' ? `<a class="btn btn-sm" href="${fileUrl}" target="_blank">Abrir</a>` : ''}
+                </div>`;
+            }).join('')
+            : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
+
         box.innerHTML = `
             <div style="font-size:0.85rem; line-height:1.6; background:#1a1a2e; border-radius:8px; padding:0.6rem 0.8rem; margin-bottom:0.75rem;">
+                <div><strong>CPF:</strong> ${esc(record.cpf || '—')}</div>
+                <div><strong>Nascimento:</strong> ${birthHtml}</div>
+                <div><strong>Endereço:</strong> ${esc(record.address || '—')}</div>
+                <div><strong>Contato de emergência:</strong> ${esc(record.emergency_contact_name || '—')}${record.emergency_contact_phone ? ' (' + esc(record.emergency_contact_phone) + ')' : ''}</div>
                 <div><strong>Sexo biológico:</strong> ${sexLabel} · <strong>Tipo sanguíneo:</strong> ${esc(record.blood_type || '—')}</div>
-                <div><strong>⚠️ Alergias:</strong> ${esc(record.allergies || '—')}</div>
+                <div style="margin-top:0.4rem;"><strong>⚠️ Alergias:</strong> ${esc(record.allergies || '—')}</div>
                 <div><strong>Medicações em uso:</strong> ${esc(record.medications_in_use || '—')}</div>
-                <h4 style="font-size:0.82rem; margin:0.5rem 0 0;">Histórico biométrico</h4>
-                ${historyHtml}
             </div>
+            <details open style="margin-bottom:0.6rem;">
+                <summary>Agendamentos (histórico completo e próximos)</summary>
+                <div style="margin-top:0.4rem;">${apptHtml}</div>
+            </details>
+            <details style="margin-bottom:0.6rem;">
+                <summary>Evolução do tratamento (${notes.length})</summary>
+                <div style="margin-top:0.4rem;">${evoHtml}</div>
+            </details>
+            <details>
+                <summary>Documentos (${docs.length})</summary>
+                <div style="margin-top:0.4rem;">${docsHtml}</div>
+            </details>
         `;
     } catch (e) {
         box.innerHTML = '';
