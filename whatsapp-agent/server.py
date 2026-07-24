@@ -3933,6 +3933,21 @@ def api_portal_reschedule_appointment(token, appointment_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/appointments", methods=["GET"])
+def api_portal_get_patient_appointments(token, contact_id):
+    """Histórico completo do paciente (todos os consultores, não só este) —
+    usado no momento do atendimento pra mostrar a biometria das consultas
+    anteriores com a seta de tendência, mesmo dado que a secretária já vê em
+    cp_get_patient_appointments."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    pending, upcoming, history = get_patient_appointments(contact_id)
+    return jsonify({"pending": pending, "upcoming": upcoming, "history": history})
+
+
 @app.route("/api/consultant-portal/<token>/appointments/<int:appointment_id>/consultation", methods=["GET"])
 def api_portal_get_consultation(token, appointment_id):
     consultant = get_consultant_by_portal_token(token)

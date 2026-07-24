@@ -204,6 +204,7 @@ function renderShell(me) {
             <div class="card" id="consultationCard" style="display:none;">
                 <h2>Atendimento</h2>
                 <p class="empty" id="consultationInfo" style="padding-top:0;"></p>
+                <div id="consultationPatientBox"></div>
                 <div class="form-group"><label>Detalhes da consulta</label><textarea class="form-input" id="consultationNotes" rows="3"></textarea></div>
                 <div class="form-group"><label>Diagnóstico</label><textarea class="form-input" id="consultationDiagnosis" rows="2"></textarea></div>
                 <div class="form-group"><label>Prescrição</label><textarea class="form-input" id="consultationPrescription" rows="2"></textarea></div>
@@ -442,7 +443,7 @@ async function loadAppointments() {
                 ${a.subject ? `<div class="when">${esc(a.subject)}</div>` : ''}
             </div>
             <div class="appt-actions">
-                <button class="btn btn-sm" onclick="openConsultation(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g,"\\'")}', '${a.scheduled_at}')">Iniciar atendimento</button>
+                <button class="btn btn-sm" onclick="openConsultation(${a.id}, ${a.client_contact_id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g,"\\'")}', '${a.scheduled_at}')">Iniciar atendimento</button>
                 <button class="btn btn-sm btn-secondary" onclick="openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g,"\\'")}')">Remarcar</button>
                 <button class="btn btn-sm btn-danger" onclick="cancelAppt(${a.id})">Cancelar</button>
             </div>
@@ -756,7 +757,76 @@ function updateBioImc() {
     }
 }
 
-async function openConsultation(id, clientName, scheduledAt) {
+// Mesmos rótulos/unidades usados no painel da secretária (ficha do
+// paciente) — duplicado aqui porque os dois portais são HTMLs estáticos
+// independentes, sem módulo JS compartilhado.
+const BIOMETRIC_LABELS = {
+    weight_kg: { label: 'Peso', unit: 'kg', decimals: 1 },
+    height_cm: { label: 'Altura', unit: 'cm', decimals: 0 },
+    blood_pressure_systolic: { label: 'PA sistólica', unit: 'mmHg', decimals: 0 },
+    blood_pressure_diastolic: { label: 'PA diastólica', unit: 'mmHg', decimals: 0 },
+    heart_rate_bpm: { label: 'Freq. cardíaca', unit: 'bpm', decimals: 0 },
+    glucose_mg_dl: { label: 'Glicemia', unit: 'mg/dL', decimals: 0 },
+    temperature_c: { label: 'Temperatura', unit: '°C', decimals: 1 },
+};
+
+function bioTrendHtml(biometrics, prevBiometrics) {
+    if (!biometrics) return '';
+    const rows = Object.keys(BIOMETRIC_LABELS)
+        .filter(type => biometrics[type] != null)
+        .map(type => {
+            const { label, unit, decimals } = BIOMETRIC_LABELS[type];
+            const cur = Number(biometrics[type]);
+            let trend = '';
+            if (prevBiometrics && prevBiometrics[type] != null) {
+                const prev = Number(prevBiometrics[type]);
+                if (cur > prev) trend = ` <span style="color:#f87171;">↑</span> (${prev.toFixed(decimals)} antes)`;
+                else if (cur < prev) trend = ` <span style="color:#4ade80;">↓</span> (${prev.toFixed(decimals)} antes)`;
+                else trend = ' <span style="color:#94a3b8;">→ igual</span>';
+            }
+            return `<span style="margin-right:0.75rem;">${label}: ${cur.toFixed(decimals)}${unit}${trend}</span>`;
+        });
+    if (biometrics.weight_kg != null && biometrics.height_cm != null) {
+        const heightM = Number(biometrics.height_cm) / 100;
+        rows.push(`<span>IMC: ${(Number(biometrics.weight_kg) / (heightM * heightM)).toFixed(1)}</span>`);
+    }
+    return rows.length ? `<div style="font-size:0.8rem; color:#94a3b8; margin-top:0.15rem;">${rows.join('')}</div>` : '';
+}
+
+async function loadConsultationPatientBox(appointmentId, contactId) {
+    const box = document.getElementById('consultationPatientBox');
+    box.innerHTML = '<p class="empty">Carregando dados do paciente...</p>';
+    try {
+        const [record, apptData] = await Promise.all([
+            api(`/contacts/${contactId}/patient-record`),
+            api(`/contacts/${contactId}/appointments`),
+        ]);
+        const sexLabel = record.biological_sex === 'male' ? 'Masculino' : record.biological_sex === 'female' ? 'Feminino' : '—';
+        // Exclui a própria consulta que está sendo atendida agora (ainda sem
+        // biometria salva) do histórico — evita uma linha vazia confusa no topo.
+        const history = (apptData.history || []).filter(h => h.id !== appointmentId);
+        const historyHtml = history.length
+            ? history.slice(0, 5).map((h, i) => `
+                <div style="margin-top:0.4rem; padding-top:0.4rem; border-top:1px solid #2a2a4a;">
+                    <div style="font-size:0.78rem; color:#64748b;">${fmtWhen(h.scheduled_at)}${h.consultant_name ? ' · ' + esc(h.consultant_name) : ''}</div>
+                    ${bioTrendHtml(h.biometrics, history[i + 1] && history[i + 1].biometrics) || '<div style="font-size:0.78rem; color:#64748b;">Sem sinais vitais registrados.</div>'}
+                </div>`).join('')
+            : '<p class="empty" style="padding:0.3rem 0;">Nenhuma consulta anterior.</p>';
+        box.innerHTML = `
+            <div style="font-size:0.85rem; line-height:1.6; background:#1a1a2e; border-radius:8px; padding:0.6rem 0.8rem; margin-bottom:0.75rem;">
+                <div><strong>Sexo biológico:</strong> ${sexLabel} · <strong>Tipo sanguíneo:</strong> ${esc(record.blood_type || '—')}</div>
+                <div><strong>⚠️ Alergias:</strong> ${esc(record.allergies || '—')}</div>
+                <div><strong>Medicações em uso:</strong> ${esc(record.medications_in_use || '—')}</div>
+                <h4 style="font-size:0.82rem; margin:0.5rem 0 0;">Histórico biométrico</h4>
+                ${historyHtml}
+            </div>
+        `;
+    } catch (e) {
+        box.innerHTML = '';
+    }
+}
+
+async function openConsultation(id, contactId, clientName, scheduledAt) {
     consultationApptId = id;
     document.getElementById('consultationInfo').textContent = `Paciente: ${clientName} · ${fmtWhen(scheduledAt)}`;
     document.getElementById('consultationCard').style.display = 'block';
@@ -766,6 +836,7 @@ async function openConsultation(id, clientName, scheduledAt) {
     document.getElementById('consultationPrescription').value = '';
     Object.values(BIO_FIELD_IDS).forEach(elId => document.getElementById(elId).value = '');
     updateBioImc();
+    loadConsultationPatientBox(id, contactId);
     try {
         const data = await api(`/appointments/${id}/consultation`);
         document.getElementById('consultationNotes').value = data.notes || '';
@@ -782,6 +853,7 @@ async function openConsultation(id, clientName, scheduledAt) {
 function closeConsultation() {
     consultationApptId = null;
     document.getElementById('consultationCard').style.display = 'none';
+    document.getElementById('consultationPatientBox').innerHTML = '';
 }
 
 async function saveConsultation() {
