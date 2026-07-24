@@ -560,7 +560,17 @@ def get_or_create_chat(account_id, contact_id, default_auto_reply=True):
         )
         row = cur.fetchone()
         if row:
-            return row[0]
+            chat_id = row[0]
+            # Conversa "excluída" (arquivada) que voltou a ter atividade —
+            # reaparece sozinha na lista em vez de continuar escondida pra
+            # sempre (decisão confirmada: excluir não bloqueia o contato).
+            cur.execute(
+                "UPDATE whatsapp_chats SET is_archived = FALSE WHERE id = %s AND is_archived = TRUE",
+                (chat_id,),
+            )
+            if cur.rowcount:
+                conn.commit()
+            return chat_id
         cur.execute(
             """INSERT INTO whatsapp_chats (account_id, chat_type, contact_id, ai_auto_reply_enabled)
                VALUES (%s, 'contact', %s, %s) RETURNING id""",
@@ -733,6 +743,23 @@ def set_chat_auto_reply(chat_id, enabled):
     try:
         cur = conn.cursor()
         cur.execute("UPDATE whatsapp_chats SET ai_auto_reply_enabled = %s WHERE id = %s", (enabled, chat_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def set_chat_archived(chat_id, archived):
+    """"Excluir conversa" na Área do Cliente/Painel da Secretária — na
+    verdade arquiva (mesmo padrão de archive_patient_contact/
+    hide_patient_document): some da lista (list_chats já filtra
+    is_archived = FALSE), mas as mensagens continuam guardadas. Volta a
+    aparecer sozinha se o contato mandar mensagem de novo (ver
+    get_or_create_chat)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_chats SET is_archived = %s WHERE id = %s", (archived, chat_id))
         conn.commit()
         return cur.rowcount > 0
     finally:
@@ -2887,9 +2914,12 @@ def api_update_chat(chat_id):
     if not get_chat(chat_id):
         return jsonify({"ok": False, "message": "Conversa não encontrada"}), 404
     data = request.json or {}
-    if "ai_auto_reply_enabled" not in data:
+    if "ai_auto_reply_enabled" not in data and "is_archived" not in data:
         return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
-    set_chat_auto_reply(chat_id, bool(data["ai_auto_reply_enabled"]))
+    if "ai_auto_reply_enabled" in data:
+        set_chat_auto_reply(chat_id, bool(data["ai_auto_reply_enabled"]))
+    if "is_archived" in data:
+        set_chat_archived(chat_id, bool(data["is_archived"]))
     return jsonify({"ok": True})
 
 

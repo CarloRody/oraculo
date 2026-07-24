@@ -739,6 +739,7 @@ function renderChatPanelHeader() {
                     <input type="checkbox" ${enabled ? 'checked' : ''} onchange="toggleChatAutoReply(${currentChatId}, this.checked)">
                     Resposta automática nesta conversa
                 </label>
+                <button class="btn btn-sm btn-danger" onclick="deleteChat(${currentChatId})">🗑️ Excluir</button>
             </div>
         </div>
     `;
@@ -751,6 +752,18 @@ async function toggleChatAutoReply(chatId, enabled) {
     });
     const chat = currentChats.find(c => c.id === chatId);
     if (chat) chat.ai_auto_reply_enabled = enabled;
+}
+
+async function deleteChat(chatId) {
+    if (!confirm('Excluir esta conversa? Ela some da lista agora, mas o histórico continua guardado — se esse contato mandar mensagem de novo, a conversa reaparece sozinha.')) return;
+    await authFetch(API + `/api/client-portal/chats/${chatId}`, {
+        method: 'PATCH', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({ is_archived: true })
+    });
+    if (messagesTimer) clearInterval(messagesTimer);
+    currentChatId = null;
+    document.getElementById('chatMessages').innerHTML = '<div class="chat-empty">Nenhuma conversa aberta</div>';
+    await refreshChatList();
 }
 
 async function openChat(chatId) {
