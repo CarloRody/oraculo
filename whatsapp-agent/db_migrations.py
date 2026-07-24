@@ -704,6 +704,21 @@ MIGRATIONS = [
 
     ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS flow_state JSONB;
     """,
+    # Cadastro de empresa/clínica/pessoa dona da conexão e de um responsável
+    # — por conexão (whatsapp_accounts), não por cliente/login, já que um
+    # mesmo cliente pode ter mais de um número. phone_number já existia mas
+    # nunca era preenchido; passa a ser populado a partir de agora (ver
+    # webhook_evolution, connection.update).
+    """
+    ALTER TABLE whatsapp_accounts
+        ADD COLUMN IF NOT EXISTS document_type VARCHAR(4) CHECK (document_type IN ('cpf', 'cnpj')),
+        ADD COLUMN IF NOT EXISTS document_number VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS company_name VARCHAR(150),
+        ADD COLUMN IF NOT EXISTS company_address TEXT,
+        ADD COLUMN IF NOT EXISTS responsible_name VARCHAR(150),
+        ADD COLUMN IF NOT EXISTS responsible_cpf VARCHAR(14),
+        ADD COLUMN IF NOT EXISTS responsible_address TEXT;
+    """,
 ]
 
 

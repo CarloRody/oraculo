@@ -316,6 +316,53 @@
     </div>
 </div>
 
+<!-- Modal Dados da empresa -->
+<div class="modal-overlay" id="companyModal">
+    <div class="modal" style="max-width:420px; text-align:left;">
+        <h3>Dados da empresa/responsável</h3>
+        <div class="form-row">
+            <div class="form-group" style="flex:none; width:110px;">
+                <label>Documento</label>
+                <select class="form-input" id="companyDocType">
+                    <option value="cnpj">CNPJ</option>
+                    <option value="cpf">CPF</option>
+                </select>
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Número</label>
+                <input type="text" class="form-input" id="companyDocNumber" placeholder="00.000.000/0000-00">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Nome da empresa/clínica/pessoa</label>
+            <input type="text" class="form-input" id="companyName" placeholder="Ex: Clínica Exemplo Ltda">
+        </div>
+        <div class="form-group">
+            <label>Endereço</label>
+            <input type="text" class="form-input" id="companyAddress" placeholder="Rua, número, bairro, cidade/UF">
+        </div>
+        <h3 style="margin-top:1.25rem;">Responsável</h3>
+        <div class="form-group">
+            <label>Nome</label>
+            <input type="text" class="form-input" id="responsibleName" placeholder="Nome completo">
+        </div>
+        <div class="form-row">
+            <div class="form-group" style="flex:1;">
+                <label>CPF</label>
+                <input type="text" class="form-input" id="responsibleCpf" placeholder="000.000.000-00">
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Endereço</label>
+            <input type="text" class="form-input" id="responsibleAddress" placeholder="Rua, número, bairro, cidade/UF">
+        </div>
+        <div style="display:flex; gap:0.5rem; margin-top:1rem;">
+            <button class="btn btn-secondary" style="flex:1;" onclick="closeCompanyModal()">Cancelar</button>
+            <button class="btn" style="flex:1;" onclick="submitCompanyModal()">Salvar</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal-overlay" id="startChatModal">
     <div class="modal" style="max-width:320px;">
         <h3>Nova conversa</h3>
@@ -369,8 +416,11 @@ function statusLabel(status) {
     }[status] || status;
 }
 
+let lastAccounts = [];
+
 async function renderAccounts() {
     const accounts = await fetchAccounts();
+    lastAccounts = accounts;
     const el = document.getElementById('accountsList');
     if (!accounts.length) {
         el.innerHTML = '<p class="empty">Nenhuma conta cadastrada ainda.</p>';
@@ -383,9 +433,11 @@ async function renderAccounts() {
                     <strong>${esc(a.label)}</strong>
                     <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
                 </div>
+                ${a.phone_number ? `<div style="font-size:0.78rem; color:#64748b;">📞 ${esc(a.phone_number)}</div>` : ''}
                 <div style="font-size:0.78rem; color:#64748b;">
                     ${a.client_email ? `👤 ${esc(a.client_email)}` : 'Sem cliente vinculado'}
-                    <a href="#" onclick="openClientModal(${a.id}, ${a.user_id ?? 'null'}); return false;" style="color:#60a5fa; margin-left:0.4rem;">editar</a>
+                    <a href="#" onclick="openClientModal(${a.id}, ${a.user_id ?? 'null'}); return false;" style="color:#60a5fa; margin-left:0.4rem;">cliente</a>
+                    <a href="#" onclick="openCompanyModal(${a.id}); return false;" style="color:#60a5fa; margin-left:0.4rem;">dados da empresa</a>
                 </div>
                 ${a.area_name ? `<div style="font-size:0.78rem; color:#64748b;">📁 ${esc(a.area_name)} <span style="color:#94a3b8;">(vínculo gerenciado no cadastro do cliente, no Oráculo)</span></div>` : ''}
                 <label style="font-size:0.78rem; color:#64748b; display:flex; align-items:center; gap:0.35rem; margin-top:0.15rem; cursor:pointer;">
@@ -458,6 +510,45 @@ async function submitClientModal() {
         body: JSON.stringify({ user_id: userId ? Number(userId) : null }),
     });
     closeClientModal();
+    await renderAccounts();
+}
+
+let companyModalAccountId = null;
+
+function openCompanyModal(accountId) {
+    companyModalAccountId = accountId;
+    const a = lastAccounts.find(x => x.id === accountId) || {};
+    document.getElementById('companyDocType').value = a.document_type || 'cnpj';
+    document.getElementById('companyDocNumber').value = a.document_number || '';
+    document.getElementById('companyName').value = a.company_name || '';
+    document.getElementById('companyAddress').value = a.company_address || '';
+    document.getElementById('responsibleName').value = a.responsible_name || '';
+    document.getElementById('responsibleCpf').value = a.responsible_cpf || '';
+    document.getElementById('responsibleAddress').value = a.responsible_address || '';
+    document.getElementById('companyModal').classList.add('active');
+}
+
+function closeCompanyModal() {
+    document.getElementById('companyModal').classList.remove('active');
+    companyModalAccountId = null;
+}
+
+async function submitCompanyModal() {
+    const body = {
+        document_type: document.getElementById('companyDocType').value,
+        document_number: document.getElementById('companyDocNumber').value.trim(),
+        company_name: document.getElementById('companyName').value.trim(),
+        company_address: document.getElementById('companyAddress').value.trim(),
+        responsible_name: document.getElementById('responsibleName').value.trim(),
+        responsible_cpf: document.getElementById('responsibleCpf').value.trim(),
+        responsible_address: document.getElementById('responsibleAddress').value.trim(),
+    };
+    await fetch(API + `/api/whatsapp/accounts/${companyModalAccountId}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+    });
+    closeCompanyModal();
     await renderAccounts();
 }
 

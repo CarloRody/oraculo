@@ -122,6 +122,8 @@ ACCOUNT_COLUMNS = [
     "id", "label", "connection_type", "phone_number", "status",
     "wa_session_name", "ai_auto_reply_enabled", "last_connected_at", "created_at", "user_id", "area_id",
     "weekly_summary_weekday", "weekly_summary_hour", "secretary_contact_id",
+    "document_type", "document_number", "company_name", "company_address",
+    "responsible_name", "responsible_cpf", "responsible_address",
 ]
 
 
@@ -300,6 +302,33 @@ def update_account_client(account_id, user_id):
     try:
         cur = conn.cursor()
         cur.execute("UPDATE whatsapp_accounts SET user_id = %s WHERE id = %s", (user_id, account_id))
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+REGISTRATION_FIELDS = (
+    "document_type", "document_number", "company_name", "company_address",
+    "responsible_name", "responsible_cpf", "responsible_address",
+)
+
+
+def update_account_registration(account_id, fields):
+    """Atualiza só as colunas presentes em `fields` (nunca apaga campo que
+    não veio) — usado tanto pro cadastro de empresa/responsável (chamador
+    filtra por REGISTRATION_FIELDS) quanto pra gravar phone_number assim
+    que a conexão abre (webhook_evolution)."""
+    if not fields:
+        return False
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        sets = ", ".join(f"{k} = %s" for k in fields)
+        cur.execute(
+            f"UPDATE whatsapp_accounts SET {sets} WHERE id = %s",
+            (*fields.values(), account_id),
+        )
         conn.commit()
         return cur.rowcount > 0
     finally:
@@ -2694,12 +2723,15 @@ def api_update_account(account_id):
     if not get_account(account_id):
         return jsonify({"ok": False, "message": "Conta não encontrada"}), 404
     data = request.json or {}
-    if "user_id" not in data and "ai_auto_reply_enabled" not in data:
+    registration_fields = {k: data[k] for k in REGISTRATION_FIELDS if k in data}
+    if "user_id" not in data and "ai_auto_reply_enabled" not in data and not registration_fields:
         return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
     if "user_id" in data:
         update_account_client(account_id, data["user_id"] or None)
     if "ai_auto_reply_enabled" in data:
         update_account_auto_reply_default(account_id, bool(data["ai_auto_reply_enabled"]))
+    if registration_fields:
+        update_account_registration(account_id, registration_fields)
     return jsonify({"ok": True})
 
 
@@ -4527,6 +4559,12 @@ def webhook_evolution():
         if our_status:
             update_account_status(account["id"], our_status, connected=(our_status == "connected"))
             log_event(account["id"], "status_via_webhook", detail={"evolution_state": evo_state})
+            # A Evolution já manda o número real da sessão nesse mesmo evento
+            # (campo "wuid", ex: "553798670085@s.whatsapp.net") quando o
+            # estado vira "open" — confirmado direto no payload real
+            # (whatsapp_logs), sem precisar de nenhuma chamada extra à API.
+            if our_status == "connected" and data.get("wuid"):
+                update_account_registration(account["id"], {"phone_number": _phone_from_wa_id(data["wuid"])})
 
     elif event == "messages.upsert":
         key = data.get("key") or {}
