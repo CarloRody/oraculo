@@ -54,8 +54,8 @@ HELP_WORDS = ("ajuda", "menu", "atendente")
 # número digitado quanto pro nome da opção.
 MAIN_MENU_OPTIONS = ["ajuda", "agendar", "recomecar"]
 
-YES_WORDS = {"sim", "s", "confirmar", "confirmo", "yes", "1", "pode ser", "claro", "ok", "beleza", "blz", "isso"}
-NO_WORDS = {"nao", "n", "cancelar", "no", "2", "nao quero", "deixa pra la", "nao posso"}
+YES_WORDS = {"sim", "s", "confirmar", "confirmo", "yes", "pode ser", "claro", "ok", "beleza", "blz", "isso"}
+NO_WORDS = {"nao", "n", "cancelar", "no", "nao quero", "deixa pra la", "nao posso"}
 
 
 def _conn():
