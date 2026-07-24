@@ -172,6 +172,12 @@
         <a href="#saldo">Saldo</a>
         <a href="#recarga">Recarga</a>
         <a href="#whatsapp">WhatsApp</a>
+        <a href="#area-cliente">Área do Cliente</a>
+        <a href="#conexao-whatsapp">Conectar WhatsApp</a>
+        <a href="#agenda-consultores">Agenda</a>
+        <a href="#minha-agenda">Minha Agenda</a>
+        <a href="#secretaria">Secretaria</a>
+        <a href="#crm-medico">CRM Médico</a>
         <a href="#faq">Dúvidas</a>
     </div>
 </nav>
@@ -266,9 +272,131 @@
         <ul>
             <li><strong>Resposta automática seletiva</strong> — você decide, conversa por conversa, quem fica no automático e quem continua sendo atendido pela sua equipe.</li>
             <li><strong>Envio automatizado de mensagens</strong> — sua empresa pode disparar avisos e mensagens via API, cobrado por mensagem enviada e debitado do mesmo saldo.</li>
-            <li><strong>Agenda por WhatsApp</strong> — seus clientes marcam, cancelam e remarcam horário sozinhos, direto pelo WhatsApp, sem app externo.</li>
+            <li><strong>Agenda por WhatsApp</strong> — seus clientes marcam horário sozinhos, direto pelo WhatsApp, sem app externo; cancelamento e remarcação são feitos pela sua equipe.</li>
         </ul>
         <p>Quer ativar algum desses recursos ou saber se o seu plano já inclui? Fale com a gente pelo WhatsApp.</p>
+        <div class="callout">
+            <strong>Nem todo plano tem tudo:</strong> o Oráculo tem três modos de operação — <strong>só IA</strong> (chat com base de conhecimento), <strong>Consultores</strong> (agenda com atendimento automático) e <strong>CRM Médico</strong> (agenda + prontuário do paciente). O que aparece no seu painel depende de qual desses o seu plano inclui. As seções abaixo detalham cada um.
+        </div>
+    </div>
+</section>
+
+<section id="area-cliente">
+    <div class="wrap">
+        <div class="section-eyebrow">Se o seu plano incluir agenda ou CRM médico</div>
+        <h2>Sua Área do Cliente: o que você controla</h2>
+        <p class="lead">É o painel de controle da sua operação no WhatsApp — mesma chave de acesso do chat, sem cadastro de senha separado. O que aparece nele muda de acordo com o modo do seu plano, mas em geral você encontra:</p>
+
+        <div class="card">
+            <h3>📱 Contas</h3>
+            <p>Lista das conexões de WhatsApp da sua empresa e o status de cada uma (conectada, desconectada). Novas conexões são criadas pela gente; por aqui você mesmo conecta (via QR code) e reconecta quando precisar — veja o passo a passo em "Conectar WhatsApp".</p>
+        </div>
+        <div class="card">
+            <h3>💬 Conversas</h3>
+            <p>A caixa de entrada de cada conexão: veja o histórico, responda manualmente quando quiser assumir uma conversa, ou inicie você mesmo uma conversa nova com qualquer número.</p>
+        </div>
+        <div class="card">
+            <h3>📅 Agenda</h3>
+            <p>Cadastro de consultores/médicos (disponibilidade semanal, duração da consulta, quantas horas antes mandar lembrete, e se o próprio profissional pode mexer na própria agenda), lista dos próximos agendamentos, e o nome que você quer usar no lugar de "Consultor" (ex: "Médico", "Especialista") — a troca vale em toda a tela e nas mensagens automáticas do WhatsApp.</p>
+        </div>
+        <div class="card">
+            <h3>✅ Checklist <span class="badge">CRM Médico</span></h3>
+            <p>Monte o passo a passo que a sua secretária segue depois de cada consulta (ex: enviar receita, confirmar retorno, arquivar exame), com mensagens automáticas prontas pra cada etapa — o "check" de cada passo é feito no Painel da Secretária.</p>
+        </div>
+        <div class="card">
+            <h3>🔀 Fluxos <span class="badge">Consultores · modo fluxo</span></h3>
+            <p>O construtor visual de atendimento automático: você monta o(s) fluxo(s) de conversa do seu jeito — mensagens, menus com ramificação, perguntas abertas e ações (iniciar agendamento, chamar atendente humano, e mais). Tem simulador embutido pra você testar antes de publicar. Veja mais em "Agenda e atendimento automático".</p>
+        </div>
+        <div class="card">
+            <h3>🧾 Extrato</h3>
+            <p>Consumo e créditos, filtrável por mês — o mesmo saldo usado no chat com IA e nas mensagens automáticas do WhatsApp.</p>
+        </div>
+    </div>
+</section>
+
+<section id="conexao-whatsapp">
+    <div class="wrap">
+        <div class="section-eyebrow">Se o seu plano incluir WhatsApp</div>
+        <h2>Como conectar o WhatsApp da sua clínica/empresa</h2>
+        <ol class="steps-list">
+            <li><strong>Peça pra gente vincular uma conexão à sua conta</strong> — isso é feito uma vez, pelo administrador do Oráculo.</li>
+            <li>Na aba <strong>Contas</strong> da Área do Cliente, clique em <strong>"Conectar"</strong>.</li>
+            <li>Escaneie o QR code exibido com o celular do WhatsApp da clínica (Configurações → Aparelhos conectados → Conectar um aparelho).</li>
+            <li>Pronto — o status muda pra <strong>"Conectado"</strong> automaticamente assim que o WhatsApp confirma.</li>
+        </ol>
+        <p>Desconectar e reconectar não apaga nada — só desloga aquela sessão; seu histórico de conversas e configurações continuam intactos.</p>
+        <div class="callout">Hoje a conexão é feita por QR code (a mesma tecnologia do WhatsApp Web) — é o que garante ativação rápida, sem depender de aprovação da Meta. A API oficial do WhatsApp Business ainda não está disponível nesta versão.</div>
+    </div>
+</section>
+
+<section id="agenda-consultores">
+    <div class="wrap">
+        <div class="section-eyebrow">Se o seu plano incluir Consultores ou CRM Médico</div>
+        <h2>Agenda e atendimento automático</h2>
+        <p class="lead">Cada consultor/médico tem sua própria disponibilidade semanal, duração de consulta e prazo de lembrete configurados por você na aba Agenda — e o WhatsApp cuida do resto.</p>
+        <ul>
+            <li><strong>Lembretes automáticos</strong> — paciente e consultor recebem um aviso por WhatsApp na antecedência que você configurar.</li>
+            <li><strong>Resumo semanal</strong> — todo consultor ativo recebe automaticamente (no dia/hora que você escolher) um resumo dos agendamentos confirmados da semana.</li>
+            <li><strong>Cancelamento e remarcação</strong> — feitos pela clínica (Área do Cliente ou Painel da Secretária) ou pelo próprio profissional na Minha Agenda dele.</li>
+        </ul>
+        <h3>Dois jeitos de automatizar o atendimento (plano Consultores)</h3>
+        <p>Você escolhe com a gente qual dos dois usar — eles nunca funcionam ao mesmo tempo na mesma conexão:</p>
+        <div class="card">
+            <h3>Atendimento fixo</h3>
+            <p>Pronto pra usar, sem nenhuma configuração: o paciente recebe um menu (Ajuda / Agendar / Recomeçar) e é guiado direto por consultor → horário → confirmação. Tolerante a erro de digitação, e "cancelar"/"ajuda"/"recomeçar" funcionam a qualquer momento da conversa.</p>
+        </div>
+        <div class="card">
+            <h3>Construtor de fluxo</h3>
+            <p>Você monta o passo a passo do seu jeito na aba Fluxos: mensagens, menus com ramificação, perguntas abertas (que guardam a resposta do paciente pra usar depois) e ações especiais — iniciar o agendamento de verdade, chamar um atendente humano, responder com a IA, ou encerrar. Se o paciente digitar algo fora do esperado, o fluxo nunca deixa ele sem resposta — reencaminha ou chama atendimento humano.</p>
+        </div>
+    </div>
+</section>
+
+<section id="minha-agenda">
+    <div class="wrap">
+        <div class="section-eyebrow">Para cada consultor/médico</div>
+        <h2>Minha Agenda: o portal do consultor</h2>
+        <p class="lead">Cada profissional tem um link pessoal — sem usuário nem senha — pra acompanhar a própria agenda de qualquer lugar.</p>
+        <ol class="steps-list">
+            <li>O consultor manda <strong>"minha agenda"</strong> pelo WhatsApp da clínica.</li>
+            <li>Recebe na hora o link do seu portal pessoal (o mesmo link também chega automaticamente na confirmação de cadastro e nos lembretes).</li>
+        </ol>
+        <p>Dentro do portal:</p>
+        <ul>
+            <li><strong>Agenda</strong> — agendamentos aguardando confirmação, próximos atendimentos (lista ou semana), e um painel de <strong>Atendimento</strong> pra registrar a consulta: anotações, diagnóstico, prescrição e sinais vitais (peso/altura com IMC automático, pressão, frequência cardíaca, glicemia, temperatura).</li>
+            <li><strong>Pacientes</strong> — ficha completa de cada paciente já atendido: cadastro, histórico de agendamentos, evolução do tratamento e documentos.</li>
+            <li><strong>Configurações</strong> — dados profissionais (CPF, CRM, endereço, especialidades) e, se a clínica permitir, a própria disponibilidade semanal (senão, esse controle fica só com a clínica).</li>
+        </ul>
+    </div>
+</section>
+
+<section id="secretaria">
+    <div class="wrap">
+        <div class="section-eyebrow">Se o seu plano incluir CRM Médico</div>
+        <h2>Painel da Secretária</h2>
+        <p class="lead">A visão do dia a dia da recepção — usa a mesma chave de acesso da Área do Cliente (não é um login separado), então é só compartilhar o link com quem cuida do atendimento.</p>
+        <ul>
+            <li><strong>Agenda</strong> — visão da semana de toda a clínica, com filtro por médico e criação manual de agendamento.</li>
+            <li><strong>Conversas</strong> — a mesma caixa de entrada compartilhada da Área do Cliente.</li>
+            <li><strong>Checklist</strong> — quadro de pendentes/concluídos pra marcar cada etapa do checklist pós-consulta.</li>
+            <li><strong>Pacientes</strong> — cadastro completo e ficha de cada paciente (cadastro, documentos, agendamentos, evolução).</li>
+            <li><strong>Documentos</strong> — reenviar um documento já recebido de um paciente pra qualquer contato do WhatsApp.</li>
+            <li><strong>Médicos</strong> — editar os dados de cadastro de cada profissional.</li>
+            <li><strong>Configurações</strong> — telefone de aviso da secretária e o dia/hora do resumo semanal automático (com opção de reenviar na hora).</li>
+        </ul>
+    </div>
+</section>
+
+<section id="crm-medico">
+    <div class="wrap">
+        <div class="section-eyebrow">Se o seu plano incluir CRM Médico</div>
+        <h2>Cadastro de pacientes, documentos e evolução</h2>
+        <h3>Ficha completa do paciente</h3>
+        <p>Nome, CPF, data de nascimento (com idade calculada automaticamente), endereço, contato de emergência, alergias, medicações em uso, sexo biológico e tipo sanguíneo — tudo num só lugar, editável pela secretária e pelo médico. Um paciente pode ser arquivado quando necessário, sem perder o histórico (reversível a qualquer momento).</p>
+        <h3>Documentos e exames pelo WhatsApp</h3>
+        <p>O paciente manda foto ou PDF de exame direto pelo WhatsApp. Antes de guardar qualquer arquivo, o sistema pede o consentimento dele (LGPD) explicando o que é armazenado e por quê — sem resposta positiva, nada é salvo. Uma vez aceito, os documentos ficam disponíveis na ficha do paciente pra secretária e médico consultarem, e podem ser reenviados quando precisar.</p>
+        <h3>Evolução do tratamento</h3>
+        <p>Histórico de notas clínicas do paciente, sempre <strong>adicionado</strong> — nunca reescrito ou apagado — pra manter o prontuário íntegro. Fica visível tanto no Painel da Secretária quanto no portal do médico, junto com os sinais vitais registrados em cada atendimento.</p>
     </div>
 </section>
 
@@ -321,7 +449,7 @@
 <a class="wa-float wa-link" data-msg="Olá! Estou com uma dúvida sobre como usar o Oráculo." href="#" aria-label="Falar no WhatsApp" title="Falar no WhatsApp">💬</a>
 
 <script>
-    const WA_NUMBER = "5537999150351";
+    const WA_NUMBER = "553798670085";
     document.querySelectorAll('.wa-link').forEach(function (el) {
         const msg = el.getAttribute('data-msg') || '';
         el.href = 'https://wa.me/' + WA_NUMBER + '?text=' + encodeURIComponent(msg);
