@@ -564,11 +564,19 @@ def get_or_create_chat(account_id, contact_id, default_auto_reply=True):
             # Conversa "excluída" (arquivada) que voltou a ter atividade —
             # reaparece sozinha na lista em vez de continuar escondida pra
             # sempre (decisão confirmada: excluir não bloqueia o contato).
+            # Reativa o contato junto (mesma exclusão em par, ver
+            # set_chat_archived) — só se ele tiver sido arquivado por causa
+            # disso (status='archived'); nunca mexe em 'blocked'.
             cur.execute(
                 "UPDATE whatsapp_chats SET is_archived = FALSE WHERE id = %s AND is_archived = TRUE",
                 (chat_id,),
             )
-            if cur.rowcount:
+            chat_was_archived = cur.rowcount > 0
+            if chat_was_archived:
+                cur.execute(
+                    "UPDATE whatsapp_contacts SET status = 'active' WHERE id = %s AND status = 'archived'",
+                    (contact_id,),
+                )
                 conn.commit()
             return chat_id
         cur.execute(
@@ -755,13 +763,35 @@ def set_chat_archived(chat_id, archived):
     hide_patient_document): some da lista (list_chats já filtra
     is_archived = FALSE), mas as mensagens continuam guardadas. Volta a
     aparecer sozinha se o contato mandar mensagem de novo (ver
-    get_or_create_chat)."""
+    get_or_create_chat).
+
+    Também arquiva/reativa o contato junto (whatsapp_contacts.status) —
+    sem isso, a pessoa some da lista de conversas mas continua aparecendo
+    normalmente no seletor de pacientes e no de novo agendamento
+    (get_account_contacts filtra só por status, não por is_archived do
+    chat — são dois campos independentes). Só mexe em 'active'/'archived';
+    nunca em 'blocked', que é outro estado."""
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute("UPDATE whatsapp_chats SET is_archived = %s WHERE id = %s", (archived, chat_id))
+        changed = cur.rowcount > 0
+        if changed:
+            cur.execute("SELECT contact_id FROM whatsapp_chats WHERE id = %s", (chat_id,))
+            row = cur.fetchone()
+            if row and row[0]:
+                if archived:
+                    cur.execute(
+                        "UPDATE whatsapp_contacts SET status = 'archived' WHERE id = %s AND status = 'active'",
+                        (row[0],),
+                    )
+                else:
+                    cur.execute(
+                        "UPDATE whatsapp_contacts SET status = 'active' WHERE id = %s AND status = 'archived'",
+                        (row[0],),
+                    )
         conn.commit()
-        return cur.rowcount > 0
+        return changed
     finally:
         conn.close()
 
