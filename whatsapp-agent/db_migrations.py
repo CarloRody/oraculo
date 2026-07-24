@@ -719,6 +719,52 @@ MIGRATIONS = [
         ADD COLUMN IF NOT EXISTS responsible_cpf VARCHAR(14),
         ADD COLUMN IF NOT EXISTS responsible_address TEXT;
     """,
+
+    # 33 — recibos de prestação de serviço médico. Documento legal: snapshot
+    # dos dados do paciente/médico/clínica no momento da emissão (nunca muda
+    # retroativamente se o cadastro for editado depois). Nunca é deletado —
+    # status permite cancelar sem apagar histórico (trilha de auditoria).
+    # Número do recibo = próprio id (SERIAL), evita contador separado e race
+    # condition. appointment_id é opcional (recibo pode ser emitido avulso,
+    # sem consulta vinculada no sistema).
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_receipts (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        consultant_id INTEGER NOT NULL REFERENCES whatsapp_consultants(id) ON DELETE CASCADE,
+        appointment_id INTEGER REFERENCES whatsapp_appointments(id) ON DELETE SET NULL,
+
+        patient_name VARCHAR(150) NOT NULL,
+        patient_cpf VARCHAR(14) NOT NULL,
+        patient_address TEXT,
+
+        consultant_name VARCHAR(150) NOT NULL,
+        consultant_cpf VARCHAR(14) NOT NULL,
+        consultant_crm VARCHAR(20) NOT NULL,
+        consultant_address TEXT,
+
+        company_name VARCHAR(150),
+        company_document_type VARCHAR(4),
+        company_document_number VARCHAR(20),
+
+        service_description TEXT NOT NULL,
+        amount NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+        service_date DATE NOT NULL,
+
+        status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled')),
+        cancelled_at TIMESTAMPTZ,
+        cancelled_reason TEXT,
+
+        issued_by VARCHAR(20) NOT NULL CHECK (issued_by IN ('secretary', 'consultant')),
+        issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_receipts_account ON whatsapp_receipts(account_id, issued_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_receipts_contact ON whatsapp_receipts(contact_id, service_date);
+    CREATE INDEX IF NOT EXISTS idx_receipts_consultant ON whatsapp_receipts(consultant_id, service_date);
+    CREATE INDEX IF NOT EXISTS idx_receipts_annual_statement
+        ON whatsapp_receipts(contact_id, consultant_id, service_date) WHERE status = 'active';
+    """,
 ]
 
 

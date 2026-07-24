@@ -93,6 +93,7 @@
     <div class="tabs" id="topTabs" style="display:none;">
         <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')">Agenda</button>
         <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')">Pacientes</button>
+        <button class="tab-btn" id="topTabRecibos" onclick="switchTab('recibos')">Recibos</button>
         <button class="tab-btn" id="topTabConfig" onclick="switchTab('config')">Configurações</button>
     </div>
     <div id="content"></div>
@@ -140,6 +141,8 @@ async function api(path, opts) {
     return data;
 }
 
+let ME = {};
+
 async function init() {
     if (!TOKEN) {
         document.getElementById('subtitle').textContent = '';
@@ -148,11 +151,14 @@ async function init() {
     }
     try {
         const me = await api('/me');
+        ME = me;
         document.getElementById('subtitle').textContent = `${me.name} · ${me.account_label}`;
         renderShell(me);
         await loadAppointments();
         loadContacts();
         loadFichaPatients();
+        updateReceiptsCpfWarning();
+        loadRecibosList();
     } catch (e) {
         document.getElementById('subtitle').textContent = '';
         document.getElementById('content').innerHTML = `<div class="error-box">${esc(e.message)}. Peça um novo link mandando "minha agenda" pelo WhatsApp.</div>`;
@@ -279,6 +285,52 @@ function renderShell(me) {
                 <div id="fichaFullBox"></div>
             </div>
         </div>
+        <div id="recibos-tab" class="tab-content">
+            <div class="card">
+                <h2>Recibos</h2>
+                <p class="empty" id="recibosCpfWarning" style="display:none; color:#fbbf24; padding-top:0;"></p>
+                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end;">
+                    <div style="flex:1 1 160px;">
+                        <label>Paciente</label>
+                        <select class="form-input" id="recibosFilterPatient" onchange="loadRecibosList()"><option value="">Todos</option></select>
+                    </div>
+                    <div style="flex:1 1 90px;">
+                        <label>Ano</label>
+                        <input type="number" class="form-input" id="recibosFilterYear" placeholder="Todos" onchange="loadRecibosList()">
+                    </div>
+                    <button class="btn btn-sm" id="newReciboToggleBtn" onclick="toggleNewReciboForm()">+ Emitir recibo</button>
+                </div>
+                <div id="newReciboForm" style="display:none; margin-top:1rem; border-top:1px solid #334155; padding-top:1rem;">
+                    <div class="form-group">
+                        <label>Paciente</label>
+                        <select class="form-input" id="reciboPatient" onchange="onReciboPatientChange()"><option value="">Selecione...</option></select>
+                    </div>
+                    <div class="form-group">
+                        <label>Agendamento concluído (opcional — pré-preenche data e serviço)</label>
+                        <select class="form-input" id="reciboAppointment" onchange="onReciboAppointmentChange()"><option value="">Nenhum (recibo avulso)</option></select>
+                    </div>
+                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <div style="flex:1 1 140px;"><label>Data do serviço</label><input type="date" class="form-input" id="reciboDate"></div>
+                        <div style="flex:1 1 140px;"><label>Valor (R$)</label><input type="number" step="0.01" min="0.01" class="form-input" id="reciboAmount"></div>
+                    </div>
+                    <div class="form-group"><label>Serviço prestado</label><textarea class="form-input" id="reciboService" rows="2" placeholder="Ex: Consulta médica"></textarea></div>
+                    <button class="btn btn-block" onclick="createRecibo()">Emitir recibo</button>
+                    <button class="btn btn-secondary btn-block" onclick="toggleNewReciboForm(false)">Cancelar</button>
+                </div>
+                <div id="recibosList" style="margin-top:1rem;"><p class="empty">Carregando...</p></div>
+            </div>
+            <div class="card">
+                <h2>Declaração anual para Imposto de Renda</h2>
+                <p class="empty" style="padding-top:0;">Consolida todos os recibos ativos de um paciente com você, num ano-calendário.</p>
+                <div class="form-group">
+                    <label>Paciente</label>
+                    <select class="form-input" id="statementPatient"><option value="">Selecione...</option></select>
+                </div>
+                <div class="form-group" style="max-width:140px;"><label>Ano</label><input type="number" class="form-input" id="statementYear"></div>
+                <button class="btn btn-sm" onclick="downloadAnnualStatement()">Baixar PDF</button>
+                <button class="btn btn-sm btn-secondary" onclick="sendAnnualStatement()">Enviar por WhatsApp</button>
+            </div>
+        </div>
         <div id="config-tab" class="tab-content">
             <div class="card">
                 <h2>Meus dados</h2>
@@ -390,6 +442,8 @@ async function saveMyProfile() {
     };
     try {
         await api('/profile', { method: 'PATCH', body: JSON.stringify(payload) });
+        Object.assign(ME, payload);
+        updateReceiptsCpfWarning();
         alert('Seus dados foram salvos!');
     } catch (e) { alert(e.message); }
 }
@@ -568,12 +622,15 @@ function fmtDateTime(iso) {
 // evolução, documentos) usado durante o atendimento (ver
 // loadConsultationPatientBox/renderPatientFullBox mais abaixo), só que aqui
 // a evolução também aceita adicionar nota nova. ----
+let knownPatients = [];
+
 async function loadFichaPatients() {
     try {
         const data = await api('/patients');
-        const patients = data.patients || [];
+        knownPatients = data.patients || [];
         document.getElementById('fichaPatientSelect').innerHTML = '<option value="">Selecione...</option>' +
-            patients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
+            knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
+        populateRecibosSelects();
     } catch (e) { /* seletor fica vazio, resto da tela funciona normal */ }
 }
 
@@ -583,13 +640,14 @@ async function loadFichaPatient() {
     if (!contactId) { box.innerHTML = ''; return; }
     box.innerHTML = '<p class="empty">Carregando...</p>';
     try {
-        const [record, apptData, evoData, docsData] = await Promise.all([
+        const [record, apptData, evoData, docsData, receiptsData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
             api(`/contacts/${contactId}/appointments`),
             api(`/contacts/${contactId}/evolution-notes`),
             api(`/contacts/${contactId}/documents`),
+            api(`/contacts/${contactId}/receipts`),
         ]);
-        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true });
+        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true }, receiptsData);
     } catch (e) {
         box.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
     }
@@ -803,7 +861,30 @@ function apptRowFull(a, prev) {
 // partir dos 4 endpoints da ficha do paciente — reaproveitado tanto durante
 // o atendimento (evolução só leitura, exclui a consulta em andamento das
 // listas) quanto na aba Pacientes (evolução com campo de nova nota).
-function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts) {
+function receiptsListHtml(receipts) {
+    if (!receipts.length) return '<p class="empty" style="padding:0.3rem 0;">Nenhum recibo emitido ainda.</p>';
+    return receipts.map(r => `
+        <div style="padding:0.5rem 0; border-bottom:1px solid #1a2744;">
+            <div style="font-size:0.85rem;"><strong>Recibo Nº ${r.id}</strong> ${r.status === 'cancelled' ? '<span style="color:#f87171;">(cancelado)</span>' : ''}</div>
+            <div style="font-size:0.78rem; color:#94a3b8;">${esc(r.patient_name)} · ${fmtDateOnly(r.service_date)} · R$ ${Number(r.amount).toFixed(2).replace('.', ',')} · ${esc(r.service_description)}</div>
+            ${r.status === 'active' ? `
+                <div style="display:flex; gap:0.4rem; margin-top:0.3rem;">
+                    <button class="btn btn-sm btn-secondary" onclick="downloadReceipt(${r.id})">Baixar PDF</button>
+                    <button class="btn btn-sm btn-secondary" onclick="sendReceipt(${r.id})">Enviar WhatsApp</button>
+                    <button class="btn btn-sm btn-danger" onclick="cancelReceipt(${r.id})">Cancelar</button>
+                </div>
+            ` : ''}
+        </div>
+    `).join('');
+}
+
+function fmtDateOnly(iso) {
+    if (!iso) return '';
+    const [y, m, d] = iso.split('-');
+    return `${d}/${m}/${y}`;
+}
+
+function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts, receiptsData) {
     opts = opts || {};
     const excludeApptId = opts.excludeApptId;
 
@@ -852,6 +933,17 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
 
+    const receipts = (receiptsData && receiptsData.receipts) || [];
+    const receiptsHtml = opts.editableEvolution ? `
+        <details style="margin-bottom:0.6rem;">
+            <summary>Recibos (${receipts.length})</summary>
+            <div style="margin-top:0.4rem;">
+                <button class="btn btn-sm" onclick="emitReceiptForContact(${contactId})">+ Emitir recibo</button>
+                <div style="margin-top:0.6rem;">${receiptsListHtml(receipts)}</div>
+            </div>
+        </details>
+    ` : '';
+
     return `
         <details open style="margin-bottom:0.6rem;">
             <summary>Cadastro</summary>
@@ -869,6 +961,7 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
             <summary>Documentos (${docs.length})</summary>
             <div style="margin-top:0.4rem;">${docsHtml}</div>
         </details>
+        ${receiptsHtml}
     `;
 }
 
@@ -988,6 +1081,170 @@ function createAppointmentManual() {
     const time = document.getElementById('newTime').value;
     if (!date || !time) return alert('Escolha a data e o horário.');
     createAppointment(`${date}T${time}:00`);
+}
+
+// ---- Recibos ----
+async function apiBlob(path) {
+    const res = await fetch(API + path);
+    if (!res.ok) {
+        const data = await res.json().catch(() => ({}));
+        throw new Error(data.message || 'Erro na requisição');
+    }
+    return res.blob();
+}
+
+function updateReceiptsCpfWarning() {
+    const box = document.getElementById('recibosCpfWarning');
+    if (!box) return;
+    const missing = !ME.cpf || !ME.crm;
+    box.style.display = missing ? 'block' : 'none';
+    box.textContent = missing ? 'Complete seu CPF e CRM na aba Configurações antes de emitir recibos.' : '';
+    document.getElementById('newReciboToggleBtn').disabled = missing;
+}
+
+function populateRecibosSelects() {
+    const options = '<option value="">Selecione...</option>' +
+        knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
+    document.getElementById('reciboPatient').innerHTML = options;
+    document.getElementById('statementPatient').innerHTML = options;
+    document.getElementById('recibosFilterPatient').innerHTML = '<option value="">Todos</option>' +
+        knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
+}
+
+function toggleNewReciboForm(show) {
+    const box = document.getElementById('newReciboForm');
+    const visible = show !== undefined ? show : box.style.display === 'none';
+    box.style.display = visible ? 'block' : 'none';
+    if (visible) {
+        document.getElementById('reciboPatient').value = '';
+        document.getElementById('reciboAppointment').innerHTML = '<option value="">Nenhum (recibo avulso)</option>';
+        document.getElementById('reciboDate').value = '';
+        document.getElementById('reciboAmount').value = '';
+        document.getElementById('reciboService').value = '';
+    }
+}
+
+async function onReciboPatientChange() {
+    const contactId = document.getElementById('reciboPatient').value;
+    const sel = document.getElementById('reciboAppointment');
+    sel.innerHTML = '<option value="">Nenhum (recibo avulso)</option>';
+    if (!contactId) return;
+    try {
+        const data = await api(`/contacts/${contactId}/appointments`);
+        const completed = (data.history || []).filter(a => a.status === 'completed');
+        sel.innerHTML += completed.map(a => `<option value="${a.id}" data-date="${(a.scheduled_at || '').split('T')[0]}" data-subject="${esc(a.subject || '')}">${fmtWhen(a.scheduled_at)}${a.subject ? ' — ' + esc(a.subject) : ''}</option>`).join('');
+    } catch (e) { /* select fica só com "avulso" */ }
+}
+
+function onReciboAppointmentChange() {
+    const sel = document.getElementById('reciboAppointment');
+    const opt = sel.selectedOptions[0];
+    if (!opt || !opt.value) return;
+    document.getElementById('reciboDate').value = opt.dataset.date || '';
+    document.getElementById('reciboService').value = opt.dataset.subject || '';
+}
+
+function emitReceiptForContact(contactId) {
+    switchTab('recibos');
+    toggleNewReciboForm(true);
+    document.getElementById('reciboPatient').value = contactId;
+    onReciboPatientChange();
+}
+
+async function createRecibo() {
+    const contactId = document.getElementById('reciboPatient').value;
+    const appointmentId = document.getElementById('reciboAppointment').value;
+    const serviceDate = document.getElementById('reciboDate').value;
+    const amount = document.getElementById('reciboAmount').value;
+    const serviceDescription = document.getElementById('reciboService').value.trim();
+    if (!contactId) return alert('Selecione o paciente.');
+    if (!serviceDate) return alert('Informe a data do serviço.');
+    if (!amount || Number(amount) <= 0) return alert('Informe um valor válido.');
+    if (!serviceDescription) return alert('Descreva o serviço prestado.');
+    try {
+        await api(`/contacts/${contactId}/receipts`, {
+            method: 'POST',
+            body: JSON.stringify({
+                service_description: serviceDescription, amount: Number(amount),
+                service_date: serviceDate, appointment_id: appointmentId ? Number(appointmentId) : null,
+            }),
+        });
+        toggleNewReciboForm(false);
+        loadRecibosList();
+        if (document.getElementById('fichaPatientSelect').value === contactId) loadFichaPatient();
+    } catch (e) { alert(e.message); }
+}
+
+async function loadRecibosList() {
+    const patientId = document.getElementById('recibosFilterPatient').value;
+    const year = document.getElementById('recibosFilterYear').value;
+    const params = new URLSearchParams();
+    if (patientId) params.set('contact_id', patientId);
+    if (year) params.set('year', year);
+    const el = document.getElementById('recibosList');
+    el.innerHTML = '<p class="empty">Carregando...</p>';
+    try {
+        const data = await api(`/receipts?${params.toString()}`);
+        el.innerHTML = receiptsListHtml(data.receipts || []);
+    } catch (e) {
+        el.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
+    }
+}
+
+async function downloadReceipt(id) {
+    try {
+        const blob = await apiBlob(`/receipts/${id}/pdf`);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `recibo-${id}.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (e) { alert(e.message); }
+}
+
+async function sendReceipt(id) {
+    if (!confirm('Enviar este recibo em PDF pelo WhatsApp do paciente?')) return;
+    try {
+        await api(`/receipts/${id}/send-whatsapp`, { method: 'POST' });
+        alert('Recibo enviado!');
+    } catch (e) { alert(e.message); }
+}
+
+async function cancelReceipt(id) {
+    const reason = prompt('Motivo do cancelamento (opcional):') || '';
+    if (!confirm('Cancelar este recibo? Ele deixa de poder ser baixado/enviado, mas continua no histórico.')) return;
+    try {
+        await api(`/receipts/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+        loadRecibosList();
+        if (document.getElementById('fichaPatientSelect').value) loadFichaPatient();
+    } catch (e) { alert(e.message); }
+}
+
+async function downloadAnnualStatement() {
+    const contactId = document.getElementById('statementPatient').value;
+    const year = document.getElementById('statementYear').value;
+    if (!contactId || !year) return alert('Selecione paciente e ano.');
+    try {
+        const blob = await apiBlob(`/contacts/${contactId}/annual-statement?year=${year}`);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `declaracao-ir-${year}.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (e) { alert(e.message); }
+}
+
+async function sendAnnualStatement() {
+    const contactId = document.getElementById('statementPatient').value;
+    const year = document.getElementById('statementYear').value;
+    if (!contactId || !year) return alert('Selecione paciente e ano.');
+    if (!confirm('Enviar a declaração anual em PDF pelo WhatsApp do paciente?')) return;
+    try {
+        await api(`/contacts/${contactId}/annual-statement/send-whatsapp`, { method: 'POST', body: JSON.stringify({ year: Number(year) }) });
+        alert('Declaração enviada!');
+    } catch (e) { alert(e.message); }
 }
 
 init();

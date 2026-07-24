@@ -18,15 +18,17 @@ import secrets
 import threading
 import time
 import uuid
+from decimal import Decimal
 
 import psycopg2
 import psycopg2.extras
 import requests
-from flask import Flask, jsonify, request, send_file, send_from_directory
+from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 
 import booking_flow
 import flow_engine
+import receipts_pdf
 import connectors.evolution as evolution
 from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG, WHATSAPP_MEDIA_CONFIG
 from connectors.evolution import EvolutionError
@@ -1588,6 +1590,309 @@ def create_evolution_note(contact_id, account_id, author_type, note, consultant_
         note_id = cur.fetchone()[0]
         conn.commit()
         return note_id
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Recibos — documento legal, guarda snapshot do paciente/médico/clínica no
+# momento da emissão (nunca muda retroativamente se o cadastro for editado
+# depois). Nunca é deletado; cancelar só marca status='cancelled' (trilha de
+# auditoria). Como o snapshot já vem denormalizado na própria linha, a
+# listagem não precisa de JOIN nenhum.
+# ---------------------------------------------------------------------------
+
+RECEIPT_COLUMNS = [
+    "id", "account_id", "contact_id", "consultant_id", "appointment_id",
+    "patient_name", "patient_cpf", "patient_address",
+    "consultant_name", "consultant_cpf", "consultant_crm", "consultant_address",
+    "company_name", "company_document_type", "company_document_number",
+    "service_description", "amount", "service_date",
+    "status", "cancelled_at", "cancelled_reason",
+    "issued_by", "issued_at",
+]
+
+
+def get_receipts(account_id, contact_id=None, consultant_id=None, year=None):
+    """Listagem com filtros opcionais — usada tanto pela aba de nível
+    superior (sem filtro, ou filtrando por paciente/ano) quanto pela sub-aba
+    dentro da ficha do paciente (filtrando por contact_id). Datas/valores já
+    convertidos pra tipos serializáveis em JSON (chamador é sempre uma rota)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        where = ["account_id = %s"]
+        params = [account_id]
+        if contact_id:
+            where.append("contact_id = %s")
+            params.append(contact_id)
+        if consultant_id:
+            where.append("consultant_id = %s")
+            params.append(consultant_id)
+        if year:
+            where.append("EXTRACT(YEAR FROM service_date) = %s")
+            params.append(year)
+        cols = ", ".join(RECEIPT_COLUMNS)
+        cur.execute(
+            f"SELECT {cols} FROM whatsapp_receipts WHERE {' AND '.join(where)} ORDER BY issued_at DESC",
+            params,
+        )
+        rows = []
+        for r in cur.fetchall():
+            d = dict(zip(RECEIPT_COLUMNS, r))
+            d["service_date"] = d["service_date"].isoformat() if d["service_date"] else None
+            d["issued_at"] = d["issued_at"].isoformat() if d["issued_at"] else None
+            d["cancelled_at"] = d["cancelled_at"].isoformat() if d["cancelled_at"] else None
+            d["amount"] = float(d["amount"]) if d["amount"] is not None else None
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def get_receipt(receipt_id):
+    """Uma linha completa, com os tipos nativos do banco (Decimal/date/
+    datetime) — usada pelas rotas de download/envio, que passam a linha
+    direto pro gerador de PDF em receipts_pdf.py."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(RECEIPT_COLUMNS)
+        cur.execute(f"SELECT {cols} FROM whatsapp_receipts WHERE id = %s", (receipt_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(zip(RECEIPT_COLUMNS, row))
+    finally:
+        conn.close()
+
+
+def create_receipt(account_id, contact_id, consultant_id, service_description, amount,
+                    service_date, issued_by, appointment_id=None):
+    """Monta o snapshot (dados atuais do paciente/médico/clínica) na hora do
+    INSERT e valida CPF do paciente + CPF/CRM do médico antes de gravar —
+    devolve (receipt_id, None) em caso de sucesso, ou (None, mensagem) se
+    faltar dado obrigatório (nunca existe recibo inválido no banco)."""
+    service_description = (service_description or "").strip()
+    if not service_description:
+        return None, "Descrição do serviço é obrigatória."
+    try:
+        amount = Decimal(str(amount))
+    except Exception:
+        return None, "Valor inválido."
+    if amount <= 0:
+        return None, "Valor deve ser maior que zero."
+    if not service_date:
+        return None, "Data do serviço é obrigatória."
+
+    patient = get_patient_record(contact_id)
+    if not patient:
+        return None, "Paciente não encontrado."
+    if not patient.get("cpf"):
+        return None, "Cadastre o CPF do paciente antes de emitir recibos."
+
+    consultant = get_consultant(consultant_id)
+    if not consultant or consultant.get("account_id") != account_id:
+        term = _consultant_term(account_id)
+        return None, f"{term} não encontrado."
+    if not consultant.get("cpf") or not consultant.get("crm"):
+        term = _consultant_term(account_id)
+        return None, f"Cadastre CPF e CRM do {term} antes de emitir recibos."
+
+    account = get_account(account_id)
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if appointment_id:
+            cur.execute(
+                "SELECT 1 FROM whatsapp_appointments WHERE id = %s AND client_contact_id = %s AND consultant_id = %s",
+                (appointment_id, contact_id, consultant_id),
+            )
+            if not cur.fetchone():
+                appointment_id = None
+        cur.execute(
+            """INSERT INTO whatsapp_receipts
+               (account_id, contact_id, consultant_id, appointment_id,
+                patient_name, patient_cpf, patient_address,
+                consultant_name, consultant_cpf, consultant_crm, consultant_address,
+                company_name, company_document_type, company_document_number,
+                service_description, amount, service_date, issued_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (account_id, contact_id, consultant_id, appointment_id,
+             patient["name"], patient["cpf"], patient.get("address"),
+             consultant["name"], consultant["cpf"], consultant["crm"], consultant.get("address"),
+             account.get("company_name") if account else None,
+             account.get("document_type") if account else None,
+             account.get("document_number") if account else None,
+             service_description, amount, service_date, issued_by),
+        )
+        receipt_id = cur.fetchone()[0]
+        conn.commit()
+        return receipt_id, None
+    finally:
+        conn.close()
+
+
+def cancel_receipt(receipt_id, reason=None):
+    """Nunca DELETE — só marca cancelado, preservando a trilha de auditoria
+    do documento legal. Idempotente: já cancelado não muda de novo."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_receipts SET status = 'cancelled', cancelled_at = NOW(), cancelled_reason = %s
+               WHERE id = %s AND status = 'active'""",
+            ((reason or "").strip()[:300] or None, receipt_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def get_annual_statement_data(contact_id, consultant_id, year):
+    """Recibos ativos do par paciente+médico num ano-calendário, mais os
+    snapshots de paciente/médico (tirados do recibo mais recente do
+    conjunto). Devolve None se não houver nenhum recibo ativo nesse ano."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(RECEIPT_COLUMNS)
+        cur.execute(
+            f"""SELECT {cols} FROM whatsapp_receipts
+                WHERE contact_id = %s AND consultant_id = %s AND status = 'active'
+                  AND EXTRACT(YEAR FROM service_date) = %s
+                ORDER BY service_date ASC""",
+            (contact_id, consultant_id, year),
+        )
+        rows = [dict(zip(RECEIPT_COLUMNS, r)) for r in cur.fetchall()]
+        if not rows:
+            return None
+        latest = rows[-1]
+        patient_snapshot = {
+            "patient_name": latest["patient_name"],
+            "patient_cpf": latest["patient_cpf"],
+            "patient_address": latest["patient_address"],
+        }
+        consultant_snapshot = {
+            "consultant_name": latest["consultant_name"],
+            "consultant_cpf": latest["consultant_cpf"],
+            "consultant_crm": latest["consultant_crm"],
+            "consultant_address": latest["consultant_address"],
+            "company_name": latest["company_name"],
+        }
+        return patient_snapshot, consultant_snapshot, rows
+    finally:
+        conn.close()
+
+
+def send_receipt_to_contact(receipt_id):
+    """Gera o PDF do recibo em memória e manda pro paciente via WhatsApp —
+    mesmo padrão de send_patient_document_to_contact, mas sem tocar disco."""
+    receipt = get_receipt(receipt_id)
+    if not receipt or receipt["status"] != "active":
+        return "not_found"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT wa_id FROM whatsapp_contacts WHERE id = %s", (receipt["contact_id"],))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return "contact_not_found"
+    target_wa_id = row[0]
+
+    account = get_account(receipt["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_receipt_pdf(receipt, professional_term=term)
+    media_base64 = base64.b64encode(pdf_bytes).decode("ascii")
+
+    try:
+        evolution.send_media(
+            account["wa_session_name"], _phone_from_wa_id(target_wa_id), media_base64,
+            "application/pdf", f"recibo-{receipt_id}.pdf", mediatype="document",
+        )
+    except EvolutionError as e:
+        log_event(receipt["account_id"], "receipt_send_failed", level="error",
+                  detail={"receipt_id": receipt_id, "error": str(e)})
+        return "send_failed"
+    report_whatsapp_sent_usage(receipt["account_id"])
+    return "ok"
+
+
+def send_annual_statement_to_contact(contact_id, consultant_id, year):
+    """Mesma mecânica de send_receipt_to_contact, mas a partir da declaração
+    anual consolidada (generate_annual_statement_pdf)."""
+    data = get_annual_statement_data(contact_id, consultant_id, year)
+    if not data:
+        return "not_found"
+    patient_snapshot, consultant_snapshot, receipts = data
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id, wa_id FROM whatsapp_contacts WHERE id = %s", (contact_id,))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return "contact_not_found"
+    account_id, target_wa_id = row
+
+    account = get_account(account_id)
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_annual_statement_pdf(
+        consultant_snapshot, patient_snapshot, receipts, year, professional_term=term,
+    )
+    media_base64 = base64.b64encode(pdf_bytes).decode("ascii")
+
+    try:
+        evolution.send_media(
+            account["wa_session_name"], _phone_from_wa_id(target_wa_id), media_base64,
+            "application/pdf", f"declaracao-ir-{year}.pdf", mediatype="document",
+        )
+    except EvolutionError as e:
+        log_event(account_id, "annual_statement_send_failed", level="error",
+                  detail={"contact_id": contact_id, "consultant_id": consultant_id, "year": year, "error": str(e)})
+        return "send_failed"
+    report_whatsapp_sent_usage(account_id)
+    return "ok"
+
+
+def get_appointment_summary(appointment_id):
+    """Dados mínimos de um agendamento pra pré-preencher o formulário de
+    recibo assim que o atendimento é concluído (contact_id, consultant_id,
+    data do serviço, assunto sugerido como descrição)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT client_contact_id, consultant_id, scheduled_at, subject FROM whatsapp_appointments WHERE id = %s",
+            (appointment_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "contact_id": row[0],
+            "consultant_id": row[1],
+            "service_date": row[2].date().isoformat() if row[2] else None,
+            "subject": row[3],
+        }
+    finally:
+        conn.close()
+
+
+def _receipt_owner(receipt_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_receipts WHERE id = %s", (receipt_id,))
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
     finally:
         conn.close()
 
@@ -3747,7 +4052,7 @@ def cp_complete_appointment(appointment_id):
     if err: return err
     if not mark_appointment_completed(appointment_id):
         return jsonify({"ok": False, "message": "Agendamento não encontrado ou já concluído/cancelado"}), 400
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "receipt_prefill": get_appointment_summary(appointment_id)})
 
 
 @app.route("/api/client-portal/accounts/<int:account_id>/checklist-template", methods=["GET"])
@@ -4180,6 +4485,148 @@ def cp_create_evolution_note(contact_id):
     return jsonify({"ok": True, "id": note_id})
 
 
+@app.route("/api/client-portal/accounts/<int:account_id>/receipts", methods=["GET"])
+def cp_list_receipts(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    contact_id = request.args.get("contact_id", type=int)
+    year = request.args.get("year", type=int)
+    return jsonify({"receipts": get_receipts(account_id, contact_id=contact_id, year=year)})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/receipts", methods=["GET"])
+def cp_list_patient_receipts(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account_id = _contact_account_id(contact_id)
+    return jsonify({"receipts": get_receipts(account_id, contact_id=contact_id)})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/receipts", methods=["POST"])
+def cp_create_receipt(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account_id = _contact_account_id(contact_id)
+    data = request.json or {}
+    consultant_id = data.get("consultant_id")
+    if not consultant_id or _consultant_owner(consultant_id) != user_id:
+        return _consultant_not_found(user_id)
+    receipt_id, error = create_receipt(
+        account_id, contact_id, consultant_id,
+        data.get("service_description"), data.get("amount"), data.get("service_date"),
+        "secretary", appointment_id=data.get("appointment_id"),
+    )
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "id": receipt_id}), 201
+
+
+@app.route("/api/client-portal/receipts/<int:receipt_id>/cancel", methods=["POST"])
+def cp_cancel_receipt(receipt_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _receipt_owner(receipt_id) != user_id:
+        return _not_found("Recibo não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    if not cancel_receipt(receipt_id, reason=data.get("reason")):
+        return jsonify({"ok": False, "message": "Recibo já está cancelado"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/receipts/<int:receipt_id>/pdf", methods=["GET"])
+def cp_receipt_pdf(receipt_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _receipt_owner(receipt_id) != user_id:
+        return _not_found("Recibo não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    receipt = get_receipt(receipt_id)
+    if receipt["status"] != "active":
+        return jsonify({"ok": False, "message": "Recibo cancelado não pode mais ser baixado"}), 400
+    term = get_nomenclature(user_id)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_receipt_pdf(receipt, professional_term=term)
+    return Response(pdf_bytes, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="recibo-{receipt_id}.pdf"',
+    })
+
+
+@app.route("/api/client-portal/receipts/<int:receipt_id>/send-whatsapp", methods=["POST"])
+def cp_send_receipt(receipt_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _receipt_owner(receipt_id) != user_id:
+        return _not_found("Recibo não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    result = send_receipt_to_contact(receipt_id)
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Recibo não encontrado ou cancelado"}), 404
+    if result != "ok":
+        return jsonify({"ok": False, "message": "Falha ao enviar o recibo pelo WhatsApp"}), 502
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/annual-statement", methods=["GET"])
+def cp_annual_statement_pdf(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    consultant_id = request.args.get("consultant_id", type=int)
+    year = request.args.get("year", type=int)
+    if not consultant_id or not year or _consultant_owner(consultant_id) != user_id:
+        return jsonify({"ok": False, "message": "Informe médico e ano válidos."}), 400
+    data = get_annual_statement_data(contact_id, consultant_id, year)
+    if not data:
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido para este paciente neste ano."}), 404
+    patient_snapshot, consultant_snapshot, receipts = data
+    term = get_nomenclature(user_id)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_annual_statement_pdf(
+        consultant_snapshot, patient_snapshot, receipts, year, professional_term=term,
+    )
+    return Response(pdf_bytes, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="declaracao-ir-{year}.pdf"',
+    })
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/annual-statement/send-whatsapp", methods=["POST"])
+def cp_send_annual_statement(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    consultant_id = data.get("consultant_id")
+    year = data.get("year")
+    if not consultant_id or not year or _consultant_owner(consultant_id) != user_id:
+        return jsonify({"ok": False, "message": "Informe médico e ano válidos."}), 400
+    result = send_annual_statement_to_contact(contact_id, consultant_id, year)
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido para este paciente neste ano."}), 404
+    if result != "ok":
+        return jsonify({"ok": False, "message": "Falha ao enviar a declaração pelo WhatsApp"}), 502
+    return jsonify({"ok": True})
+
+
 # ---------------------------------------------------------------------------
 # Portal do consultor — autenticado por token (link mandado por WhatsApp),
 # nunca por sessão de admin. Cada rota resolve o consultor pelo token e só
@@ -4391,6 +4838,130 @@ def api_portal_create_evolution_note(token, contact_id):
     if not note_id:
         return jsonify({"ok": False, "message": "Texto da nota não pode ser vazio"}), 400
     return jsonify({"ok": True, "id": note_id})
+
+
+def _consultant_owns_receipt(consultant_id, receipt_id):
+    receipt = get_receipt(receipt_id)
+    return receipt is not None and receipt["consultant_id"] == consultant_id
+
+
+@app.route("/api/consultant-portal/<token>/receipts", methods=["GET"])
+def api_portal_list_receipts(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    contact_id = request.args.get("contact_id", type=int)
+    year = request.args.get("year", type=int)
+    return jsonify({"receipts": get_receipts(
+        consultant["account_id"], contact_id=contact_id, consultant_id=consultant["id"], year=year,
+    )})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/receipts", methods=["POST"])
+def api_portal_create_receipt(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    data = request.json or {}
+    receipt_id, error = create_receipt(
+        consultant["account_id"], contact_id, consultant["id"],
+        data.get("service_description"), data.get("amount"), data.get("service_date"),
+        "consultant", appointment_id=data.get("appointment_id"),
+    )
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "id": receipt_id}), 201
+
+
+@app.route("/api/consultant-portal/<token>/receipts/<int:receipt_id>/cancel", methods=["POST"])
+def api_portal_cancel_receipt(token, receipt_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_owns_receipt(consultant["id"], receipt_id):
+        return jsonify({"ok": False, "message": "Recibo não encontrado"}), 404
+    data = request.json or {}
+    if not cancel_receipt(receipt_id, reason=data.get("reason")):
+        return jsonify({"ok": False, "message": "Recibo já está cancelado"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/receipts/<int:receipt_id>/pdf", methods=["GET"])
+def api_portal_receipt_pdf(token, receipt_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_owns_receipt(consultant["id"], receipt_id):
+        return jsonify({"ok": False, "message": "Recibo não encontrado"}), 404
+    receipt = get_receipt(receipt_id)
+    if receipt["status"] != "active":
+        return jsonify({"ok": False, "message": "Recibo cancelado não pode mais ser baixado"}), 400
+    account = get_account(consultant["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_receipt_pdf(receipt, professional_term=term)
+    return Response(pdf_bytes, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="recibo-{receipt_id}.pdf"',
+    })
+
+
+@app.route("/api/consultant-portal/<token>/receipts/<int:receipt_id>/send-whatsapp", methods=["POST"])
+def api_portal_send_receipt(token, receipt_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_owns_receipt(consultant["id"], receipt_id):
+        return jsonify({"ok": False, "message": "Recibo não encontrado"}), 404
+    result = send_receipt_to_contact(receipt_id)
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Recibo não encontrado ou cancelado"}), 404
+    if result != "ok":
+        return jsonify({"ok": False, "message": "Falha ao enviar o recibo pelo WhatsApp"}), 502
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/annual-statement", methods=["GET"])
+def api_portal_annual_statement_pdf(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    year = request.args.get("year", type=int)
+    if not year:
+        return jsonify({"ok": False, "message": "Informe o ano."}), 400
+    data = get_annual_statement_data(contact_id, consultant["id"], year)
+    if not data:
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido para este paciente neste ano."}), 404
+    patient_snapshot, consultant_snapshot, receipts = data
+    account = get_account(consultant["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_annual_statement_pdf(
+        consultant_snapshot, patient_snapshot, receipts, year, professional_term=term,
+    )
+    return Response(pdf_bytes, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="declaracao-ir-{year}.pdf"',
+    })
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/annual-statement/send-whatsapp", methods=["POST"])
+def api_portal_send_annual_statement(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    data = request.json or {}
+    year = data.get("year")
+    if not year:
+        return jsonify({"ok": False, "message": "Informe o ano."}), 400
+    result = send_annual_statement_to_contact(contact_id, consultant["id"], year)
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido para este paciente neste ano."}), 404
+    if result != "ok":
+        return jsonify({"ok": False, "message": "Falha ao enviar a declaração pelo WhatsApp"}), 502
+    return jsonify({"ok": True})
 
 
 @app.route("/api/consultant-portal/<token>/appointments", methods=["POST"])

@@ -3,3 +3,5 @@ flask-cors==6.0.5
 psycopg2-binary==2.9.12
 requests==2.34.2
 PyYAML==5.4.1
+reportlab==4.2.5
+num2words==0.5.13
