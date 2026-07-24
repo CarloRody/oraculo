@@ -27,8 +27,6 @@ estar com pressa, nervoso ou com dificuldade de digitar. Por isso:
 """
 
 import datetime
-import difflib
-import unicodedata
 from zoneinfo import ZoneInfo
 
 import psycopg2
@@ -36,6 +34,8 @@ import psycopg2
 from config import DB_CONFIG
 from connectors.evolution import EvolutionError
 import connectors.evolution as evolution
+from text_menu import normalize as _normalize, fuzzy_match as _fuzzy_match, \
+    matches_any as _matches_any, parse_index as _parse_index, NUMBER_WORDS as _NUMBER_WORDS
 
 LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
@@ -51,19 +51,6 @@ HELP_WORDS = ("ajuda", "menu", "atendente")
 
 YES_WORDS = {"sim", "s", "confirmar", "confirmo", "yes", "1", "pode ser", "claro", "ok", "beleza", "blz", "isso"}
 NO_WORDS = {"nao", "n", "cancelar", "no", "2", "nao quero", "deixa pra la", "nao posso"}
-
-_NUMBER_WORDS = {
-    "um": 1, "uma": 1, "primeiro": 1, "primeira": 1,
-    "dois": 2, "segundo": 2, "segunda": 2,
-    "tres": 3, "terceiro": 3, "terceira": 3,
-    "quatro": 4, "quarto": 4, "quarta": 4,
-    "cinco": 5, "quinto": 5, "quinta": 5,
-    "seis": 6, "sexto": 6, "sexta": 6,
-    "sete": 7, "setimo": 7, "setima": 7,
-    "oito": 8, "oitavo": 8, "oitava": 8,
-    "nove": 9, "nono": 9, "nona": 9,
-    "dez": 10, "decimo": 10, "decima": 10,
-}
 
 
 def _conn():
@@ -83,34 +70,6 @@ def _term(account, plural=False):
     nomenclature = server.get_nomenclature(account.get("user_id"))
     form = "plural" if plural else "singular"
     return nomenclature["consultant"][form]
-
-
-def _normalize(text):
-    """Minúsculo, sem acento, sem espaço nas pontas — base pra toda
-    comparação de texto tolerante a erro deste módulo."""
-    t = (text or "").strip().lower()
-    t = unicodedata.normalize("NFKD", t)
-    return "".join(ch for ch in t if not unicodedata.combining(ch))
-
-
-def _fuzzy_match(text, candidates, cutoff=0.75):
-    """Compara text (já normalizado) contra uma lista de palavras/frases-alvo,
-    tolerando pequeno erro de digitação (1-2 letras trocadas/faltando).
-    Devolve o candidato mais parecido ou None."""
-    if not text or not candidates:
-        return None
-    matches = difflib.get_close_matches(text, candidates, n=1, cutoff=cutoff)
-    return matches[0] if matches else None
-
-
-def _matches_any(text, phrases=(), words=()):
-    t = _normalize(text)
-    if any(p in t for p in phrases):
-        return True
-    if not words:
-        return False
-    tokens = t.split()
-    return any(_fuzzy_match(tok, words) for tok in tokens)
 
 
 def _is_trigger(text):
@@ -148,35 +107,6 @@ def parse_yes_no(text):
         return True
     if _fuzzy_match(t, safe_no, cutoff=0.8):
         return False
-    return None
-
-
-def _parse_index(text, options, names=None):
-    """Fallback de texto pra resposta de lista — 'digite o número da opção'.
-    Aceita o dígito puro (com pontuação/espaço ao redor, ex: '1)', '1.'), por
-    extenso ('um', 'primeiro'...), e — quando names é passado (lista de nomes
-    na mesma ordem de options, usado na escolha de consultor) — o nome
-    digitado, mesmo com erro de digitação, via correspondência aproximada.
-    1-based na mensagem, devolve o índice 0-based em options."""
-    if not options:
-        return None
-    t = _normalize(text).strip(" .)-")
-    if t.isdigit():
-        i = int(t) - 1
-        return i if 0 <= i < len(options) else None
-    if t in _NUMBER_WORDS:
-        i = _NUMBER_WORDS[t] - 1
-        return i if 0 <= i < len(options) else None
-    if names:
-        normalized_names = [_normalize(n) for n in names]
-        # nome digitado parcial (ex: só o primeiro nome) bate por substring
-        # antes de tentar aproximação por erro de digitação
-        for i, n in enumerate(normalized_names):
-            if t and n and (t in n or n in t):
-                return i
-        match = _fuzzy_match(t, [n for n in normalized_names if n], cutoff=0.6)
-        if match is not None:
-            return normalized_names.index(match)
     return None
 
 
@@ -474,6 +404,27 @@ def reschedule_appointment_and_notify(appointment_id, consultant_id, new_schedul
     return "ok"
 
 
+def start_from_external(account, chat_id, wa_id, subject=None, urgent=False):
+    """Inicia o fluxo de agendamento sem exigir que o texto do usuário
+    contenha uma palavra-gatilho — usado pelo construtor de fluxo
+    configurável (flow_engine.py) quando uma etapa do tipo
+    action/start_booking é executada. Mesma lógica de quando
+    _is_trigger(text) bate em handle_incoming. `subject`, se vier (ex:
+    capturado numa etapa collect_input do fluxo), fica guardado no estado e
+    é usado como assunto do agendamento quando ele for criado no fim do
+    fluxo (ver step == "confirming" mais abaixo). Retorna True se
+    conseguiu iniciar (havia consultor ativo), False caso contrário."""
+    import server  # tardio — ver docstring do módulo
+    consultants = [c for c in server.get_consultants(account["id"]) if c["status"] == "active"]
+    if not consultants:
+        return False
+    option_ids = _send_consultant_list(account, wa_id, consultants, urgent=urgent)
+    server.set_chat_booking_state(
+        chat_id, {"step": "choosing_consultant", "options": option_ids, "urgent": urgent, "subject": subject}
+    )
+    return True
+
+
 def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push_name=None):
     """Ponto de entrada chamado pelo webhook pra cada mensagem recebida (já
     depois de descartar cliques de confirmação de consultor, tratados à
@@ -501,13 +452,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
     if state is None:
         if not _is_trigger(text):
             return False
-        consultants = [c for c in server.get_consultants(account["id"]) if c["status"] == "active"]
-        if not consultants:
-            return False
-        urgent = _is_urgent(text)
-        option_ids = _send_consultant_list(account, wa_id, consultants, urgent=urgent)
-        server.set_chat_booking_state(chat_id, {"step": "choosing_consultant", "options": option_ids, "urgent": urgent})
-        return True
+        return start_from_external(account, chat_id, wa_id, urgent=_is_urgent(text))
 
     # Comandos globais de "cancelar"/"ajuda" — só interceptam quando já existe
     # uma conversa de agendamento em andamento, e só pra respostas digitadas
@@ -594,7 +539,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
         scheduled_at = datetime.datetime.fromisoformat(state["scheduled_at"])
-        if not book_appointment(consultant, contact_id, wa_id, push_name, scheduled_at, notify_consultant=True, requires_confirmation=True):
+        if not book_appointment(consultant, contact_id, wa_id, push_name, scheduled_at, notify_consultant=True, requires_confirmation=True, subject=state.get("subject")):
             _send_text(account, phone, "Esse horário acabou de ser ocupado por outra pessoa. Digite \"agendar\" pra escolher outro.")
         return True
 

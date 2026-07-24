@@ -182,6 +182,7 @@
         <button class="tab-btn" onclick="switchTab('chats')">Conversas</button>
         <button class="tab-btn" onclick="switchTab('agenda')">Agenda</button>
         <button class="tab-btn" id="checklistTabBtn" style="display:none;" onclick="switchTab('checklist')">Checklist</button>
+        <button class="tab-btn" id="flowsTabBtn" style="display:none;" onclick="switchTab('flows')">Fluxos</button>
         <button class="tab-btn" onclick="switchTab('credits')">Extrato</button>
         <button class="tab-btn" onclick="switchTab('help')">Ajuda</button>
     </div>
@@ -291,6 +292,52 @@
                 <button class="btn btn-sm btn-secondary" onclick="addTemplateStep()">+ Adicionar etapa</button>
                 <button class="btn btn-sm" onclick="saveChecklistTemplate()">Salvar checklist</button>
             </div>
+        </div>
+    </div>
+
+    <div id="flows-tab" class="tab-content">
+        <div class="card" style="max-width:1000px;">
+            <div class="form-row" style="align-items:center;">
+                <label style="color:#94a3b8; font-size:0.85rem;">Conta:</label>
+                <select class="form-input" id="flowsAccountSelect" onchange="onFlowsAccountChange()"></select>
+            </div>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2>Telefone para avisos</h2>
+            <p class="subtitle">Usado quando o paciente pede pra falar com um atendente humano — manda um aviso por WhatsApp pra esse número.</p>
+            <div style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap;">
+                <div class="form-group" style="flex:1 1 220px; min-width:0; margin-bottom:0;">
+                    <label>Telefone (com DDI)</label>
+                    <input class="form-input" id="flowSecretaryPhoneInput" placeholder="5511999999999">
+                </div>
+                <button class="btn btn-sm" onclick="saveFlowSecretaryContact()">Salvar</button>
+            </div>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
+            <h2>Fluxos de atendimento automático</h2>
+            <p class="subtitle">Cada fluxo tem suas próprias palavras-gatilho. Quando nenhuma bater, o fluxo marcado como "padrão" assume — assim o paciente sempre tem uma opção, nunca fica sem resposta.</p>
+            <div id="flowsListBox"><p class="empty">Selecione uma conta.</p></div>
+            <div style="display:flex; gap:0.5rem; align-items:flex-end; flex-wrap:wrap; margin-top:0.75rem;">
+                <div class="form-group" style="flex:1 1 220px; min-width:0; margin-bottom:0;">
+                    <label>Nome do novo fluxo</label>
+                    <input class="form-input" id="newFlowNameInput" placeholder="Ex: Atendimento geral">
+                </div>
+                <button class="btn btn-sm" onclick="createNewFlow()">+ Novo fluxo</button>
+            </div>
+        </div>
+
+        <div class="card" style="max-width:1000px; display:none;" id="flowStepsCard">
+            <h2>Etapas de "<span id="flowStepsTitle"></span>"</h2>
+            <p class="subtitle">Placeholders disponíveis nas mensagens: <code>{{cliente_nome}}</code>, <code>{{clinica}}</code>, <code>{{consultor_termo}}</code> — e qualquer nome de variável capturado numa etapa "Pergunta aberta" desse mesmo fluxo.</p>
+            <div id="flowStepsEditor"></div>
+            <div style="display:flex; gap:0.5rem; margin-top:0.5rem; flex-wrap:wrap;">
+                <button class="btn btn-sm btn-secondary" onclick="addFlowStep()">+ Adicionar etapa</button>
+                <button class="btn btn-sm btn-secondary" onclick="toggleFlowSimulator()">▶ Testar fluxo</button>
+                <button class="btn btn-sm" onclick="saveFlowSteps()">Salvar fluxo</button>
+            </div>
+            <div id="flowSimulatorBox" style="display:none; margin-top:1rem; border-top:1px solid #1a2744; padding-top:1rem;"></div>
         </div>
     </div>
 
@@ -465,6 +512,7 @@ function switchTab(name) {
     if (name === 'chats') initChatsTab();
     if (name === 'agenda') initAgendaTab();
     if (name === 'checklist') initChecklistTab();
+    if (name === 'flows') initFlowsTab();
     if (name === 'credits') initCreditsTab();
 }
 
@@ -1263,6 +1311,486 @@ async function saveChecklistTemplate() {
     alert('Checklist salvo!');
 }
 
+// ---- Fluxos: construtor de atendimento automático configurável (contas
+// em modo Consultores) — mesmo padrão de conta-por-aba do Checklist acima,
+// mas cada fluxo é salvo/editado separadamente (nome/gatilhos/padrão via
+// PATCH imediato) e as ETAPAS de um fluxo aberto são editadas como um
+// array local, só persistido no "Salvar fluxo" (PUT da lista inteira) —
+// mesmo espírito do editor de checklist (templateSteps). ----
+const FLOW_ACTION_LABELS = {
+    start_booking: 'Iniciar agendamento',
+    human_handoff: 'Falar com atendente',
+    faq_ai: 'Perguntas frequentes (IA)',
+    end: 'Encerrar conversa',
+};
+
+let currentFlowsAccountId = null;
+let flowsAccounts = [];
+let accountFlows = [];
+let currentFlowId = null;
+let flowSteps = [];
+
+async function initFlowsTab() {
+    flowsAccounts = await fetchAccounts();
+    const sel = document.getElementById('flowsAccountSelect');
+    if (!flowsAccounts.length) {
+        sel.innerHTML = '<option value="">Nenhuma conta vinculada</option>';
+        return;
+    }
+    sel.innerHTML = flowsAccounts.map(a => `<option value="${a.id}">${esc(a.label)}</option>`).join('');
+    if (!currentFlowsAccountId || !flowsAccounts.some(a => a.id === currentFlowsAccountId)) {
+        currentFlowsAccountId = flowsAccounts[0].id;
+    }
+    sel.value = currentFlowsAccountId;
+    loadFlowSecretaryPhoneField();
+    await loadAccountFlows();
+}
+
+function onFlowsAccountChange() {
+    currentFlowsAccountId = Number(document.getElementById('flowsAccountSelect').value);
+    loadFlowSecretaryPhoneField();
+    currentFlowId = null;
+    document.getElementById('flowStepsCard').style.display = 'none';
+    loadAccountFlows();
+}
+
+function loadFlowSecretaryPhoneField() {
+    const acc = flowsAccounts.find(a => a.id === currentFlowsAccountId);
+    document.getElementById('flowSecretaryPhoneInput').value = (acc && acc.secretary_wa_id) ? acc.secretary_wa_id.split('@')[0] : '';
+}
+
+async function saveFlowSecretaryContact() {
+    const phone = document.getElementById('flowSecretaryPhoneInput').value.trim();
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentFlowsAccountId}/secretary-contact`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ phone }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar telefone de avisos.');
+    const acc = flowsAccounts.find(a => a.id === currentFlowsAccountId);
+    if (acc) acc.secretary_wa_id = data.secretary_wa_id;
+    alert('Telefone de avisos salvo!');
+}
+
+async function loadAccountFlows() {
+    if (!currentFlowsAccountId) return;
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentFlowsAccountId}/flows`);
+    const data = await res.json();
+    accountFlows = data.flows || [];
+    renderFlowsList();
+}
+
+function renderFlowsList() {
+    const el = document.getElementById('flowsListBox');
+    if (!accountFlows.length) {
+        el.innerHTML = '<p class="empty">Nenhum fluxo configurado ainda — crie o primeiro abaixo.</p>';
+        return;
+    }
+    el.innerHTML = accountFlows.map(f => `
+        <div class="step-card" style="${currentFlowId === f.id ? 'border-color:#60a5fa;' : ''}">
+            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:flex-end;">
+                <div class="form-group" style="flex:1 1 200px; min-width:0; margin-bottom:0;">
+                    <label>Nome</label>
+                    <input class="form-input" value="${esc(f.name)}" onchange="updateFlowField(${f.id}, 'name', this.value)">
+                </div>
+                <div class="form-group" style="flex:1 1 220px; min-width:0; margin-bottom:0;">
+                    <label>Palavras-gatilho (separadas por vírgula)</label>
+                    <input class="form-input" placeholder="Ex: exame, resultado" value="${esc((f.trigger_keywords || []).join(', '))}"
+                        onchange="updateFlowField(${f.id}, 'trigger_keywords', this.value.split(',').map(s => s.trim()).filter(Boolean))">
+                </div>
+                <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.78rem; color:#94a3b8; padding-bottom:0.5rem;">
+                    <input type="checkbox" ${f.is_default ? 'checked' : ''} onchange="updateFlowField(${f.id}, 'is_default', this.checked)"> Padrão
+                </label>
+            </div>
+            <div style="display:flex; gap:0.5rem; margin-top:0.6rem;">
+                <button class="btn btn-sm ${currentFlowId === f.id ? '' : 'btn-secondary'}" onclick="openFlowEditor(${f.id})">Editar etapas</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteFlowConfirm(${f.id})">Excluir</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+async function updateFlowField(flowId, field, value) {
+    const res = await authFetch(API + `/api/client-portal/flows/${flowId}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ [field]: value }),
+    });
+    const data = await res.json();
+    if (!res.ok) { alert(data.message || 'Erro ao salvar.'); loadAccountFlows(); return; }
+    accountFlows = data.flows || [];
+    renderFlowsList();
+}
+
+async function createNewFlow() {
+    const name = document.getElementById('newFlowNameInput').value.trim() || 'Novo fluxo';
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentFlowsAccountId}/flows`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao criar fluxo.');
+    document.getElementById('newFlowNameInput').value = '';
+    accountFlows = data.flows || [];
+    renderFlowsList();
+    openFlowEditor(data.flow_id);
+}
+
+async function deleteFlowConfirm(flowId) {
+    if (!confirm('Excluir este fluxo? Conversas em andamento nele deixam de ter automação configurada.')) return;
+    const res = await authFetch(API + `/api/client-portal/flows/${flowId}`, { method: 'DELETE' });
+    if (!res.ok) { const data = await res.json(); return alert(data.message || 'Erro ao excluir fluxo.'); }
+    if (currentFlowId === flowId) {
+        currentFlowId = null;
+        document.getElementById('flowStepsCard').style.display = 'none';
+    }
+    loadAccountFlows();
+}
+
+async function openFlowEditor(flowId) {
+    currentFlowId = flowId;
+    const flow = accountFlows.find(f => f.id === flowId);
+    document.getElementById('flowStepsTitle').textContent = flow ? flow.name : '';
+    document.getElementById('flowStepsCard').style.display = 'block';
+    document.getElementById('flowSimulatorBox').style.display = 'none';
+    document.getElementById('flowStepsEditor').innerHTML = '<p class="empty">Carregando...</p>';
+    renderFlowsList();
+    const res = await authFetch(API + `/api/client-portal/flows/${flowId}/steps`);
+    const data = await res.json();
+    flowSteps = (data.steps || []).map(s => ({ ...s, options: s.options ? s.options.map(o => ({ ...o })) : s.options }));
+    renderFlowStepsEditor();
+    document.getElementById('flowStepsCard').scrollIntoView({ behavior: 'smooth' });
+}
+
+const DIACRITICS_RE = new RegExp("[̀-ͯ]", "g");
+
+function genFlowStepKey(label) {
+    const base = (label || 'etapa').toLowerCase().normalize('NFD').replace(DIACRITICS_RE, '')
+        .replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'etapa';
+    return base.slice(0, 30) + '-' + Math.random().toString(36).slice(2, 7);
+}
+
+function addFlowStep() {
+    flowSteps.push({
+        step_key: genFlowStepKey('nova-etapa'), is_root: flowSteps.length === 0, step_type: 'message',
+        label: '', message_template: '', variable_name: null, action_type: null, options: null, next_step_key: null,
+    });
+    renderFlowStepsEditor();
+}
+
+function removeFlowStep(i) {
+    const wasRoot = flowSteps[i].is_root;
+    flowSteps.splice(i, 1);
+    if (wasRoot && flowSteps.length) flowSteps[0].is_root = true;
+    renderFlowStepsEditor();
+}
+
+function setFlowRootStep(i) {
+    flowSteps.forEach((s, idx) => { s.is_root = idx === i; });
+    renderFlowStepsEditor();
+}
+
+function changeFlowStepType(i, value) {
+    flowSteps[i].step_type = value;
+    if (value === 'menu' && !flowSteps[i].options) flowSteps[i].options = [];
+    if (value === 'action' && !flowSteps[i].action_type) flowSteps[i].action_type = 'start_booking';
+    renderFlowStepsEditor();
+}
+
+function flowNextStepOptions(selfKey, selected) {
+    const opts = flowSteps.filter(s => s.step_key !== selfKey)
+        .map(s => `<option value="${s.step_key}" ${selected === s.step_key ? 'selected' : ''}>${esc(s.label || '(sem nome)')}</option>`).join('');
+    return `<option value="">— fim da conversa —</option>${opts}`;
+}
+
+function flowGotoSelectOptions(selfKey, selectedValue) {
+    const stepOpts = flowSteps.filter(s => s.step_key !== selfKey)
+        .map(s => `<option value="step:${s.step_key}" ${selectedValue === 'step:' + s.step_key ? 'selected' : ''}>${esc(s.label || '(sem nome)')}</option>`).join('');
+    const actionOpts = Object.entries(FLOW_ACTION_LABELS)
+        .map(([k, label]) => `<option value="action:${k}" ${selectedValue === 'action:' + k ? 'selected' : ''}>${esc(label)}</option>`).join('');
+    return `<option value="">— escolha um destino —</option>${stepOpts}<optgroup label="Ações especiais">${actionOpts}</optgroup>`;
+}
+
+function setFlowMenuGoto(stepIdx, optIdx, value) {
+    const opt = flowSteps[stepIdx].options[optIdx];
+    if (value.startsWith('step:')) { opt.goto_step_key = value.slice(5); opt.goto_action = null; }
+    else if (value.startsWith('action:')) { opt.goto_action = value.slice(7); opt.goto_step_key = null; }
+    else { opt.goto_step_key = null; opt.goto_action = null; }
+}
+
+function addFlowMenuOption(stepIdx) {
+    if (!flowSteps[stepIdx].options) flowSteps[stepIdx].options = [];
+    flowSteps[stepIdx].options.push({ label: '', goto_step_key: null, goto_action: null });
+    renderFlowStepsEditor();
+}
+
+function removeFlowMenuOption(stepIdx, optIdx) {
+    flowSteps[stepIdx].options.splice(optIdx, 1);
+    renderFlowStepsEditor();
+}
+
+function flowStepFieldsHtml(s, i) {
+    if (s.step_type === 'action') {
+        return `
+            <div class="form-group" style="max-width:280px;">
+                <label>Ação</label>
+                <select class="form-input" onchange="flowSteps[${i}].action_type = this.value">
+                    ${Object.entries(FLOW_ACTION_LABELS).map(([k, label]) => `<option value="${k}" ${s.action_type === k ? 'selected' : ''}>${esc(label)}</option>`).join('')}
+                </select>
+            </div>
+            <div class="form-group">
+                <label>Mensagem antes de executar (opcional)</label>
+                <textarea class="form-input" rows="2" oninput="flowSteps[${i}].message_template = this.value">${esc(s.message_template || '')}</textarea>
+            </div>
+        `;
+    }
+    if (s.step_type === 'menu') {
+        const options = s.options || [];
+        return `
+            <div class="form-group">
+                <label>Mensagem (antes da lista de opções)</label>
+                <textarea class="form-input" rows="2" oninput="flowSteps[${i}].message_template = this.value">${esc(s.message_template || '')}</textarea>
+            </div>
+            <div style="margin-top:0.4rem;">
+                ${options.map((o, oi) => `
+                    <div style="display:flex; gap:0.5rem; align-items:center; margin-bottom:0.4rem;">
+                        <input class="form-input" style="flex:1 1 160px;" placeholder="Ex: Agendar consulta" value="${esc(o.label || '')}" oninput="flowSteps[${i}].options[${oi}].label = this.value">
+                        <select class="form-input" style="flex:1 1 200px;" onchange="setFlowMenuGoto(${i}, ${oi}, this.value)">
+                            ${flowGotoSelectOptions(s.step_key, o.goto_step_key ? 'step:' + o.goto_step_key : (o.goto_action ? 'action:' + o.goto_action : ''))}
+                        </select>
+                        <button class="btn btn-sm btn-danger" onclick="removeFlowMenuOption(${i}, ${oi})">✕</button>
+                    </div>
+                `).join('')}
+            </div>
+            <button class="btn btn-sm btn-secondary" onclick="addFlowMenuOption(${i})">+ Opção</button>
+            ${options.length > 6 ? '<p class="empty" style="color:#fbbf24;">Menus muito longos podem confundir o paciente — considere quebrar em mais de uma etapa.</p>' : ''}
+        `;
+    }
+    if (s.step_type === 'collect_input') {
+        return `
+            <div class="form-group">
+                <label>Pergunta</label>
+                <textarea class="form-input" rows="2" oninput="flowSteps[${i}].message_template = this.value">${esc(s.message_template || '')}</textarea>
+            </div>
+            <div class="form-group" style="max-width:220px;">
+                <label>Nome da variável (uso interno)</label>
+                <input class="form-input" placeholder="Ex: motivo" value="${esc(s.variable_name || '')}" oninput="flowSteps[${i}].variable_name = this.value">
+            </div>
+            <div class="form-group" style="max-width:280px;">
+                <label>Próxima etapa</label>
+                <select class="form-input" onchange="flowSteps[${i}].next_step_key = this.value || null">
+                    ${flowNextStepOptions(s.step_key, s.next_step_key)}
+                </select>
+            </div>
+        `;
+    }
+    // message
+    return `
+        <div class="form-group">
+            <label>Mensagem</label>
+            <textarea class="form-input" rows="2" oninput="flowSteps[${i}].message_template = this.value">${esc(s.message_template || '')}</textarea>
+        </div>
+        <div class="form-group" style="max-width:280px;">
+            <label>Próxima etapa</label>
+            <select class="form-input" onchange="flowSteps[${i}].next_step_key = this.value || null">
+                ${flowNextStepOptions(s.step_key, s.next_step_key)}
+            </select>
+        </div>
+    `;
+}
+
+function renderFlowStepsEditor() {
+    const el = document.getElementById('flowStepsEditor');
+    if (!flowSteps.length) {
+        el.innerHTML = '<p class="empty">Nenhuma etapa ainda — adicione a primeira abaixo (ela vira a raiz automaticamente).</p>';
+        return;
+    }
+    el.innerHTML = flowSteps.map((s, i) => `
+        <div class="step-card">
+            <div style="display:flex; flex-wrap:wrap; gap:0.5rem; align-items:flex-end;">
+                <label style="display:flex; align-items:center; gap:0.3rem; font-size:0.78rem; color:#94a3b8; padding-bottom:0.5rem;">
+                    <input type="radio" name="flowRootRadio" ${s.is_root ? 'checked' : ''} onchange="setFlowRootStep(${i})"> raiz
+                </label>
+                <div class="form-group" style="flex:1 1 200px; min-width:0; margin-bottom:0;">
+                    <label>Nome da etapa (uso interno)</label>
+                    <input class="form-input" value="${esc(s.label)}" oninput="flowSteps[${i}].label = this.value">
+                </div>
+                <div class="form-group" style="flex:0 0 180px; margin-bottom:0;">
+                    <label>Tipo</label>
+                    <select class="form-input" onchange="changeFlowStepType(${i}, this.value)">
+                        <option value="message" ${s.step_type === 'message' ? 'selected' : ''}>Mensagem</option>
+                        <option value="menu" ${s.step_type === 'menu' ? 'selected' : ''}>Menu de opções</option>
+                        <option value="collect_input" ${s.step_type === 'collect_input' ? 'selected' : ''}>Pergunta aberta</option>
+                        <option value="action" ${s.step_type === 'action' ? 'selected' : ''}>Ação especial</option>
+                    </select>
+                </div>
+                <button class="btn btn-sm btn-danger" onclick="removeFlowStep(${i})">Excluir</button>
+            </div>
+            <div style="margin-top:0.6rem;">${flowStepFieldsHtml(s, i)}</div>
+        </div>
+    `).join('');
+}
+
+async function saveFlowSteps() {
+    const steps = flowSteps.filter(s => (s.label || '').trim());
+    if (!steps.length || !steps.some(s => s.is_root)) return alert('Marque uma etapa como raiz (a primeira que o paciente vê).');
+    const res = await authFetch(API + `/api/client-portal/flows/${currentFlowId}/steps`, {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ steps }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar fluxo.');
+    flowSteps = (data.steps || []).map(s => ({ ...s, options: s.options ? s.options.map(o => ({ ...o })) : s.options }));
+    renderFlowStepsEditor();
+    alert('Fluxo salvo!');
+}
+
+// ---- Simulador "Testar fluxo": roda 100% no navegador, sobre o próprio
+// array flowSteps (inclusive edições ainda não salvas) — deixa revisar
+// texto/ramificação antes de publicar, sem mandar nada de verdade pelo
+// WhatsApp. Não é o motor real (esse é o flow_engine.py no servidor) — é
+// uma simulação equivalente só pra pré-visualização. ----
+let flowSimState = null;
+const FLOW_SIM_VALUES = { cliente_nome: 'Maria', clinica: 'Clínica Exemplo', consultor_termo: 'Médico' };
+
+function flowSimApplyTemplate(template, vars) {
+    let text = template || '';
+    const ctx = Object.assign({}, FLOW_SIM_VALUES, vars);
+    Object.entries(ctx).forEach(([k, v]) => { text = text.split('{{' + k + '}}').join(String(v)); });
+    return text;
+}
+
+function flowSimFindStep(key) {
+    return flowSteps.find(s => s.step_key === key);
+}
+
+function flowSimBubble(text, who) {
+    const box = document.getElementById('flowSimChat');
+    if (!box) return;
+    const div = document.createElement('div');
+    div.style.cssText = `margin:0.3rem 0; display:flex; justify-content:${who === 'bot' ? 'flex-start' : 'flex-end'};`;
+    div.innerHTML = `<div style="max-width:80%; padding:0.5rem 0.7rem; border-radius:10px; white-space:pre-wrap; font-size:0.85rem; background:${who === 'bot' ? '#1a2744' : '#2563eb'}; color:#f8fafc;">${esc(text)}</div>`;
+    box.appendChild(div);
+    box.scrollTop = box.scrollHeight;
+}
+
+function toggleFlowSimulator() {
+    const box = document.getElementById('flowSimulatorBox');
+    if (box.style.display !== 'none') { box.style.display = 'none'; return; }
+    box.style.display = 'block';
+    flowSimStart();
+}
+
+function flowSimStart() {
+    document.getElementById('flowSimulatorBox').innerHTML = `
+        <p class="subtitle">Simulação local — não manda nada pelo WhatsApp de verdade. <button class="btn btn-sm btn-secondary" onclick="flowSimStart()" style="margin-left:0.5rem;">↺ Reiniciar</button></p>
+        <div id="flowSimChat" style="max-height:320px; overflow-y:auto; border:1px solid #1a2744; border-radius:8px; padding:0.6rem; background:#0f172a;"></div>
+        <div style="display:flex; gap:0.4rem; margin-top:0.6rem;">
+            <input class="form-input" id="flowSimInput" placeholder="Digite como se fosse o paciente..." onkeydown="if(event.key==='Enter') flowSimSend()">
+            <button class="btn btn-sm" onclick="flowSimSend()">Enviar</button>
+        </div>
+    `;
+    const root = flowSteps.find(s => s.is_root);
+    if (!root) {
+        flowSimBubble('(nenhuma etapa marcada como raiz ainda)', 'bot');
+        flowSimState = null;
+        return;
+    }
+    flowSimState = { vars: {}, history: [], stepKey: null };
+    flowSimEnter(root, 0);
+}
+
+function flowSimEnter(step, hops) {
+    if (!step) { flowSimBubble('(fim do fluxo)', 'bot'); flowSimState = null; return; }
+    if (hops > 20) { flowSimBubble('(loop detectado — encaminharia pra atendente)', 'bot'); flowSimState = null; return; }
+    const vars = flowSimState.vars;
+    if (step.step_type === 'action') {
+        if (step.message_template) flowSimBubble(flowSimApplyTemplate(step.message_template, vars), 'bot');
+        flowSimBubble(`(ação: ${FLOW_ACTION_LABELS[step.action_type] || step.action_type})`, 'bot');
+        flowSimState = null;
+        return;
+    }
+    if (step.step_type === 'message') {
+        flowSimBubble(flowSimApplyTemplate(step.message_template, vars), 'bot');
+        const next = step.next_step_key ? flowSimFindStep(step.next_step_key) : null;
+        if (!next) { flowSimState = null; return; }
+        flowSimEnter(next, hops + 1);
+        return;
+    }
+    if (step.step_type === 'collect_input') {
+        flowSimBubble(flowSimApplyTemplate(step.message_template, vars), 'bot');
+        flowSimState.stepKey = step.step_key;
+        return;
+    }
+    const options = step.options || [];
+    const lines = options.map((o, i) => `${i + 1}. ${o.label || ''}`).join('\n');
+    flowSimBubble(`${flowSimApplyTemplate(step.message_template, vars)}\n\n${lines}`, 'bot');
+    flowSimState.stepKey = step.step_key;
+}
+
+function flowSimSend() {
+    const input = document.getElementById('flowSimInput');
+    const text = input.value.trim();
+    if (!text || !flowSimState) { if (input) input.value = ''; return; }
+    flowSimBubble(text, 'user');
+    input.value = '';
+    const norm = text.trim().toLowerCase();
+
+    if (norm === 'atendente' || norm === 'humano' || norm === 'pessoa') {
+        flowSimBubble('(ação: Falar com atendente)', 'bot');
+        flowSimState = null;
+        return;
+    }
+    if (norm === 'menu' || norm === 'inicio' || norm === 'início') {
+        flowSimEnter(flowSteps.find(s => s.is_root), 0);
+        return;
+    }
+    if (norm === 'voltar' || norm === 'volta') {
+        const prevKey = flowSimState.history.pop();
+        const prev = prevKey ? flowSimFindStep(prevKey) : null;
+        if (prev) { flowSimEnter(prev, 0); } else { flowSimBubble('(já está na primeira etapa)', 'bot'); }
+        return;
+    }
+
+    const step = flowSimFindStep(flowSimState.stepKey);
+    if (!step) { flowSimBubble('(etapa não encontrada — encaminharia pra atendente)', 'bot'); flowSimState = null; return; }
+
+    if (step.step_type === 'menu') {
+        const options = step.options || [];
+        let idx = null;
+        if (/^\d+$/.test(norm)) {
+            const n = parseInt(norm, 10) - 1;
+            if (n >= 0 && n < options.length) idx = n;
+        }
+        if (idx === null) {
+            const found = options.findIndex(o => norm && (o.label || '').toLowerCase().includes(norm));
+            if (found !== -1) idx = found;
+        }
+        if (idx === null) {
+            flowSimBubble('(não entendi — reenviaria as opções; depois de 2 tentativas, encaminharia pra atendente)', 'bot');
+            return;
+        }
+        flowSimState.history.push(step.step_key);
+        const chosen = options[idx];
+        if (chosen.goto_step_key) {
+            flowSimEnter(flowSimFindStep(chosen.goto_step_key), 0);
+        } else if (chosen.goto_action) {
+            flowSimBubble(`(ação: ${FLOW_ACTION_LABELS[chosen.goto_action] || chosen.goto_action})`, 'bot');
+            flowSimState = null;
+        } else {
+            flowSimBubble('(opção sem destino configurado)', 'bot');
+        }
+        return;
+    }
+
+    if (step.step_type === 'collect_input') {
+        flowSimState.vars[step.variable_name || 'valor'] = text;
+        flowSimState.history.push(step.step_key);
+        if (step.next_step_key) {
+            flowSimEnter(flowSimFindStep(step.next_step_key), 0);
+        } else {
+            flowSimBubble('(fim do fluxo)', 'bot');
+            flowSimState = null;
+        }
+        return;
+    }
+}
+
 // ---- Extrato (dado vive no ai_oraculo_saas, porta 5001 — mesma chave) ----
 function clearCreditsMonth() {
     document.getElementById('creditsMonthPicker').value = '';
@@ -1330,6 +1858,7 @@ async function initChecklistTabVisibility() {
         const res = await authFetch(API + '/api/client-portal/booking-mode');
         const data = await res.json();
         document.getElementById('checklistTabBtn').style.display = data.booking_mode === 'crm_medico' ? 'inline-block' : 'none';
+        document.getElementById('flowsTabBtn').style.display = data.booking_mode === 'consultores' ? 'inline-block' : 'none';
     } catch (e) { /* silencioso — aba só não aparece */ }
 }
 

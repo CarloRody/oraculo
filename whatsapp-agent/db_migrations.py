@@ -660,6 +660,50 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_consultation_biometrics_appointment
         ON whatsapp_consultation_biometrics(appointment_id);
     """,
+
+    # 32 — construtor de fluxo de atendimento automático (contas em modo
+    # Consultores): fluxos nomeados por conta (cada um com suas próprias
+    # palavras-gatilho) e as etapas de cada fluxo. Mesmo espírito de
+    # whatsapp_checklist_templates/_items (migração #21): soft-delete via
+    # active=FALSE pra nunca quebrar referências já em uso. flow_state em
+    # whatsapp_chats guarda a posição atual de CADA conversa dentro de um
+    # fluxo (qual fluxo, qual etapa, histórico pra "voltar", variáveis
+    # capturadas) — mesmo padrão do booking_state já existente, usado pelo
+    # motor de agendamento (booking_flow.py).
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_flows (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        name VARCHAR(100) NOT NULL,
+        trigger_keywords JSONB NOT NULL DEFAULT '[]',
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_flows_account ON whatsapp_flows(account_id, sort_order);
+
+    CREATE TABLE IF NOT EXISTS whatsapp_flow_steps (
+        id SERIAL PRIMARY KEY,
+        flow_id INTEGER NOT NULL REFERENCES whatsapp_flows(id) ON DELETE CASCADE,
+        step_key VARCHAR(50) NOT NULL,
+        is_root BOOLEAN NOT NULL DEFAULT FALSE,
+        step_type VARCHAR(20) NOT NULL CHECK (step_type IN ('message','menu','collect_input','action')),
+        label VARCHAR(150) NOT NULL,
+        message_template TEXT,
+        variable_name VARCHAR(50),
+        action_type VARCHAR(20) CHECK (action_type IN ('start_booking','human_handoff','faq_ai','end')),
+        options JSONB,
+        next_step_key VARCHAR(50),
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE(flow_id, step_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_flow_steps_flow ON whatsapp_flow_steps(flow_id, sort_order);
+
+    ALTER TABLE whatsapp_chats ADD COLUMN IF NOT EXISTS flow_state JSONB;
+    """,
 ]
 
 

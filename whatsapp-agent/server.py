@@ -26,6 +26,7 @@ from flask import Flask, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
 
 import booking_flow
+import flow_engine
 import connectors.evolution as evolution
 from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG, WHATSAPP_MEDIA_CONFIG
 from connectors.evolution import EvolutionError
@@ -1581,6 +1582,34 @@ def set_chat_booking_state(chat_id, state):
         conn.close()
 
 
+def get_chat_flow_state(chat_id):
+    """Mesmo padrão de get_chat_booking_state, mas pra posição da conversa
+    dentro de um fluxo configurável (flow_engine.py) — coluna separada
+    porque os dois motores (agendamento fixo x fluxo configurável) podem
+    se alternar na mesma conversa (ver docstring de flow_engine.py)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT flow_state FROM whatsapp_chats WHERE id = %s", (chat_id,))
+        row = cur.fetchone()
+        return row[0] if row else None
+    finally:
+        conn.close()
+
+
+def set_chat_flow_state(chat_id, state):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_chats SET flow_state = %s WHERE id = %s",
+            (psycopg2.extras.Json(state) if state else None, chat_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 # ---------------------------------------------------------------------------
 # Agenda de consultores
 # ---------------------------------------------------------------------------
@@ -2104,6 +2133,200 @@ def set_checklist_template(account_id, steps):
     return get_checklist_template(account_id)
 
 
+# ---------------------------------------------------------------------------
+# Construtor de fluxo de atendimento automático (contas em modo Consultores)
+# — whatsapp_flows/whatsapp_flow_steps, mesmo espírito de soft-delete do
+# checklist acima (nunca DELETE de verdade numa etapa que uma conversa em
+# andamento possa estar referenciando por step_key em flow_state).
+# ---------------------------------------------------------------------------
+
+def get_flows(account_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, name, trigger_keywords, is_default, sort_order
+               FROM whatsapp_flows WHERE account_id = %s AND active ORDER BY sort_order""",
+            (account_id,),
+        )
+        cols = ["id", "name", "trigger_keywords", "is_default", "sort_order"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _flow_owner(flow_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_flows WHERE id = %s", (flow_id,))
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+def create_flow(account_id, name):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COALESCE(MAX(sort_order), -1) + 1 FROM whatsapp_flows WHERE account_id = %s", (account_id,))
+        next_order = cur.fetchone()[0]
+        cur.execute(
+            """INSERT INTO whatsapp_flows (account_id, name, sort_order) VALUES (%s, %s, %s) RETURNING id""",
+            (account_id, (name or "Novo fluxo").strip()[:100] or "Novo fluxo", next_order),
+        )
+        flow_id = cur.fetchone()[0]
+        conn.commit()
+        return flow_id
+    finally:
+        conn.close()
+
+
+def update_flow(flow_id, account_id, data):
+    """Atualiza nome/gatilhos/padrão/ativo de um fluxo. is_default=True
+    desliga o is_default de qualquer outro fluxo da mesma conta na mesma
+    transação — só um fluxo padrão por conta faz sentido (senão o
+    resultado de "nenhum gatilho bateu" ficaria ambíguo)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        fields, params = [], []
+        if "name" in data:
+            fields.append("name = %s")
+            params.append((data.get("name") or "").strip()[:100] or "Novo fluxo")
+        if "trigger_keywords" in data:
+            keywords = [str(k).strip().lower()[:40] for k in (data.get("trigger_keywords") or []) if str(k).strip()]
+            fields.append("trigger_keywords = %s")
+            params.append(psycopg2.extras.Json(keywords))
+        if "active" in data:
+            fields.append("active = %s")
+            params.append(bool(data.get("active")))
+        if "is_default" in data:
+            if data.get("is_default"):
+                cur.execute(
+                    "UPDATE whatsapp_flows SET is_default = FALSE WHERE account_id = %s AND id != %s",
+                    (account_id, flow_id),
+                )
+            fields.append("is_default = %s")
+            params.append(bool(data.get("is_default")))
+        if fields:
+            params.append(flow_id)
+            cur.execute(f"UPDATE whatsapp_flows SET {', '.join(fields)} WHERE id = %s", params)
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def delete_flow(flow_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_flows SET active = FALSE WHERE id = %s", (flow_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_flow_steps(flow_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, step_key, is_root, step_type, label, message_template, variable_name,
+                      action_type, options, next_step_key, sort_order
+               FROM whatsapp_flow_steps WHERE flow_id = %s AND active ORDER BY sort_order""",
+            (flow_id,),
+        )
+        cols = ["id", "step_key", "is_root", "step_type", "label", "message_template", "variable_name",
+                "action_type", "options", "next_step_key", "sort_order"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def set_flow_steps(flow_id, steps):
+    """Substitui as etapas de um fluxo — mesmo padrão de upsert-por-id +
+    soft-delete-do-que-sumiu de set_checklist_template (ver comentário lá):
+    whatsapp_chats.flow_state pode estar apontando pro step_key de uma
+    etapa removida numa conversa em andamento, então nunca apagamos de
+    verdade. Validação de consistência (exatamente 1 raiz, todo destino de
+    menu existe) é feita pela rota ANTES de chamar esta função — aqui só
+    persiste."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, step_key FROM whatsapp_flow_steps WHERE flow_id = %s", (flow_id,))
+        existing = {r[0]: r[1] for r in cur.fetchall()}
+        used_keys = set(existing.values())
+        kept_ids = set()
+
+        for idx, step in enumerate(steps or []):
+            if not isinstance(step, dict):
+                continue
+            label = (step.get("label") or "").strip()[:150]
+            if not label:
+                continue
+            step_type = step.get("step_type")
+            if step_type not in ("message", "menu", "collect_input", "action"):
+                continue
+            message_template = (step.get("message_template") or "").strip()[:2000] or None
+            variable_name = (step.get("variable_name") or "").strip()[:50] or None
+            action_type = step.get("action_type") if step.get("action_type") in (
+                "start_booking", "human_handoff", "faq_ai", "end") else None
+            options = step.get("options") if step_type == "menu" else None
+            next_step_key = (step.get("next_step_key") or "").strip()[:50] or None
+            is_root = bool(step.get("is_root"))
+
+            step_id = step.get("id")
+            if isinstance(step_id, int) and step_id in existing:
+                cur.execute(
+                    """UPDATE whatsapp_flow_steps
+                       SET label = %s, step_type = %s, message_template = %s, variable_name = %s,
+                           action_type = %s, options = %s, next_step_key = %s, is_root = %s,
+                           sort_order = %s, active = TRUE
+                       WHERE id = %s AND flow_id = %s""",
+                    (label, step_type, message_template, variable_name, action_type,
+                     psycopg2.extras.Json(options) if options is not None else None,
+                     next_step_key, is_root, idx, step_id, flow_id),
+                )
+                kept_ids.add(step_id)
+            else:
+                # Prefere o step_key que o editor já mandou (ele precisa ser
+                # estável ANTES de salvar, pra outras etapas poderem apontar
+                # "vá para X" pra uma etapa nova que ainda não tem id de
+                # banco — ver validação em cp_set_flow_steps). Só cai pro
+                # slug automático se nenhum vier (ex: chamada direta na API).
+                key = (step.get("step_key") or "").strip()[:50] or slugify(label)[:45] or f"etapa-{idx}"
+                if key in used_keys:
+                    base_key, n = key, 2
+                    while key in used_keys:
+                        key = f"{base_key}-{n}"[:50]
+                        n += 1
+                used_keys.add(key)
+                cur.execute(
+                    """INSERT INTO whatsapp_flow_steps
+                       (flow_id, step_key, is_root, step_type, label, message_template, variable_name,
+                        action_type, options, next_step_key, sort_order)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (flow_id, key, is_root, step_type, label, message_template, variable_name,
+                     action_type, psycopg2.extras.Json(options) if options is not None else None,
+                     next_step_key, idx),
+                )
+                kept_ids.add(cur.fetchone()[0])
+
+        removed_ids = list(set(existing) - kept_ids)
+        if removed_ids:
+            cur.execute(
+                "UPDATE whatsapp_flow_steps SET active = FALSE WHERE id = ANY(%s)",
+                (removed_ids,),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+    return get_flow_steps(flow_id)
+
+
 def get_checklist_items_for_appointment(appointment_id):
     conn = _conn()
     try:
@@ -2222,10 +2445,12 @@ def _mark_checklist_auto_message_sent(item_id, recipient):
         conn.close()
 
 
-def _render_checklist_message(template_text, ctx):
+def render_message_template(template_text, ctx):
     """Substitui só os placeholders conhecidos via str.replace simples —
-    nunca str.format/template engine: o texto vem digitado livremente pela
-    secretária e não pode virar vetor de KeyError nem de execução."""
+    nunca str.format/template engine: o texto vem digitado livremente pelo
+    dono da conta e não pode virar vetor de KeyError nem de execução.
+    Compartilhado pelo checklist (auto_message_template) e pelo construtor
+    de fluxo configurável (flow_engine.py)."""
     text = template_text
     for key, value in ctx.items():
         text = text.replace("{{" + key + "}}", str(value))
@@ -2874,6 +3099,14 @@ def _require_crm_medico(user_id):
     return None
 
 
+def _require_consultores(user_id):
+    """Gate das rotas exclusivas do construtor de fluxo configurável —
+    mesmo formato de _require_crm_medico, mas pro modo 'consultores'."""
+    if plan_booking_mode(user_id) != "consultores":
+        return jsonify({"ok": False, "message": "O modo Consultores não está ativado no plano desta conta."}), 403
+    return None
+
+
 def _not_found(msg="Não encontrado"):
     return jsonify({"ok": False, "message": msg}), 404
 
@@ -3409,8 +3642,12 @@ def cp_set_secretary_contact(account_id):
     if err: return err
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
-    err = _require_crm_medico(user_id)
-    if err: return err
+    # Telefone de aviso não é exclusivo do CRM médico (onde mora hoje, na
+    # aba Checklist) — contas em modo Consultores também precisam dele pro
+    # aviso de "falar com atendente" do construtor de fluxo. Só bloqueia se
+    # a agenda estiver totalmente desligada no plano.
+    if plan_booking_mode(user_id) == "none":
+        return jsonify({"ok": False, "message": "A agenda não está ativada no plano desta conta."}), 403
     phone = re.sub(r"\D", "", (request.json or {}).get("phone") or "")
     set_account_secretary_contact(account_id, phone)
     account = get_account(account_id)
@@ -3420,6 +3657,121 @@ def cp_set_secretary_contact(account_id):
         "secretary_wa_id": account.get("secretary_wa_id"),
         "secretary_push_name": account.get("secretary_push_name"),
     })
+
+
+# ---------------------------------------------------------------------------
+# Construtor de fluxo de atendimento automático — exclusivo do modo
+# Consultores, mesma sequência de guards do checklist (dono da conta/fluxo,
+# depois o gate de plano).
+# ---------------------------------------------------------------------------
+
+@app.route("/api/client-portal/accounts/<int:account_id>/flows", methods=["GET"])
+def cp_list_flows(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_consultores(user_id)
+    if err: return err
+    return jsonify({"flows": get_flows(account_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/flows", methods=["POST"])
+def cp_create_flow(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_consultores(user_id)
+    if err: return err
+    name = (request.json or {}).get("name") or "Novo fluxo"
+    flow_id = create_flow(account_id, name)
+    return jsonify({"ok": True, "flows": get_flows(account_id), "flow_id": flow_id})
+
+
+@app.route("/api/client-portal/flows/<int:flow_id>", methods=["PATCH"])
+def cp_update_flow(flow_id):
+    user_id, err = _require_client()
+    if err: return err
+    account_owner = _flow_owner(flow_id)
+    if account_owner != user_id:
+        return _not_found("Fluxo não encontrado")
+    err = _require_consultores(user_id)
+    if err: return err
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_flows WHERE id = %s", (flow_id,))
+        account_id = cur.fetchone()[0]
+    finally:
+        conn.close()
+    update_flow(flow_id, account_id, request.json or {})
+    return jsonify({"ok": True, "flows": get_flows(account_id)})
+
+
+@app.route("/api/client-portal/flows/<int:flow_id>", methods=["DELETE"])
+def cp_delete_flow(flow_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _flow_owner(flow_id) != user_id:
+        return _not_found("Fluxo não encontrado")
+    err = _require_consultores(user_id)
+    if err: return err
+    delete_flow(flow_id)
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/flows/<int:flow_id>/steps", methods=["GET"])
+def cp_get_flow_steps(flow_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _flow_owner(flow_id) != user_id:
+        return _not_found("Fluxo não encontrado")
+    err = _require_consultores(user_id)
+    if err: return err
+    return jsonify({"steps": get_flow_steps(flow_id)})
+
+
+@app.route("/api/client-portal/flows/<int:flow_id>/steps", methods=["PUT"])
+def cp_set_flow_steps(flow_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _flow_owner(flow_id) != user_id:
+        return _not_found("Fluxo não encontrado")
+    err = _require_consultores(user_id)
+    if err: return err
+    steps = (request.json or {}).get("steps") or []
+
+    # Validação tudo-ou-nada antes de persistir — evita salvar um fluxo
+    # quebrado (opção de menu sem destino, etapa sem os campos que seu tipo
+    # exige) que só travaria uma conversa real dias depois. O editor sempre
+    # manda um step_key estável pra cada etapa (novas incluídas — ver
+    # comentário em set_flow_steps), então os destinos de menu já podem ser
+    # conferidos aqui contra o conjunto de chaves da própria submissão.
+    labeled_steps = [s for s in steps if isinstance(s, dict) and (s.get("label") or "").strip()]
+    root_count = sum(1 for s in labeled_steps if s.get("is_root"))
+    if root_count != 1:
+        return jsonify({"ok": False, "message": "O fluxo precisa ter exatamente uma etapa marcada como raiz (a primeira que o paciente vê)."}), 400
+    submitted_keys = {s.get("step_key") for s in labeled_steps if s.get("step_key")}
+    for s in labeled_steps:
+        step_type = s.get("step_type")
+        label = s["label"]
+        if step_type == "menu":
+            for opt in (s.get("options") or []):
+                goto_step = opt.get("goto_step_key")
+                goto_action = opt.get("goto_action")
+                if not goto_step and not goto_action:
+                    return jsonify({"ok": False, "message": f'Uma opção da etapa "{label}" não tem destino definido.'}), 400
+                if goto_step and goto_step not in submitted_keys:
+                    return jsonify({"ok": False, "message": f'A opção "{opt.get("label", "")}" da etapa "{label}" aponta pra uma etapa que não existe mais.'}), 400
+        elif step_type == "collect_input":
+            if not (s.get("variable_name") or "").strip():
+                return jsonify({"ok": False, "message": f'A etapa "{label}" (Pergunta aberta) precisa de um nome de variável.'}), 400
+        elif step_type == "action":
+            if s.get("action_type") not in ("start_booking", "human_handoff", "faq_ai", "end"):
+                return jsonify({"ok": False, "message": f'A etapa "{label}" (Ação especial) precisa de um tipo de ação válido.'}), 400
+
+    return jsonify({"ok": True, "steps": set_flow_steps(flow_id, steps)})
 
 
 @app.route("/api/client-portal/appointments/<int:appointment_id>/checklist", methods=["GET"])
@@ -3469,7 +3821,7 @@ def cp_update_checklist_item(item_id):
             "assunto": result["subject"] or "",
             "clinica": result["account_label"],
         }
-        texto = _render_checklist_message(result["auto_message_template"], ctx)
+        texto = render_message_template(result["auto_message_template"], ctx)
         # Um texto só, renderizado 1x — os 3 checkboxes da etapa só decidem
         # quem recebe essa mesma mensagem. Cada destinatário tem sua própria
         # marca de "já enviado" e falha independente dos outros (ex: número
@@ -4267,8 +4619,14 @@ def webhook_evolution():
                     report_whatsapp_sent_usage(account["id"])
                 except EvolutionError:
                     pass
+            elif get_chat_flow_state(chat_id) and flow_engine.handle_incoming(
+                account, chat_id, contact_id, wa_id, body, selected_id, push_name
+            ):
+                pass  # etapa em andamento de um fluxo configurável (construtor de atendimento)
             elif booking_flow.handle_incoming(account, chat_id, contact_id, wa_id, body, selected_id, push_name):
                 pass  # tratado pelo fluxo de agendamento — não cai na IA nem na medição de recebida-sem-área
+            elif flow_engine.handle_incoming(account, chat_id, contact_id, wa_id, body, selected_id, push_name):
+                pass  # nenhum gatilho de agendamento bateu — um fluxo configurável da conta assumiu
             elif account.get("area_id"):
                 ai_handled = True
                 threading.Thread(
