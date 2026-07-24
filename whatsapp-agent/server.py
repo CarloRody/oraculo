@@ -1219,7 +1219,7 @@ def get_patient_record(contact_id):
         cur.execute(
             """SELECT ct.id, ct.name, ct.push_name, ct.wa_id,
                       r.cpf, r.birth_date, r.address, r.emergency_contact_name, r.emergency_contact_phone,
-                      r.allergies, r.medications_in_use, r.updated_at
+                      r.allergies, r.medications_in_use, r.biological_sex, r.blood_type, r.updated_at
                FROM whatsapp_contacts ct
                LEFT JOIN whatsapp_patient_records r ON r.contact_id = ct.id
                WHERE ct.id = %s""",
@@ -1229,7 +1229,8 @@ def get_patient_record(contact_id):
         if not row:
             return None
         cols = ["contact_id", "name", "push_name", "wa_id", "cpf", "birth_date", "address",
-                "emergency_contact_name", "emergency_contact_phone", "allergies", "medications_in_use", "updated_at"]
+                "emergency_contact_name", "emergency_contact_phone", "allergies", "medications_in_use",
+                "biological_sex", "blood_type", "updated_at"]
         d = dict(zip(cols, row))
         d["birth_date"] = d["birth_date"].isoformat() if d["birth_date"] else None
         d["updated_at"] = d["updated_at"].isoformat() if d["updated_at"] else None
@@ -1251,6 +1252,8 @@ def upsert_patient_record(contact_id, data):
     emergency_contact_phone = (data.get("emergency_contact_phone") or "").strip()[:20] or None
     allergies = (data.get("allergies") or "").strip() or None
     medications_in_use = (data.get("medications_in_use") or "").strip() or None
+    biological_sex = (data.get("biological_sex") or "").strip() or None
+    blood_type = (data.get("blood_type") or "").strip() or None
 
     conn = _conn()
     try:
@@ -1264,8 +1267,8 @@ def upsert_patient_record(contact_id, data):
         cur.execute(
             """INSERT INTO whatsapp_patient_records
                (contact_id, account_id, cpf, birth_date, address, emergency_contact_name,
-                emergency_contact_phone, allergies, medications_in_use)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                emergency_contact_phone, allergies, medications_in_use, biological_sex, blood_type)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (contact_id) DO UPDATE SET
                    cpf = EXCLUDED.cpf,
                    birth_date = EXCLUDED.birth_date,
@@ -1274,9 +1277,11 @@ def upsert_patient_record(contact_id, data):
                    emergency_contact_phone = EXCLUDED.emergency_contact_phone,
                    allergies = EXCLUDED.allergies,
                    medications_in_use = EXCLUDED.medications_in_use,
+                   biological_sex = EXCLUDED.biological_sex,
+                   blood_type = EXCLUDED.blood_type,
                    updated_at = NOW()""",
             (contact_id, account_id, cpf, birth_date, address, emergency_contact_name,
-             emergency_contact_phone, allergies, medications_in_use),
+             emergency_contact_phone, allergies, medications_in_use, biological_sex, blood_type),
         )
         conn.commit()
         return True
@@ -1345,6 +1350,74 @@ def upsert_appointment_consultation(appointment_id, consultant_id, data):
                    updated_at = NOW()""",
             (appointment_id, contact_id, account_id, consultant_id, notes, diagnosis, prescription),
         )
+        conn.commit()
+        return "ok"
+    finally:
+        conn.close()
+
+
+BIOMETRIC_MEASUREMENT_TYPES = (
+    "weight_kg", "height_cm", "blood_pressure_systolic", "blood_pressure_diastolic",
+    "heart_rate_bpm", "glucose_mg_dl", "temperature_c",
+)
+
+
+def get_consultation_biometrics(appointment_id):
+    """Sinais vitais lançados nUMA consulta — dict {tipo: valor}, vazio se
+    nada foi lançado ainda (mesma filosofia de get_appointment_consultation:
+    responde vazio em vez de erro)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT measurement_type, value FROM whatsapp_consultation_biometrics WHERE appointment_id = %s",
+            (appointment_id,),
+        )
+        return {row[0]: float(row[1]) for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+def upsert_consultation_biometrics(appointment_id, consultant_id, data):
+    """Salva os sinais vitais dessa consulta — só grava os tipos presentes em
+    `data` (chave ausente = não mexe); valor vazio/None apaga a medida
+    (permite corrigir um lançamento por engano). Mesmo guard de dono do
+    agendamento que upsert_appointment_consultation."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT a.client_contact_id, c.account_id
+               FROM whatsapp_appointments a JOIN whatsapp_consultants c ON c.id = a.consultant_id
+               WHERE a.id = %s AND a.consultant_id = %s""",
+            (appointment_id, consultant_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return "forbidden"
+        contact_id, account_id = row
+
+        for measurement_type in BIOMETRIC_MEASUREMENT_TYPES:
+            if measurement_type not in data:
+                continue
+            raw = data.get(measurement_type)
+            if raw in (None, ""):
+                cur.execute(
+                    "DELETE FROM whatsapp_consultation_biometrics WHERE appointment_id = %s AND measurement_type = %s",
+                    (appointment_id, measurement_type),
+                )
+                continue
+            try:
+                value = float(raw)
+            except (TypeError, ValueError):
+                continue
+            cur.execute(
+                """INSERT INTO whatsapp_consultation_biometrics
+                   (appointment_id, contact_id, account_id, measurement_type, value)
+                   VALUES (%s, %s, %s, %s, %s)
+                   ON CONFLICT (appointment_id, measurement_type) DO UPDATE SET value = EXCLUDED.value""",
+                (appointment_id, contact_id, account_id, measurement_type, value),
+            )
         conn.commit()
         return "ok"
     finally:
@@ -1863,11 +1936,15 @@ def get_patient_appointments(contact_id):
     try:
         cur = conn.cursor()
         cols_sql = ("a.id, a.consultant_id, con.name, a.scheduled_at, a.duration_minutes, a.status, a.subject, "
-                    "cons.notes, cons.diagnosis, cons.prescription")
+                    "cons.notes, cons.diagnosis, cons.prescription, bio.biometrics")
         cols = ["id", "consultant_id", "consultant_name", "scheduled_at", "duration_minutes", "status", "subject",
-                "notes", "diagnosis", "prescription"]
+                "notes", "diagnosis", "prescription", "biometrics"]
         from_sql = ("FROM whatsapp_appointments a JOIN whatsapp_consultants con ON con.id = a.consultant_id "
-                    "LEFT JOIN whatsapp_appointment_consultations cons ON cons.appointment_id = a.id")
+                    "LEFT JOIN whatsapp_appointment_consultations cons ON cons.appointment_id = a.id "
+                    "LEFT JOIN LATERAL ("
+                    "  SELECT jsonb_object_agg(measurement_type, value) AS biometrics "
+                    "  FROM whatsapp_consultation_biometrics b WHERE b.appointment_id = a.id"
+                    ") bio ON true")
 
         cur.execute(
             f"""SELECT {cols_sql} {from_sql}
@@ -3864,6 +3941,7 @@ def api_portal_get_consultation(token, appointment_id):
     result = get_appointment_consultation(appointment_id, consultant["id"])
     if result is None:
         return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    result["biometrics"] = get_consultation_biometrics(appointment_id)
     return jsonify(result)
 
 
@@ -3875,9 +3953,11 @@ def api_portal_save_consultation(token, appointment_id):
     consultant = get_consultant_by_portal_token(token)
     if not consultant:
         return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
-    result = upsert_appointment_consultation(appointment_id, consultant["id"], request.json or {})
+    data = request.json or {}
+    result = upsert_appointment_consultation(appointment_id, consultant["id"], data)
     if result == "forbidden":
         return jsonify({"ok": False, "message": "Esse agendamento não é seu"}), 403
+    upsert_consultation_biometrics(appointment_id, consultant["id"], data.get("biometrics") or {})
     mark_appointment_completed(appointment_id)
     return jsonify({"ok": True})
 

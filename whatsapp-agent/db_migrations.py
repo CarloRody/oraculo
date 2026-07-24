@@ -624,6 +624,42 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_lgpd_consents_contact ON whatsapp_lgpd_consents(contact_id, requested_at DESC);
     CREATE INDEX IF NOT EXISTS idx_lgpd_consents_account ON whatsapp_lgpd_consents(account_id);
     """,
+
+    # 30 — dados biológicos fixos do paciente (não mudam a cada consulta,
+    # diferente da biometria da migração #31) — junto do cadastro existente
+    # em whatsapp_patient_records (migração #25).
+    """
+    ALTER TABLE whatsapp_patient_records ADD COLUMN IF NOT EXISTS biological_sex VARCHAR(10)
+        CHECK (biological_sex IN ('male', 'female'));
+    ALTER TABLE whatsapp_patient_records ADD COLUMN IF NOT EXISTS blood_type VARCHAR(3)
+        CHECK (blood_type IN ('A+','A-','B+','B-','AB+','AB-','O+','O-'));
+    """,
+
+    # 31 — biometria por consulta (peso, pressão, etc — muda a cada visita).
+    # Tabela tipo+valor (não colunas fixas) pra permitir novos tipos de
+    # medida no futuro sem alterar o schema de novo. UNIQUE(appointment_id,
+    # measurement_type) permite upsert natural por medida. IMC não é
+    # guardado — é calculado a partir de weight_kg/height_cm da mesma
+    # consulta na hora de exibir, pra nunca ficar dessincronizado.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_consultation_biometrics (
+        id SERIAL PRIMARY KEY,
+        appointment_id INTEGER NOT NULL REFERENCES whatsapp_appointments(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        measurement_type VARCHAR(30) NOT NULL CHECK (measurement_type IN (
+            'weight_kg', 'height_cm', 'blood_pressure_systolic', 'blood_pressure_diastolic',
+            'heart_rate_bpm', 'glucose_mg_dl', 'temperature_c'
+        )),
+        value NUMERIC(6,2) NOT NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        UNIQUE (appointment_id, measurement_type)
+    );
+    CREATE INDEX IF NOT EXISTS idx_consultation_biometrics_contact
+        ON whatsapp_consultation_biometrics(contact_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_consultation_biometrics_appointment
+        ON whatsapp_consultation_biometrics(appointment_id);
+    """,
 ]
 
 
