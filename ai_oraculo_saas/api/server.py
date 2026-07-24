@@ -2358,7 +2358,7 @@ def admin_list_plans():
         cur.execute(
             """SELECT p.id, p.name, p.description, p.model_id, m.name,
                       p.charge_unrelated_received_messages, p.price_per_unrelated_message, p.booking_mode,
-                      p.whatsapp_context_tokens, p.pesquisa_context_tokens
+                      p.whatsapp_context_tokens, p.pesquisa_context_tokens, p.consultores_mode
                FROM plans p LEFT JOIN ai_models m ON m.id = p.model_id ORDER BY p.name"""
         )
         plans = [{
@@ -2367,7 +2367,8 @@ def admin_list_plans():
             "price_per_unrelated_message": float(r[6]) if r[6] is not None else None,
             "booking_mode": r[7],
             "whatsapp_context_tokens": r[8],
-            "pesquisa_context_tokens": r[9]
+            "pesquisa_context_tokens": r[9],
+            "consultores_mode": r[10]
         } for r in cur.fetchall()]
 
         for plan in plans:
@@ -2432,6 +2433,12 @@ def admin_create_plan():
     booking_mode = data.get('booking_mode') or 'none'
     if booking_mode not in ('none', 'consultores', 'crm_medico'):
         return jsonify({"error": "booking_mode inválido"}), 400
+    # consultores_mode só importa quando booking_mode == 'consultores', mas
+    # a coluna tem um default NOT NULL — sempre grava um valor válido, nunca
+    # NULL, mesmo pros outros modos (fica sem efeito ali).
+    consultores_mode = data.get('consultores_mode') or 'agendamento'
+    if consultores_mode not in ('agendamento', 'fluxo'):
+        return jsonify({"error": "consultores_mode inválido"}), 400
     whatsapp_context_tokens = data.get('whatsapp_context_tokens')
     pesquisa_context_tokens = data.get('pesquisa_context_tokens')
 
@@ -2441,9 +2448,9 @@ def admin_create_plan():
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, whatsapp_context_tokens, pesquisa_context_tokens)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-            (name, description, model_id, charge_unrelated, unrelated_price, booking_mode, whatsapp_context_tokens, pesquisa_context_tokens)
+            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (name, description, model_id, charge_unrelated, unrelated_price, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens)
         )
         plan_id = cur.fetchone()[0]
         _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
@@ -2491,6 +2498,12 @@ def admin_update_plan(plan_id):
                 conn.close()
                 return jsonify({"error": "booking_mode inválido"}), 400
             fields['booking_mode'] = booking_mode
+        if 'consultores_mode' in data:
+            consultores_mode = data.get('consultores_mode') or 'agendamento'
+            if consultores_mode not in ('agendamento', 'fluxo'):
+                conn.close()
+                return jsonify({"error": "consultores_mode inválido"}), 400
+            fields['consultores_mode'] = consultores_mode
         if 'whatsapp_context_tokens' in data:
             fields['whatsapp_context_tokens'] = data.get('whatsapp_context_tokens')
         if 'pesquisa_context_tokens' in data:

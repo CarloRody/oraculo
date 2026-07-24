@@ -1635,6 +1635,29 @@ def plan_booking_mode(user_id):
         conn.close()
 
 
+def consultores_automation_mode(user_id):
+    """'agendamento' | 'fluxo' — só importa quando plan_booking_mode(user_id)
+    == 'consultores'; ignorado nos outros modos. Os dois motores de resposta
+    automática (booking_flow x flow_engine) NUNCA rodam juntos pra mesma
+    conta — ver migração #21 em ai_oraculo_saas/migrations.py, motivada pelo
+    incidente de 2026-07-24 (duas contas em Consultores responderam uma à
+    outra num ciclo sem fim). Default 'agendamento' se a coluna vier vazia
+    (conta antiga, ou sem cliente vinculado)."""
+    if not user_id:
+        return "agendamento"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT p.consultores_mode FROM users u JOIN plans p ON p.id = u.plan_id WHERE u.id = %s",
+            (user_id,),
+        )
+        row = cur.fetchone()
+        return row[0] if row and row[0] else "agendamento"
+    finally:
+        conn.close()
+
+
 CONSULTANT_COLUMNS = [
     "id", "account_id", "contact_id", "name", "context", "slot_duration_minutes",
     "weekly_availability", "reminder_hours_before", "status", "confirmed_at", "created_at",
@@ -3101,9 +3124,13 @@ def _require_crm_medico(user_id):
 
 def _require_consultores(user_id):
     """Gate das rotas exclusivas do construtor de fluxo configurável —
-    mesmo formato de _require_crm_medico, mas pro modo 'consultores'."""
+    mesmo formato de _require_crm_medico, mas pro modo 'consultores'
+    especificamente configurado como 'fluxo' (não 'agendamento' — os dois
+    motores automáticos são mutuamente exclusivos, ver consultores_automation_mode)."""
     if plan_booking_mode(user_id) != "consultores":
         return jsonify({"ok": False, "message": "O modo Consultores não está ativado no plano desta conta."}), 403
+    if consultores_automation_mode(user_id) != "fluxo":
+        return jsonify({"ok": False, "message": "Esta conta está configurada para agendamento automático fixo, não para o construtor de fluxo. Fale com o administrador do Oráculo pra mudar."}), 403
     return None
 
 
@@ -3272,7 +3299,7 @@ def cp_booking_mode():
     mostrar/esconder telas de acordo — sem precisar duplicar essa lógica."""
     user_id, err = _require_client()
     if err: return err
-    return jsonify({"booking_mode": plan_booking_mode(user_id)})
+    return jsonify({"booking_mode": plan_booking_mode(user_id), "consultores_mode": consultores_automation_mode(user_id)})
 
 
 @app.route("/api/client-portal/accounts/<int:account_id>/weekly-summary-schedule", methods=["PUT"])
@@ -4587,6 +4614,14 @@ def webhook_evolution():
             wants_portal_link = bool(body) and "minha agenda" in body.strip().lower()
             active_consultant = get_active_consultant_by_wa_id(account["id"], wa_id) if wants_portal_link else None
 
+            # Os dois motores de resposta automática do modo Consultores
+            # (agendamento fixo x construtor de fluxo configurável) são
+            # mutuamente exclusivos — nunca escutam a mesma conversa ao
+            # mesmo tempo (ver consultores_automation_mode). Isso evita o
+            # incidente de 2026-07-24, em que duas contas em Consultores
+            # ficaram respondendo uma à outra num ciclo sem fim.
+            automation_mode = consultores_automation_mode(account.get("user_id"))
+
             ai_handled = False
             if pending_consultant_id and answer is not None:
                 new_status = "active" if answer else "declined"
@@ -4619,14 +4654,14 @@ def webhook_evolution():
                     report_whatsapp_sent_usage(account["id"])
                 except EvolutionError:
                     pass
-            elif get_chat_flow_state(chat_id) and flow_engine.handle_incoming(
+            elif automation_mode == "fluxo" and flow_engine.handle_incoming(
                 account, chat_id, contact_id, wa_id, body, selected_id, push_name
             ):
-                pass  # etapa em andamento de um fluxo configurável (construtor de atendimento)
-            elif booking_flow.handle_incoming(account, chat_id, contact_id, wa_id, body, selected_id, push_name):
-                pass  # tratado pelo fluxo de agendamento — não cai na IA nem na medição de recebida-sem-área
-            elif flow_engine.handle_incoming(account, chat_id, contact_id, wa_id, body, selected_id, push_name):
-                pass  # nenhum gatilho de agendamento bateu — um fluxo configurável da conta assumiu
+                pass  # construtor de fluxo configurável assumiu (conta configurada nesse modo)
+            elif automation_mode == "agendamento" and booking_flow.handle_incoming(
+                account, chat_id, contact_id, wa_id, body, selected_id, push_name
+            ):
+                pass  # motor de agendamento fixo assumiu (conta configurada nesse modo)
             elif account.get("area_id"):
                 ai_handled = True
                 threading.Thread(

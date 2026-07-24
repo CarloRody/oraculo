@@ -1858,7 +1858,7 @@ async function initChecklistTabVisibility() {
         const res = await authFetch(API + '/api/client-portal/booking-mode');
         const data = await res.json();
         document.getElementById('checklistTabBtn').style.display = data.booking_mode === 'crm_medico' ? 'inline-block' : 'none';
-        document.getElementById('flowsTabBtn').style.display = data.booking_mode === 'consultores' ? 'inline-block' : 'none';
+        document.getElementById('flowsTabBtn').style.display = (data.booking_mode === 'consultores' && data.consultores_mode === 'fluxo') ? 'inline-block' : 'none';
     } catch (e) { /* silencioso — aba só não aparece */ }
 }
 

@@ -373,6 +373,20 @@ MIGRATIONS = [
         CHECK (booking_mode IN ('none', 'consultores', 'crm_medico'));
     UPDATE plans SET booking_mode = 'consultores' WHERE agenda_enabled = TRUE AND booking_mode = 'none';
     """,
+
+    # 21 — dentro do modo Consultores, dois motores de resposta automática
+    # (agendamento fixo x construtor de fluxo configurável) NÃO podem rodar
+    # juntos pra mesma conta — incidente de 2026-07-24: duas contas em
+    # Consultores acabaram respondendo uma à outra num ciclo sem fim porque
+    # o construtor de fluxo responde a qualquer mensagem não reconhecida,
+    # e nada impedia os dois motores de escutar a mesma conversa ao mesmo
+    # tempo. Default 'agendamento' preserva o comportamento de sempre pra
+    # todo plano Consultores já existente — só passa a usar o construtor de
+    # fluxo quem for migrado manualmente pra 'fluxo' no admin.
+    """
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS consultores_mode VARCHAR(20) NOT NULL DEFAULT 'agendamento'
+        CHECK (consultores_mode IN ('agendamento', 'fluxo'));
+    """,
 ]
 
 
