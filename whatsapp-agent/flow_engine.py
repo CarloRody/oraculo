@@ -335,7 +335,8 @@ def _run_action(account, chat_id, wa_id, push_name, vars_, action_type, message_
         server.set_chat_flow_state(chat_id, None)
         subject = "; ".join(str(v) for v in vars_.values()) if vars_ else None
         if not booking_flow.start_from_external(account, chat_id, wa_id, subject=subject):
-            _send_text(account, phone, f"Não há {server.get_nomenclature(account.get('user_id'))['consultant']['singular'].lower()}es disponíveis no momento. Tente de novo mais tarde.")
+            term_plural = server.get_nomenclature(account.get('user_id'))['consultant']['plural'].lower()
+            _send_text(account, phone, f"Não há {term_plural} disponíveis no momento. Tente de novo mais tarde.")
         return
 
     if action_type == "human_handoff":

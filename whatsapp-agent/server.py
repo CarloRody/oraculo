@@ -220,10 +220,22 @@ def get_clients():
 # ---------------------------------------------------------------------------
 
 DEFAULT_NOMENCLATURE = {"consultant": {"singular": "Consultor", "plural": "Consultores"}}
+DEFAULT_NOMENCLATURE_CRM_MEDICO = {"consultant": {"singular": "Médico", "plural": "Médicos"}}
 
 
-def _merge_nomenclature(raw):
-    merged = {k: dict(v) for k, v in DEFAULT_NOMENCLATURE.items()}
+def _default_nomenclature_for(user_id):
+    """Padrão usado quando o cliente nunca configurou a nomenclatura própria
+    — 'Médico'/'Médicos' pra contas em modo CRM Médico (é o termo que toda
+    tela desse modo já usava fixo até agora — trocar o padrão pra
+    'Consultor' seria uma regressão pra quem nunca mexeu nisso), 'Consultor'/
+    'Consultores' pros demais modos (incluindo sem plano vinculado)."""
+    if plan_booking_mode(user_id) == "crm_medico":
+        return DEFAULT_NOMENCLATURE_CRM_MEDICO
+    return DEFAULT_NOMENCLATURE
+
+
+def _merge_nomenclature(raw, base=None):
+    merged = {k: dict(v) for k, v in (base or DEFAULT_NOMENCLATURE).items()}
     if raw:
         for key, val in raw.items():
             if key in merged and isinstance(val, dict):
@@ -237,12 +249,13 @@ def _merge_nomenclature(raw):
 def get_nomenclature(user_id):
     if not user_id:
         return dict(DEFAULT_NOMENCLATURE)
+    base = _default_nomenclature_for(user_id)
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute("SELECT nomenclature FROM whatsapp_client_settings WHERE user_id = %s", (user_id,))
         row = cur.fetchone()
-        return _merge_nomenclature(row[0] if row else None)
+        return _merge_nomenclature(row[0] if row else None, base)
     finally:
         conn.close()
 
@@ -274,7 +287,7 @@ def set_nomenclature(user_id, data):
         conn.commit()
     finally:
         conn.close()
-    return _merge_nomenclature(cleaned)
+    return _merge_nomenclature(cleaned, _default_nomenclature_for(user_id))
 
 
 def create_account(label, connection_type, user_id=None):
@@ -1016,14 +1029,18 @@ def _enqueue_patient_media(account, contact_id, message_id, message_key, media, 
                       daemon=True).start()
 
 
-def _lgpd_consent_text(account_label):
+def _lgpd_consent_text(account_label, team_term):
     """Termo de consentimento LGPD mandado antes de capturar o 1º documento
     de um contato. O texto exato (já com o nome da clínica) é gravado em
     whatsapp_lgpd_consents.consent_text a cada pedido — mesmo que este
     modelo mude no futuro, o que foi prometido pra cada paciente fica
     provado no banco. Texto puro (sem botão): WhatsApp Web/Desktop não
     renderiza bem os formatos de botão nativo da Evolution API, mesmo
-    motivo já documentado em _send_consultant_invite_message."""
+    motivo já documentado em _send_consultant_invite_message.
+
+    `team_term` é o plural da nomenclatura do cliente (ex: "médica",
+    "nutricionistas") — antes vinha fixo "equipe médica", que não fazia
+    sentido pra clientes com outro termo configurado."""
     return (
         f"Olá! Este é um comunicado automático de *{account_label}*, sobre o envio de documentos, "
         f"fotos e exames pelo WhatsApp.\n\n"
@@ -1033,7 +1050,7 @@ def _lgpd_consent_text(account_label):
         f"- Guardamos as fotos/documentos (exames, receitas, laudos etc.) que você enviar, vinculados "
         f"ao seu cadastro como paciente desta clínica.\n"
         f"- Usamos essas informações exclusivamente para o seu atendimento e acompanhamento clínico "
-        f"pela equipe médica.\n"
+        f"pela equipe de {team_term}.\n"
         f"- Não compartilhamos, vendemos ou usamos seus dados pra qualquer outra finalidade.\n"
         f"- O acesso é restrito à equipe autorizada da clínica.\n\n"
         f"🔒 Seus direitos:\n"
@@ -1063,7 +1080,8 @@ def request_lgpd_consent(account, contact_id, wa_id, raw_payload):
     thread separada (chamada do webhook), mesmo espírito de
     _download_patient_media: não pode travar a resposta ao webhook."""
     account_label = account.get("label") or "nossa clínica"
-    text = _lgpd_consent_text(account_label)
+    team_term = get_nomenclature(account.get("user_id"))["consultant"]["plural"].lower()
+    text = _lgpd_consent_text(account_label, team_term)
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -1511,11 +1529,15 @@ def upsert_consultation_biometrics(appointment_id, consultant_id, data):
         conn.close()
 
 
-def get_evolution_notes(contact_id):
+def get_evolution_notes(contact_id, professional_term="Médico"):
     """Timeline única de evolução do tratamento — mistura notas da
     secretária e do médico, mais recente primeiro. author_label calculado
     aqui (não fica só no dado bruto) porque a UI dos dois portais só
-    precisa exibir, nunca precisa saber author_type pra decidir nada."""
+    precisa exibir, nunca precisa saber author_type pra decidir nada.
+
+    `professional_term` é o singular da nomenclatura do cliente — usado só
+    quando a nota não tem consultor vinculado (fallback antes era fixo
+    "Médico", chamador agora passa o termo certo)."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -1532,7 +1554,7 @@ def get_evolution_notes(contact_id):
         for r in cur.fetchall():
             d = dict(zip(cols, r))
             d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
-            d["author_label"] = "Secretária" if d["author_type"] == "secretary" else (d["consultant_name"] or "Médico")
+            d["author_label"] = "Secretária" if d["author_type"] == "secretary" else (d["consultant_name"] or professional_term)
             rows.append(d)
         return rows
     finally:
@@ -3084,7 +3106,8 @@ def api_create_consultant(account_id):
             int(data.get("reminder_hours_before") or 2),
         )
     except psycopg2.errors.UniqueViolation:
-        return jsonify({"ok": False, "message": "Esse contato já é consultor desta conta"}), 409
+        term = get_nomenclature(account.get("user_id"))["consultant"]["singular"].lower()
+        return jsonify({"ok": False, "message": f"Esse contato já é {term} desta conta"}), 409
 
     threading.Thread(target=_send_consultant_confirmation, args=(consultant_id,), daemon=True).start()
     return jsonify({"ok": True, "id": consultant_id}), 201
@@ -3092,14 +3115,16 @@ def api_create_consultant(account_id):
 
 @app.route("/api/whatsapp/consultants/<int:consultant_id>", methods=["PATCH"])
 def api_update_consultant(consultant_id):
-    if not get_consultant(consultant_id):
+    consultant = get_consultant(consultant_id)
+    if not consultant:
         return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
     data = request.json or {}
     allowed = ("name", "context", "slot_duration_minutes", "weekly_availability", "reminder_hours_before", "status", "self_availability_enabled",
                "cpf", "crm", "address", "alt_phone", "specialties")
     fields = {k: v for k, v in data.items() if k in allowed}
     if "status" in fields and fields["status"] not in ("active", "inactive"):
-        return jsonify({"ok": False, "message": "status só pode ser alternado entre active/inactive por aqui (confirmação inicial é feita pelo próprio consultor no WhatsApp)"}), 400
+        term = _consultant_term(consultant["account_id"]).lower()
+        return jsonify({"ok": False, "message": f"status só pode ser alternado entre active/inactive por aqui (confirmação inicial é feita pelo próprio {term} no WhatsApp)"}), 400
     if not fields:
         return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
     update_consultant(consultant_id, fields)
@@ -3108,7 +3133,8 @@ def api_update_consultant(consultant_id):
 
 @app.route("/api/whatsapp/consultants/<int:consultant_id>", methods=["DELETE"])
 def api_delete_consultant(consultant_id):
-    if not get_consultant(consultant_id):
+    consultant = get_consultant(consultant_id)
+    if not consultant:
         return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
     delete_consultant(consultant_id)
     return jsonify({"ok": True})
@@ -3122,7 +3148,8 @@ def api_resend_portal_link(consultant_id):
     if not consultant:
         return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
     if consultant["status"] != "active":
-        return jsonify({"ok": False, "message": "Só é possível reenviar o link de um consultor ativo"}), 400
+        term = _consultant_term(consultant["account_id"]).lower()
+        return jsonify({"ok": False, "message": f"Só é possível reenviar o link de um {term} ativo"}), 400
     token = regenerate_portal_token(consultant_id)
     try:
         evolution.send_text(consultant["wa_session_name"], _phone_from_wa_id(consultant["wa_id"]),
@@ -3142,7 +3169,8 @@ def api_resend_consultant_invite(consultant_id):
     if not consultant:
         return jsonify({"ok": False, "message": "Consultor não encontrado"}), 404
     if consultant["status"] != "pending_confirmation":
-        return jsonify({"ok": False, "message": "Só é possível reenviar convite para consultor aguardando confirmação"}), 400
+        term = _consultant_term(consultant["account_id"]).lower()
+        return jsonify({"ok": False, "message": f"Só é possível reenviar convite para {term} aguardando confirmação"}), 400
     try:
         _send_consultant_invite_message(consultant)
     except EvolutionError as e:
@@ -3228,6 +3256,23 @@ def _require_consultores(user_id):
 
 def _not_found(msg="Não encontrado"):
     return jsonify({"ok": False, "message": msg}), 404
+
+
+def _consultant_not_found(user_id):
+    """Mesma resposta 404 de "Consultor não encontrado", mas com o termo da
+    nomenclatura do cliente (ex: "Médico") — usado nos vários pontos que
+    checam dono do consultor antes de delegar pra rota admin."""
+    term = get_nomenclature(user_id)["consultant"]["singular"]
+    return _not_found(f"{term} não encontrado")
+
+
+def _consultant_term(account_id, plural=False):
+    """Nomenclatura a partir do account_id de um consultor — usado nas rotas
+    admin (/api/whatsapp/consultants/...), que não têm user_id direto na
+    URL como as rotas client-portal têm."""
+    account = get_account(account_id)
+    form = "plural" if plural else "singular"
+    return get_nomenclature(account.get("user_id") if account else None)["consultant"][form]
 
 
 def _account_owner(account_id):
@@ -3614,7 +3659,7 @@ def cp_free_slots(consultant_id):
     user_id, err = _require_client()
     if err: return err
     if _consultant_owner(consultant_id) != user_id:
-        return _not_found("Consultor não encontrado")
+        return _consultant_not_found(user_id)
     consultant = get_consultant(consultant_id)
     slots = booking_flow.compute_free_slots(consultant)
     return jsonify({"slots": [s.isoformat() for s in slots]})
@@ -3628,7 +3673,7 @@ def cp_create_appointment(consultant_id):
     user_id, err = _require_client()
     if err: return err
     if _consultant_owner(consultant_id) != user_id:
-        return _not_found("Consultor não encontrado")
+        return _consultant_not_found(user_id)
     err = _require_crm_medico(user_id)
     if err: return err
     consultant = get_consultant(consultant_id)
@@ -3640,7 +3685,7 @@ def cp_update_consultant(consultant_id):
     user_id, err = _require_client()
     if err: return err
     if _consultant_owner(consultant_id) != user_id:
-        return _not_found("Consultor não encontrado")
+        return _consultant_not_found(user_id)
     return api_update_consultant(consultant_id)
 
 
@@ -3649,7 +3694,7 @@ def cp_delete_consultant(consultant_id):
     user_id, err = _require_client()
     if err: return err
     if _consultant_owner(consultant_id) != user_id:
-        return _not_found("Consultor não encontrado")
+        return _consultant_not_found(user_id)
     return api_delete_consultant(consultant_id)
 
 
@@ -3658,7 +3703,7 @@ def cp_resend_portal_link(consultant_id):
     user_id, err = _require_client()
     if err: return err
     if _consultant_owner(consultant_id) != user_id:
-        return _not_found("Consultor não encontrado")
+        return _consultant_not_found(user_id)
     return api_resend_portal_link(consultant_id)
 
 
@@ -3667,7 +3712,7 @@ def cp_resend_consultant_invite(consultant_id):
     user_id, err = _require_client()
     if err: return err
     if _consultant_owner(consultant_id) != user_id:
-        return _not_found("Consultor não encontrado")
+        return _consultant_not_found(user_id)
     return api_resend_consultant_invite(consultant_id)
 
 
@@ -4112,7 +4157,8 @@ def cp_list_evolution_notes(contact_id):
         return _not_found("Paciente não encontrado")
     err = _require_crm_medico(user_id)
     if err: return err
-    return jsonify({"notes": get_evolution_notes(contact_id)})
+    term = get_nomenclature(user_id)["consultant"]["singular"]
+    return jsonify({"notes": get_evolution_notes(contact_id, term)})
 
 
 @app.route("/api/client-portal/contacts/<int:contact_id>/evolution-notes", methods=["POST"])
@@ -4325,7 +4371,9 @@ def api_portal_list_evolution_notes(token, contact_id):
         return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
     if not _consultant_sees_contact(consultant["id"], contact_id):
         return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
-    return jsonify({"notes": get_evolution_notes(contact_id)})
+    account = get_account(consultant["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    return jsonify({"notes": get_evolution_notes(contact_id, term)})
 
 
 @app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/evolution-notes", methods=["POST"])

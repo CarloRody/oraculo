@@ -218,8 +218,10 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
     client_phone = _phone(client_wa_id)
     subject_line = f"\nAssunto: {subject}" if subject else ""
     if requires_confirmation:
+        acct = server.get_account(consultant["account_id"])
+        term = server.get_nomenclature(acct.get("user_id") if acct else None)["consultant"]["singular"].lower()
         client_msg = (f"Recebi seu pedido de agendamento com {consultant['name']} em {when}!{subject_line}\n"
-                       f"Assim que o profissional confirmar, eu te aviso por aqui.")
+                       f"Assim que o {term} confirmar, eu te aviso por aqui.")
     else:
         client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
     try:
@@ -319,9 +321,11 @@ def confirm_appointment_and_notify(appointment_id, consultant_id):
         conn.close()
     import server  # tardio — ver docstring do módulo
     when = appt["scheduled_at"].astimezone(LOCAL_TZ).strftime("%d/%m às %H:%M")
+    acct = server.get_account(appt["account_id"])
+    term = server.get_nomenclature(acct.get("user_id") if acct else None)["consultant"]["singular"].lower()
     try:
         evolution.send_text(appt["wa_session_name"], _phone(appt["client_wa_id"]),
-                             f"Seu agendamento com {appt['consultant_name']} em {when} foi confirmado pelo profissional! ✅")
+                             f"Seu agendamento com {appt['consultant_name']} em {when} foi confirmado pelo {term}! ✅")
         server.report_whatsapp_sent_usage(appt["account_id"])
     except EvolutionError:
         pass

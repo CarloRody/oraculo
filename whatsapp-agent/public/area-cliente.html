@@ -397,9 +397,9 @@
         <div class="form-group">
             <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-weight:normal;">
                 <input type="checkbox" id="consultantSelfAvailability" checked>
-                Consultor pode editar a própria disponibilidade
+                <span id="consultantSelfAvailabilityLabel">Consultor pode editar a própria disponibilidade</span>
             </label>
-            <span style="font-size:0.78rem; color:#64748b;">Se desmarcar, o card "Minha disponibilidade" some da página do consultor — só você define os horários por aqui.</span>
+            <span id="consultantSelfAvailabilityHint" style="font-size:0.78rem; color:#64748b;">Se desmarcar, o card "Minha disponibilidade" some da página do consultor — só você define os horários por aqui.</span>
         </div>
         <div class="form-group">
             <label>Disponibilidade semanal <span style="font-weight:normal; color:#64748b;">(horário local, um período por dia)</span></label>
@@ -877,6 +877,8 @@ function applyNomenclatureLabels() {
     setText('addConsultantBtnChat', `+ ${term()}`);
     setText('consultantsHeading', term(true));
     setText('consultantContextHint', `(opcional — mostrado ao cliente na lista de ${term(true).toLowerCase()})`);
+    setText('consultantSelfAvailabilityLabel', `${term()} pode editar a própria disponibilidade`);
+    setText('consultantSelfAvailabilityHint', `Se desmarcar, o card "Minha disponibilidade" some da página do ${term().toLowerCase()} — só você define os horários por aqui.`);
     setValue('nomenclatureSingularInput', term());
     setValue('nomenclaturePluralInput', term(true));
 }
@@ -1058,7 +1060,7 @@ async function resendConsultantInvite(id) {
 }
 
 function appointmentStatusLabel(status) {
-    return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu', pending_consultant: '⏳ Aguardando consultor' }[status] || status;
+    return { confirmed: 'Confirmado', cancelled: 'Cancelado', completed: 'Concluído', no_show: 'Não compareceu', pending_consultant: `⏳ Aguardando ${term().toLowerCase()}` }[status] || status;
 }
 
 async function loadAppointments() {
@@ -1284,7 +1286,7 @@ function renderTemplateEditor() {
             </div>
             <div class="form-group" style="margin-top:0.6rem; margin-bottom:0; display:flex; gap:1rem; flex-wrap:wrap;">
                 <label><input type="checkbox" ${s.notify_patient ? 'checked' : ''} onchange="templateSteps[${i}].notify_patient = this.checked"> Avisar paciente</label>
-                <label><input type="checkbox" ${s.notify_consultant ? 'checked' : ''} onchange="templateSteps[${i}].notify_consultant = this.checked"> Avisar médico</label>
+                <label><input type="checkbox" ${s.notify_consultant ? 'checked' : ''} onchange="templateSteps[${i}].notify_consultant = this.checked"> Avisar ${term().toLowerCase()}</label>
                 <label><input type="checkbox" ${s.notify_secretary ? 'checked' : ''} onchange="templateSteps[${i}].notify_secretary = this.checked"> Avisar secretária</label>
             </div>
             <div class="form-group" style="margin-top:0.4rem; margin-bottom:0;">
