@@ -3835,6 +3835,18 @@ def api_portal_get_patient_record(token, contact_id):
     return jsonify(record)
 
 
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/patient-record", methods=["PATCH"])
+def api_portal_update_patient_record(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    if not upsert_patient_record(contact_id, request.json or {}):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    return jsonify(get_patient_record(contact_id))
+
+
 @app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/evolution-notes", methods=["GET"])
 def api_portal_list_evolution_notes(token, contact_id):
     consultant = get_consultant_by_portal_token(token)

@@ -589,7 +589,7 @@ async function loadFichaPatient() {
             api(`/contacts/${contactId}/evolution-notes`),
             api(`/contacts/${contactId}/documents`),
         ]);
-        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, { editableEvolution: true, contactId: Number(contactId) });
+        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true });
     } catch (e) {
         box.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
     }
@@ -711,6 +711,77 @@ function bioTrendHtml(biometrics, prevBiometrics) {
     return rows.length ? `<div style="font-size:0.8rem; color:#94a3b8; margin-top:0.15rem;">${rows.join('')}</div>` : '';
 }
 
+const BLOOD_TYPES = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'];
+
+// Formulário editável do cadastro — usa data-field/data-contact-id em vez de
+// ids fixos porque esse bloco é renderizado em 2 lugares da página ao mesmo
+// tempo (atendimento e aba Pacientes), e ids duplicados quebrariam um dos
+// dois. savePatientRecord() lê os campos a partir do próprio form clicado.
+function patientRecordFormHtml(record, contactId) {
+    const sex = record.biological_sex || '';
+    const blood = record.blood_type || '';
+    return `
+        <div class="record-form" data-contact-id="${contactId}">
+            <div class="form-group"><label>Nome completo</label><input class="form-input" data-field="name" value="${esc(record.name || '')}"></div>
+            <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <div style="flex:1 1 160px;"><label>CPF</label><input class="form-input" data-field="cpf" placeholder="000.000.000-00" value="${esc(record.cpf || '')}"></div>
+                <div style="flex:1 1 160px;">
+                    <label>Nascimento</label>
+                    <input type="date" class="form-input" data-field="birth_date" value="${record.birth_date || ''}" oninput="updateRecordAge(this)">
+                    <div class="record-age" style="font-size:0.75rem; color:#64748b; margin-top:0.2rem;">${record.birth_date ? calcAge(record.birth_date) + ' anos' : ''}</div>
+                </div>
+            </div>
+            <div class="form-group"><label>Endereço</label><textarea class="form-input" data-field="address" rows="2">${esc(record.address || '')}</textarea></div>
+            <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <div style="flex:1 1 200px;"><label>Contato de emergência — nome</label><input class="form-input" data-field="emergency_contact_name" value="${esc(record.emergency_contact_name || '')}"></div>
+                <div style="flex:1 1 160px;"><label>Contato de emergência — telefone</label><input class="form-input" data-field="emergency_contact_phone" value="${esc(record.emergency_contact_phone || '')}"></div>
+            </div>
+            <div class="form-group"><label>Alergias a medicamentos</label><textarea class="form-input" data-field="allergies" rows="2">${esc(record.allergies || '')}</textarea></div>
+            <div class="form-group"><label>Medicações em uso hoje</label><textarea class="form-input" data-field="medications_in_use" rows="2">${esc(record.medications_in_use || '')}</textarea></div>
+            <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                <div style="flex:1 1 140px;">
+                    <label>Sexo biológico</label>
+                    <select class="form-input" data-field="biological_sex">
+                        <option value="" ${sex === '' ? 'selected' : ''}>—</option>
+                        <option value="male" ${sex === 'male' ? 'selected' : ''}>Masculino</option>
+                        <option value="female" ${sex === 'female' ? 'selected' : ''}>Feminino</option>
+                    </select>
+                </div>
+                <div style="flex:1 1 140px;">
+                    <label>Tipo sanguíneo</label>
+                    <select class="form-input" data-field="blood_type">
+                        <option value="" ${blood === '' ? 'selected' : ''}>—</option>
+                        ${BLOOD_TYPES.map(bt => `<option value="${bt}" ${blood === bt ? 'selected' : ''}>${bt}</option>`).join('')}
+                    </select>
+                </div>
+            </div>
+            <button class="btn btn-sm" onclick="savePatientRecord(this)">Salvar cadastro</button>
+        </div>
+    `;
+}
+
+function updateRecordAge(input) {
+    const ageEl = input.parentElement.querySelector('.record-age');
+    if (!ageEl) return;
+    const age = calcAge(input.value);
+    ageEl.textContent = age != null ? age + ' anos' : '';
+}
+
+async function savePatientRecord(btn) {
+    const form = btn.closest('.record-form');
+    const contactId = form.dataset.contactId;
+    const payload = {};
+    form.querySelectorAll('[data-field]').forEach(el => { payload[el.dataset.field] = el.value; });
+    try {
+        await api(`/contacts/${contactId}/patient-record`, { method: 'PATCH', body: JSON.stringify(payload) });
+        alert('Cadastro salvo!');
+        loadFichaPatients();
+        loadAppointments();
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
 // Linha de agendamento completa (status, assunto, notas/diagnóstico/
 // prescrição da consulta, tendência de sinais vitais) — mesmo conteúdo que
 // a ficha do paciente mostra no painel da secretária, só que embutido aqui
@@ -732,13 +803,9 @@ function apptRowFull(a, prev) {
 // partir dos 4 endpoints da ficha do paciente — reaproveitado tanto durante
 // o atendimento (evolução só leitura, exclui a consulta em andamento das
 // listas) quanto na aba Pacientes (evolução com campo de nova nota).
-function renderPatientFullBox(record, apptData, evoData, docsData, opts) {
+function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts) {
     opts = opts || {};
     const excludeApptId = opts.excludeApptId;
-    const sexLabel = record.biological_sex === 'male' ? 'Masculino' : record.biological_sex === 'female' ? 'Feminino' : '—';
-    const birthHtml = record.birth_date
-        ? esc(record.birth_date.split('-').reverse().join('/')) + ` (${calcAge(record.birth_date)} anos)`
-        : '—';
 
     const pending = (apptData.pending || []).filter(a => a.id !== excludeApptId);
     const upcoming = (apptData.upcoming || []).filter(a => a.id !== excludeApptId);
@@ -764,7 +831,7 @@ function renderPatientFullBox(record, apptData, evoData, docsData, opts) {
     const evoHtml = opts.editableEvolution
         ? `
             <textarea class="form-input" id="fichaNewNote" rows="3" placeholder="Registrar evolução..."></textarea>
-            <button class="btn btn-sm" style="margin-top:0.5rem;" onclick="addFichaEvolutionNote(${opts.contactId})">Adicionar nota</button>
+            <button class="btn btn-sm" style="margin-top:0.5rem;" onclick="addFichaEvolutionNote(${contactId})">Adicionar nota</button>
             <div style="margin-top:0.6rem;">${evoListHtml}</div>
         `
         : evoListHtml;
@@ -786,15 +853,10 @@ function renderPatientFullBox(record, apptData, evoData, docsData, opts) {
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
 
     return `
-        <div style="font-size:0.85rem; line-height:1.6; background:#1a1a2e; border-radius:8px; padding:0.6rem 0.8rem; margin-bottom:0.75rem;">
-            <div><strong>CPF:</strong> ${esc(record.cpf || '—')}</div>
-            <div><strong>Nascimento:</strong> ${birthHtml}</div>
-            <div><strong>Endereço:</strong> ${esc(record.address || '—')}</div>
-            <div><strong>Contato de emergência:</strong> ${esc(record.emergency_contact_name || '—')}${record.emergency_contact_phone ? ' (' + esc(record.emergency_contact_phone) + ')' : ''}</div>
-            <div><strong>Sexo biológico:</strong> ${sexLabel} · <strong>Tipo sanguíneo:</strong> ${esc(record.blood_type || '—')}</div>
-            <div style="margin-top:0.4rem;"><strong>⚠️ Alergias:</strong> ${esc(record.allergies || '—')}</div>
-            <div><strong>Medicações em uso:</strong> ${esc(record.medications_in_use || '—')}</div>
-        </div>
+        <details open style="margin-bottom:0.6rem;">
+            <summary>Cadastro</summary>
+            <div style="margin-top:0.4rem;">${patientRecordFormHtml(record, contactId)}</div>
+        </details>
         <details open style="margin-bottom:0.6rem;">
             <summary>Agendamentos (histórico completo e próximos)</summary>
             <div style="margin-top:0.4rem;">${apptHtml}</div>
@@ -822,7 +884,7 @@ async function loadConsultationPatientBox(appointmentId, contactId) {
         ]);
         // Exclui a própria consulta que está sendo atendida agora (ainda sem
         // dados salvos) das listas — evita uma linha vazia/confusa no topo.
-        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, { excludeApptId: appointmentId, editableEvolution: false });
+        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, contactId, { excludeApptId: appointmentId, editableEvolution: false });
     } catch (e) {
         box.innerHTML = '';
     }
