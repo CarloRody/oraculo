@@ -107,6 +107,19 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             server.set_chat_flow_state(chat_id, None)
         return False
 
+    # Conversa já entregue pra atendimento humano (pelo próprio
+    # human_handoff, ou desligada manualmente na aba Conversas) — nunca
+    # reengata sozinho. Sem essa checagem, um fluxo "padrão" (sem palavra-
+    # -gatilho própria, dispara em qualquer mensagem não reconhecida)
+    # reabre o menu na PRÓXIMA mensagem mesmo logo depois do handoff,
+    # criando um ciclo sem fim de "menu → não entendi → atendente → menu
+    # de novo" (causa raiz do loop de 2026-07-24 — ver incidente).
+    chat = server.get_chat(chat_id)
+    if chat and not chat.get("ai_auto_reply_enabled", True):
+        if server.get_chat_flow_state(chat_id) is not None:
+            server.set_chat_flow_state(chat_id, None)
+        return False
+
     phone = _phone(wa_id)
     state = server.get_chat_flow_state(chat_id)
 
