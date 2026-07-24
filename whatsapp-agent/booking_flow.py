@@ -16,14 +16,16 @@ Pensado pro caso de uso de uma clínica médica: quem está do outro lado pode
 estar com pressa, nervoso ou com dificuldade de digitar. Por isso:
 - toda comparação de texto passa por _normalize (sem acento, minúsculo) e
   aceita pequeno erro de digitação via _fuzzy_match (difflib, stdlib);
-- "cancelar"/"ajuda" funcionam a qualquer momento do fluxo, sem perder o
-  progresso no caso de "ajuda";
+- "cancelar"/"ajuda"/"recomeçar" funcionam a qualquer momento do fluxo (o
+  progresso não se perde no caso de "ajuda"; "recomeçar" descarta o
+  progresso e volta pro menu inicial);
 - um erro de digitação na lista não cancela mais o fluxo de cara — dá até
   3 tentativas, reenviando a lista;
-- mensagens com sinal de urgência ("urgente", "o quanto antes"...) entram
-  num modo que mostra um aviso de segurança fixo (procurar 192/pronto-socorro
-  em caso de emergência grave — não tentamos detectar sintoma nenhum) e
-  oferece só os 1-2 horários mais próximos, em vez de lista longa.
+- sempre que não há conversa de agendamento em andamento (chat novo, ou
+  logo depois de terminar/cancelar/desistir de uma), a próxima mensagem —
+  seja lá qual for o texto — mostra o menu inicial (Ajuda/Agendar/
+  Recomeçar) em vez de exigir uma palavra-gatilho específica; só dentro
+  desse menu "Agendar" de fato inicia a escolha de consultor/horário.
 """
 
 import datetime
@@ -41,13 +43,16 @@ LOCAL_TZ = ZoneInfo("America/Sao_Paulo")
 WEEKDAY_KEYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 WEEKDAY_NAMES_PT = ["seg", "ter", "qua", "qui", "sex", "sáb", "dom"]
 
-TRIGGER_PHRASES = ("marcar horario", "marcar consulta", "preciso de atendimento")
-TRIGGER_WORDS = ("agendar", "consulta", "atendimento", "horario")
-URGENCY_PHRASES = ("o quanto antes", "hoje mesmo", "mal estar", "passando mal")
-URGENCY_WORDS = ("urgente", "urgencia", "emergencia", "socorro")
+RESTART_WORDS = ("recomecar", "reiniciar", "resetar")
 CANCEL_WORDS = ("cancelar", "sair", "parar", "desistir")
 HELP_PHRASES = ("nao entendi",)
 HELP_WORDS = ("ajuda", "menu", "atendente")
+
+# Opções do menu inicial (qualquer mensagem, quando não há conversa de
+# agendamento em andamento — ver handle_incoming/_send_main_menu). Mantidas
+# na mesma ordem mostrada ao paciente; usadas por _parse_index tanto pro
+# número digitado quanto pro nome da opção.
+MAIN_MENU_OPTIONS = ["ajuda", "agendar", "recomecar"]
 
 YES_WORDS = {"sim", "s", "confirmar", "confirmo", "yes", "1", "pode ser", "claro", "ok", "beleza", "blz", "isso"}
 NO_WORDS = {"nao", "n", "cancelar", "no", "2", "nao quero", "deixa pra la", "nao posso"}
@@ -72,12 +77,8 @@ def _term(account, plural=False):
     return nomenclature["consultant"][form]
 
 
-def _is_trigger(text):
-    return _matches_any(text, TRIGGER_PHRASES, TRIGGER_WORDS)
-
-
-def _is_urgent(text):
-    return _matches_any(text, URGENCY_PHRASES, URGENCY_WORDS)
+def _is_restart(text):
+    return _matches_any(text, words=RESTART_WORDS)
 
 
 def _is_cancel(text):
@@ -450,28 +451,51 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         return False
 
     if state is None:
-        if not _is_trigger(text):
-            return False
-        return start_from_external(account, chat_id, wa_id, urgent=_is_urgent(text))
+        # Sem conversa de agendamento em andamento — qualquer mensagem (não só
+        # uma palavra-gatilho específica) abre o menu inicial. Cobre tanto a
+        # primeira mensagem do dia quanto qualquer reabertura depois de
+        # terminar/cancelar/desistir de um agendamento anterior.
+        _send_main_menu(account, wa_id)
+        server.set_chat_booking_state(chat_id, {"step": "main_menu"})
+        return True
 
-    # Comandos globais de "cancelar"/"ajuda" — só interceptam quando já existe
-    # uma conversa de agendamento em andamento, e só pra respostas digitadas
+    # Comandos globais de "cancelar"/"ajuda"/"recomeçar" — só interceptam
+    # quando já existe uma conversa em andamento, e só pra respostas digitadas
     # (um clique de botão/lista nunca deve ser confundido com esses comandos).
+    if not selected_id and _is_restart(text):
+        server.set_chat_booking_state(chat_id, {"step": "main_menu"})
+        _send_main_menu(account, wa_id)
+        return True
     if not selected_id and _is_cancel(text):
         server.set_chat_booking_state(chat_id, None)
-        _send_text(account, phone, "Sem problema, cancelei o agendamento por aqui. Quando quiser, é só me chamar de novo e digitar \"agendar\".")
+        _send_text(account, phone, "Sem problema, cancelei o agendamento por aqui. Quando quiser, é só mandar uma mensagem que eu mostro as opções de novo.")
         return True
     if not selected_id and _is_help(text):
         new_state = _resend_current_step(account, wa_id, state)
         if new_state is None:
             server.set_chat_booking_state(chat_id, None)
-            _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
+            _send_text(account, phone, f"{_term(account)} não encontrado. Mande uma mensagem pra ver as opções de novo.")
         else:
             server.set_chat_booking_state(chat_id, new_state)
         return True
 
     step = state.get("step")
     urgent = bool(state.get("urgent"))
+
+    if step == "main_menu":
+        idx = _parse_index(text, MAIN_MENU_OPTIONS, names=MAIN_MENU_OPTIONS) if not selected_id else None
+        if idx is None:
+            _retry_or_give_up(account, chat_id, wa_id, phone, state)
+            return True
+        if idx == 1:  # Agendar
+            if not start_from_external(account, chat_id, wa_id):
+                server.set_chat_booking_state(chat_id, None)
+                _send_text(account, phone, f"No momento não há {_term(account).lower()} disponível. Tente de novo mais tarde.")
+            return True
+        # Ajuda e Recomeçar, aqui no próprio menu, dão no mesmo: reabrem o menu.
+        server.set_chat_booking_state(chat_id, {"step": "main_menu"})
+        _send_main_menu(account, wa_id)
+        return True
 
     if step == "choosing_consultant":
         consultant_id = None
@@ -532,15 +556,15 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
                 return True  # mantém o estado — dá outra chance em vez de cancelar
         server.set_chat_booking_state(chat_id, None)
         if not confirmed:
-            _send_text(account, phone, "Agendamento cancelado. Digite \"agendar\" pra começar de novo.")
+            _send_text(account, phone, "Agendamento cancelado. Mande uma mensagem quando quiser começar de novo.")
             return True
         consultant = server.get_consultant(state["consultant_id"])
         if not consultant:
-            _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
+            _send_text(account, phone, f"{_term(account)} não encontrado. Mande uma mensagem pra começar de novo.")
             return True
         scheduled_at = datetime.datetime.fromisoformat(state["scheduled_at"])
         if not book_appointment(consultant, contact_id, wa_id, push_name, scheduled_at, notify_consultant=True, requires_confirmation=True, subject=state.get("subject")):
-            _send_text(account, phone, "Esse horário acabou de ser ocupado por outra pessoa. Digite \"agendar\" pra escolher outro.")
+            _send_text(account, phone, "Esse horário acabou de ser ocupado por outra pessoa. Mande uma mensagem pra escolher outro.")
         return True
 
     server.set_chat_booking_state(chat_id, None)
@@ -557,12 +581,12 @@ def _retry_or_give_up(account, chat_id, wa_id, phone, state):
     attempts = state.get("attempts", 0) + 1
     if attempts >= 3:
         server.set_chat_booking_state(chat_id, None)
-        _send_text(account, phone, "Vamos com calma — digite \"agendar\" quando puder tentar de novo.")
+        _send_text(account, phone, "Vamos com calma — quando puder, é só mandar uma mensagem que eu mostro as opções de novo.")
         return
     new_state = _resend_current_step(account, wa_id, state)
     if new_state is None:
         server.set_chat_booking_state(chat_id, None)
-        _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
+        _send_text(account, phone, f"{_term(account)} não encontrado. Mande uma mensagem pra começar de novo.")
         return
     new_state["attempts"] = attempts
     server.set_chat_booking_state(chat_id, new_state)
@@ -577,6 +601,9 @@ def _resend_current_step(account, wa_id, state):
 
     step = state.get("step")
     urgent = bool(state.get("urgent"))
+    if step == "main_menu":
+        _send_main_menu(account, wa_id, reminder=True)
+        return {"step": "main_menu"}
     if step == "choosing_consultant":
         consultants = []
         for cid in state.get("options", []):
@@ -611,6 +638,17 @@ def _send_text(account, phone, text):
         server.report_whatsapp_sent_usage(account["id"])
     except EvolutionError:
         pass
+
+
+def _send_main_menu(account, wa_id, reminder=False):
+    """Menu inicial — mostrado sempre que não há agendamento em andamento
+    (ver handle_incoming). "Ajuda" só reexibe esta mesma mensagem; "Agendar"
+    inicia a escolha de consultor/horário; "Recomeçar" (fora deste passo)
+    descarta o progresso de um agendamento em andamento e volta pra cá."""
+    intro = ("Não consegui entender 🙏 Aqui está o menu de novo, é só digitar o número:" if reminder
+             else "Olá! Como posso ajudar?")
+    text = f"{intro}\n\n1. Ajuda\n2. Agendar\n3. Recomeçar"
+    _send_text(account, _phone(wa_id), text)
 
 
 def _send_consultant_list(account, wa_id, consultants, urgent=False, reminder=False):
