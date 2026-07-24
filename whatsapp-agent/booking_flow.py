@@ -518,7 +518,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             _send_text(account, phone, f"{_term(account)} não encontrado. Digite \"agendar\" pra começar de novo.")
             return True
         scheduled_at = datetime.datetime.fromisoformat(iso)
-        _send_confirm_buttons(account, wa_id, consultant, scheduled_at)
+        _send_confirm_message(account, wa_id, consultant, scheduled_at)
         server.set_chat_booking_state(chat_id, {"step": "confirming", "consultant_id": consultant["id"], "scheduled_at": iso, "urgent": urgent})
         return True
 
@@ -528,7 +528,7 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
         else:
             confirmed = parse_yes_no(text)
             if confirmed is None:
-                _send_text(account, phone, "Não entendi. Responda SIM ou NÃO (ou toque num dos botões).")
+                _send_text(account, phone, "Não entendi. Responda SIM ou NÃO.")
                 return True  # mantém o estado — dá outra chance em vez de cancelar
         server.set_chat_booking_state(chat_id, None)
         if not confirmed:
@@ -599,7 +599,7 @@ def _resend_current_step(account, wa_id, state):
         if not consultant:
             return None
         scheduled_at = datetime.datetime.fromisoformat(state["scheduled_at"])
-        _send_confirm_buttons(account, wa_id, consultant, scheduled_at)
+        _send_confirm_message(account, wa_id, consultant, scheduled_at)
         return state
     return None
 
@@ -679,15 +679,20 @@ def _send_slot_list(account, wa_id, consultant, slots, reminder=False):
     return [s.isoformat() for s in slots]
 
 
-def _send_confirm_buttons(account, wa_id, consultant, scheduled_at):
+def _send_confirm_message(account, wa_id, consultant, scheduled_at):
+    """Texto puro, não botões nativos (send_buttons) — mesma razão já
+    documentada em _send_consultant_list/_send_slot_list: essa versão do
+    Baileys também quebra aqui, entregando ao destinatário uma mensagem sem
+    conteúdo visível (encontrado em produção em 24/07 — chegava como
+    mensagem 'text' com corpo vazio). SIM/NÃO digitado já era aceito como
+    fallback (parse_yes_no), então isso só remove o botão que não
+    funcionava, sem tirar nenhum caminho que já existia."""
     when = scheduled_at.strftime("%d/%m às %H:%M")
     import server  # tardio — ver docstring do módulo
     try:
-        evolution.send_buttons(
-            account["wa_session_name"], _phone(wa_id), "Confirmar agendamento",
-            f"Confirma agendamento com {consultant['name']} em {when}? "
-            f"Toque num botão acima ou responda SIM ou NÃO.",
-            [{"id": "booking_confirm_yes", "text": "Sim, confirmar"}, {"id": "booking_confirm_no", "text": "Não"}],
+        evolution.send_text(
+            account["wa_session_name"], _phone(wa_id),
+            f"Confirma agendamento com {consultant['name']} em {when}? Responda SIM ou NÃO.",
         )
         server.report_whatsapp_sent_usage(account["id"])
     except EvolutionError:
