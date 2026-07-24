@@ -120,6 +120,18 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
             server.set_chat_flow_state(chat_id, None)
         return False
 
+    # Um agendamento (ação start_booking) já está em andamento pra essa
+    # conversa — entrega direto pro motor de agendamento em vez de recomeçar
+    # o fluxo do zero. start_booking limpa flow_state de propósito assim que
+    # dispara, esperando que o motor de agendamento assuma a partir daí; mas
+    # o despacho do webhook, no modo fluxo, só chama este módulo (nunca
+    # booking_flow direto) — sem essa checagem aqui dentro, a mensagem
+    # seguinte (escolher consultor/horário) reentrava no fluxo do zero,
+    # porque qualquer fluxo padrão sem gatilho próprio casa com qualquer
+    # texto (encontrado em produção em 24/07 — agendamento nunca concluía).
+    if server.get_chat_booking_state(chat_id) is not None:
+        return booking_flow.handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push_name)
+
     phone = _phone(wa_id)
     state = server.get_chat_flow_state(chat_id)
 
@@ -301,22 +313,15 @@ def _send_step_prompt(account, wa_id, push_name, step, vars_):
         _send_text(account, phone, intro)
         return
 
-    # menu: lista numerada em texto (send_list quebra nesta versão da
-    # Evolution API/Baileys pra >2 opções — mesma decisão já tomada em
-    # booking_flow._send_consultant_list). Com exatamente 2 opções, manda
-    # também botões nativos como reforço (mesmo padrão da confirmação
-    # sim/não do agendamento) — se falhar, o texto numerado já foi.
+    # menu: só lista numerada em texto — send_list quebra nesta versão da
+    # Evolution API/Baileys pra >2 opções (mesma decisão já tomada em
+    # booking_flow._send_consultant_list), e o reforço de botões nativos que
+    # existia aqui pra 2 opções tinha o mesmo problema da confirmação
+    # sim/não do agendamento: chegava sem conteúdo visível (encontrado em
+    # produção em 24/07). Só o texto numerado, sempre.
     options = step.get("options") or []
     lines = [f"{i + 1}. {o.get('label', '')}" for i, o in enumerate(options)]
     _send_text(account, phone, f"{intro}\n\n" + "\n".join(lines))
-    if len(options) == 2:
-        try:
-            evolution.send_buttons(
-                account["wa_session_name"], phone, "Escolha uma opção", intro,
-                [{"id": f"flowopt_{i}", "text": (o.get("label") or "")[:24]} for i, o in enumerate(options)],
-            )
-        except EvolutionError:
-            pass
 
 
 def _run_action(account, chat_id, wa_id, push_name, vars_, action_type, message_template):
