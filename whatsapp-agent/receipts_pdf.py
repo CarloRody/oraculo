@@ -53,10 +53,13 @@ def _fmt_brl(amount):
 
 
 def _valor_por_extenso(amount):
+    # A implementação pt_BR do num2words já usa "reais"/"centavos" fixo —
+    # não aceita (e quebra com) o kwarg currency="BRL" que outras línguas
+    # aceitam.
     if num2words is None:
         return ""
     try:
-        texto = num2words(float(amount), lang="pt_BR", to="currency", currency="BRL")
+        texto = num2words(float(amount), lang="pt_BR", to="currency")
         return texto
     except Exception:
         return ""
