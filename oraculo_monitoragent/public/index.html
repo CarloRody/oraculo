@@ -166,10 +166,13 @@ input:focus,select:focus{outline:none;border-color:#e94560}
 .crawl-log{margin-top:10px;max-height:150px;overflow-y:auto;font-size:.78rem;color:#9fb3d9;font-family:ui-monospace,monospace;display:none;background:#121c33;border-radius:6px;padding:8px 10px}
 .crawl-log.show{display:block}
 .crawl-log div{padding:1px 0;white-space:pre-wrap;word-break:break-word}
-.crawl-node-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer;user-select:none}
-.crawl-caret{color:#74b9ff;font-size:.8rem;width:12px;flex-shrink:0}
+.crawl-node-head{display:flex;align-items:center;gap:10px;flex-wrap:wrap;cursor:pointer;user-select:none;border-radius:6px;padding:4px 6px;margin:-4px -6px}
+.crawl-node-head:hover{background:#1a2540}
+.crawl-caret{color:#74b9ff;font-size:.8rem;width:12px;flex-shrink:0;transition:transform .15s}
+.crawl-caret.collapsed{transform:rotate(-90deg)}
 .crawl-node-body{margin-top:8px}
 .crawl-node.collapsed .crawl-node-body{display:none}
+.crawl-children{margin-left:1.4rem;border-left:1px dashed #334155;padding-left:.6rem}
 .sel-count{font-size:.72rem;color:#5a6b8c;font-weight:400}
 .link-exists{display:inline-block;margin-left:6px;padding:1px 7px;border-radius:9px;font-size:.68rem;font-weight:600;background:#2d5a3d;color:#7fe0b8;vertical-align:middle}
 </style>
@@ -670,7 +673,7 @@ function renderCrawlLevel(page, links, parentPageId) {
   block.style.cssText = `margin:10px 0;padding:12px;background:#1a2540;border-radius:8px;border:1px solid #253552`;
   block.innerHTML = `
     <div class="crawl-node-head" onclick="toggleNodeCollapse('${groupId}')">
-      <span class="crawl-caret">▸</span>
+      <span class="crawl-caret collapsed">▼</span>
       <span style="color:#fff;font-weight:600">Nível ${page.depth}: ${esc(page.title)}
       <span style="color:#5a6b8c;font-size:.78rem;font-weight:400">(documento #${page.tutor_doc_id})</span></span>
       <span class="sel-count" id="${groupId}_count"></span>
@@ -699,7 +702,7 @@ function toggleNodeCollapse(groupId) {
   if (!block) return;
   block.classList.toggle('collapsed');
   const caret = block.querySelector('.crawl-caret');
-  if (caret) caret.textContent = block.classList.contains('collapsed') ? '▸' : '▾';
+  if (caret) caret.classList.toggle('collapsed', block.classList.contains('collapsed'));
 }
 
 function updateNodeSelCount(groupId) {
