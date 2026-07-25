@@ -406,9 +406,10 @@ MIGRATIONS = [
     UPDATE usage_logs u
     SET price_per_1k_tokens_snapshot = s.price_per_1k_tokens,
         estimated_cost = ROUND((COALESCE(u.tokens_input,0) + COALESCE(u.tokens_output,0))::numeric / 1000.0 * s.price_per_1k_tokens, 4)
-    FROM users us
-    JOIN plan_area_pricing s ON s.plan_id = us.plan_id AND s.area_id = u.area_id
+    FROM users us, plan_area_pricing s
     WHERE u.user_id = us.id
+      AND s.plan_id = us.plan_id
+      AND s.area_id = u.area_id
       AND u.estimated_cost IS NULL
       AND s.price_per_1k_tokens IS NOT NULL;
     """,
