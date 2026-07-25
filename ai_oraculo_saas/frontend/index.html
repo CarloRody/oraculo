@@ -54,6 +54,12 @@
             ⚠ Sua conta está desativada. Entre em contato com o administrador.
         </div>
 
+        <div id="lockedNotice" style="background:#1e293b; border:1px solid #334155; border-radius:8px; padding:2rem; text-align:center; color:#94a3b8;">
+            🔒 Faça login com sua chave de acesso (botão "Entrar" acima) pra ver o portal.
+        </div>
+
+        <div id="unlockedContent" style="display:none;">
+
         <!-- Status -->
         <div class="status-bar">
             <div class="status-item">
@@ -144,6 +150,8 @@
             </a>
         </div>
 
+        </div>
+
     </div>
 
     <div class="footer">Oráculo &copy; <span id="year"></span></div>
@@ -154,12 +162,13 @@ const API = window.location.protocol + '//' + window.location.host;
 async function loadStatus() {
     const dbEl = document.getElementById('db-status');
     try {
-        // /admin/areas (não /api/areas) porque este é o portal interno do
-        // admin — /api/areas agora só devolve áreas do plano de quem manda
-        // uma chave de cliente válida, e esta página nunca manda chave.
+        // /admin/areas agora exige a chave de admin (before_request no
+        // backend) — sem login, essa parte só falha graciosamente (fica
+        // "0 áreas"); com login de admin, manda a chave e mostra o real.
+        const key = getStoredApiKey();
         const [statsRes, areasRes] = await Promise.all([
             fetch(`${API}/api/stats`),
-            fetch(`${API}/admin/areas`)
+            fetch(`${API}/admin/areas`, key ? { headers: { 'X-Oraculo-Key': key } } : {})
         ]);
         const stats = await statsRes.json();
         const areas = await areasRes.json();
@@ -186,38 +195,57 @@ function getStoredApiKey() {
     return localStorage.getItem('oraculo_api_key') || '';
 }
 
-async function refreshAccountBar() {
+function lockPortal() {
+    document.getElementById('lockedNotice').style.display = 'block';
+    document.getElementById('unlockedContent').style.display = 'none';
+    document.getElementById('deactivatedBanner').style.display = 'none';
     const statusEl = document.getElementById('account-status');
-    const loginBtn = document.getElementById('loginBtn');
-    const logoutBtn = document.getElementById('logoutBtn');
-    const key = getStoredApiKey();
+    statusEl.textContent = 'Não conectado';
+    statusEl.classList.remove('connected');
+    document.getElementById('loginBtn').style.display = 'inline-block';
+    document.getElementById('logoutBtn').style.display = 'none';
+}
 
+function unlockPortal(label) {
+    document.getElementById('lockedNotice').style.display = 'none';
+    document.getElementById('unlockedContent').style.display = 'block';
+    const statusEl = document.getElementById('account-status');
+    statusEl.textContent = label;
+    statusEl.classList.add('connected');
+    document.getElementById('loginBtn').style.display = 'none';
+    document.getElementById('logoutBtn').style.display = 'inline-block';
+}
+
+// Bloqueado por padrão — só libera com uma chave que se prove válida (chave
+// de admin de verdade, via /admin/whoami, ou chave de cliente, via /api/me).
+// Antes, "sem chave" era tratado como admin com acesso total; corrigido pra
+// negar por padrão.
+async function checkAccess() {
+    const key = getStoredApiKey();
     if (!key) {
-        statusEl.textContent = 'Não conectado';
-        statusEl.classList.remove('connected');
-        loginBtn.style.display = 'inline-block';
-        logoutBtn.style.display = 'none';
+        lockPortal();
         return;
     }
-
     try {
-        const res = await fetch(`${API}/api/me`, { headers: { 'X-Oraculo-Key': key } });
-        const data = await res.json();
-        if (!res.ok) {
-            localStorage.removeItem('oraculo_api_key');
-            statusEl.textContent = 'Não conectado';
-            statusEl.classList.remove('connected');
-            loginBtn.style.display = 'inline-block';
-            logoutBtn.style.display = 'none';
+        const adminRes = await fetch(`${API}/admin/whoami`, { headers: { 'X-Oraculo-Key': key } });
+        if (adminRes.ok) {
+            unlockPortal('Conectado como administrador');
+            document.querySelectorAll('.cards-grid .card').forEach(card => card.style.display = '');
+            loadStatus();
             return;
         }
-        statusEl.textContent = `Conectado como ${data.email}`;
-        statusEl.classList.add('connected');
-        loginBtn.style.display = 'none';
-        logoutBtn.style.display = 'inline-block';
+
+        const meRes = await fetch(`${API}/api/me`, { headers: { 'X-Oraculo-Key': key } });
+        if (!meRes.ok) {
+            localStorage.removeItem('oraculo_api_key');
+            lockPortal();
+            return;
+        }
+        const me = await meRes.json();
+        unlockPortal(`Conectado como ${me.email}`);
+        await filterCardsByAllowedPages(key);
     } catch (err) {
-        statusEl.textContent = 'Não foi possível verificar a chave.';
-        statusEl.classList.remove('connected');
+        lockPortal();
     }
 }
 
@@ -225,20 +253,20 @@ function doLogin() {
     const key = prompt('Chave de acesso (fornecida pelo administrador):');
     if (!key) return;
     localStorage.setItem('oraculo_api_key', key.trim());
-    refreshAccountBar();
+    checkAccess();
 }
 
 function doLogout() {
     localStorage.removeItem('oraculo_api_key');
-    refreshAccountBar();
+    lockPortal();
 }
 
 function setupMaintenanceLinks() {
     // Monitor Agent e Backup Manager rodam em portas separadas — o navegador
     // trata cada porta como uma origem isolada, então o localStorage daqui
     // não é visível lá. Manda a chave junto na URL (só quando existe uma
-    // chave de cliente salva); a página de destino lê, guarda na própria
-    // origem e limpa da URL. Sem chave salva = admin, link continua limpo.
+    // chave salva); a página de destino lê, guarda na própria origem e
+    // limpa da URL.
     const key = getStoredApiKey();
     const suffix = key ? `?k=${encodeURIComponent(key)}` : '';
     document.getElementById('areaClienteLink').href = `/whatsapp/area-cliente${suffix}`;
@@ -246,13 +274,11 @@ function setupMaintenanceLinks() {
     document.getElementById('backupLink').href = `/backup/${suffix}`;
 }
 
-// Sem chave salva = admin, mostra todos os cards (comportamento de sempre).
-// Com chave salva, esconde os cards de páginas fora da lista liberada DESSE
-// cliente — cada cliente tem sua própria lista (configurada no admin, aba
-// Clientes > Acessos), não mais uma lista global igual pra todo mundo.
-async function filterCardsByAllowedPages() {
-    const key = getStoredApiKey();
-    if (!key) return;
+// Esconde os cards de páginas fora da lista liberada DESSE cliente — cada
+// cliente tem sua própria lista (configurada no admin, aba Clientes >
+// Acessos). Só chamada depois que checkAccess() já confirmou que a chave é
+// de um cliente de verdade (admin nunca passa por aqui — acesso total).
+async function filterCardsByAllowedPages(key) {
     try {
         const res = await fetch(`${API}/api/allowed-pages`, { headers: { 'X-Oraculo-Key': key } });
         const data = await res.json();
@@ -269,12 +295,12 @@ async function filterCardsByAllowedPages() {
                 card.style.display = 'none';
             }
         });
-    } catch (err) { /* falha ao checar não esconde nada — falha aberta */ }
+    } catch (err) { /* falha ao checar não libera nada extra — o padrão já é restrito */ }
 }
 
 document.getElementById('year').textContent = new Date().getFullYear();
 setupMaintenanceLinks();
-document.addEventListener('DOMContentLoaded', () => { loadStatus(); refreshAccountBar(); filterCardsByAllowedPages(); });
+document.addEventListener('DOMContentLoaded', () => { loadStatus(); checkAccess(); });
 </script>
 </body>
 </html>

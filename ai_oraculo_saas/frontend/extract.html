@@ -104,7 +104,7 @@ function statusBadge(status) {
 
 async function loadAreas() {
     try {
-        const res = await fetch(`${API}/admin/areas`);
+        const res = await fetch(`${API}/admin/areas`, { headers: { 'X-Oraculo-Key': localStorage.getItem('oraculo_api_key') || '' } });
         const data = await res.json();
         if (!data.areas) return;
         const optionsHtml = '<option value="">Selecione uma área...</option>' +

@@ -16,10 +16,35 @@ import sys, os as _os_module
 sys.path.insert(0, _os_module.path.join(_os_module.path.dirname(__file__), '..'))
 from rag_engine import process_document, search_similar, get_model, extract_pdf_text
 from migrations import migrate_if_needed
-from config import CONFIG, DB_CONFIG, save_config, WHATSAPP_AGENT_BASE_URL
+from config import ADMIN_API_KEY, CONFIG, DB_CONFIG, save_config, WHATSAPP_AGENT_BASE_URL
 
 app = Flask(__name__)
 CORS(app)  # Permite que o frontend acesse de qualquer origem local
+
+
+@app.before_request
+def _require_admin_key_for_admin_routes():
+    """Guarda única pra TODAS as rotas /admin/* (áreas, documentos, planos,
+    modelos, usuários, config, restart do OpenClaw, DDNS, etc.) — antes,
+    essas rotas não exigiam nada e o único "controle de acesso" era o
+    frontend esconder os links (facilmente contornável chamando a rota
+    direto). Corrigido pra negar por padrão: sem admin_api_key configurada
+    em config.yaml, ninguém entra; com ela configurada, só quem manda a
+    chave certa no header X-Oraculo-Key passa."""
+    if not request.path.startswith("/admin/"):
+        return None
+    if not ADMIN_API_KEY:
+        return jsonify({"error": "admin_api_key não configurada — acesso bloqueado por segurança"}), 503
+    if request.headers.get("X-Oraculo-Key") != ADMIN_API_KEY:
+        return jsonify({"error": "Chave de administrador inválida ou ausente"}), 401
+    return None
+
+
+@app.route("/admin/whoami", methods=["GET"])
+def admin_whoami():
+    """Só existe pro frontend confirmar 'essa chave é a de admin' — se a
+    requisição chegou até aqui, o before_request acima já validou."""
+    return jsonify({"ok": True})
 
 
 def get_db_connection():

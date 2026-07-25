@@ -111,7 +111,7 @@ async function loadReport() {
     const period = currentPeriod();
     const url = API + '/admin/usage-summary' + (period ? `?period=${period}` : '');
     try {
-        const res = await fetch(url);
+        const res = await fetch(url, { headers: { 'X-Oraculo-Key': localStorage.getItem('oraculo_api_key') || '' } });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'Erro ao carregar relatório.'); return; }
         renderOverview(data);

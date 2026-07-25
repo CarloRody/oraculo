@@ -603,6 +603,21 @@
 const ADMIN_API = window.location.protocol + '//' + window.location.host;
 let allAreas = [];
 
+// Todas as rotas /admin/* agora exigem a chave de admin no header (ver
+// before_request em api/server.py) — access-guard.js já validou que essa
+// chave é válida antes de deixar a página carregar; aqui só precisamos
+// mandar ela em toda chamada. Substitui adminFetch(ADMIN_API + ...) por
+// adminFetch(ADMIN_API + ...) em todo o arquivo, mesma assinatura.
+function getAdminKey() {
+    return localStorage.getItem('oraculo_api_key') || '';
+}
+
+function adminFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'X-Oraculo-Key': getAdminKey() }, opts.headers || {});
+    return fetch(url, opts);
+}
+
 function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
 
 // ---- WhatsApp (serviço próprio, montado em /whatsapp — não faz parte do admin.html) ----
@@ -634,8 +649,8 @@ function switchTab(name) {
 async function loadStats() {
     try {
         const [areasRes, docsRes] = await Promise.all([
-            fetch(ADMIN_API + '/admin/areas'),
-            fetch(ADMIN_API + '/admin/documents')
+            adminFetch(ADMIN_API + '/admin/areas'),
+            adminFetch(ADMIN_API + '/admin/documents')
         ]);
         const areasData = await areasRes.json();
         const docsData = await docsRes.json();
@@ -661,7 +676,7 @@ function areaStatusBadge(status) {
 
 async function loadAreas() {
     try {
-        const res = await fetch(ADMIN_API + '/admin/areas');
+        const res = await adminFetch(ADMIN_API + '/admin/areas');
         const data = await res.json();
         const areas = data.areas || [];
         allAreas = areas;
@@ -723,7 +738,7 @@ async function saveArea() {
     if (slug) payload.slug = slug;
 
     try {
-        const res = await fetch(ADMIN_API + (id ? `/admin/areas/${id}` : '/admin/areas'), {
+        const res = await adminFetch(ADMIN_API + (id ? `/admin/areas/${id}` : '/admin/areas'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify(payload)
@@ -738,7 +753,7 @@ async function saveArea() {
 async function archiveArea(id, name) {
     if (!confirm(`Arquivar a área "${name}"? Ela deixa de ficar disponível pros clientes (chat/plano), mas os documentos não são apagados — dá pra reativar depois editando o status de volta pra "Ativa".`)) return;
     try {
-        const res = await fetch(ADMIN_API + `/admin/areas/${id}`, { method: 'DELETE' });
+        const res = await adminFetch(ADMIN_API + `/admin/areas/${id}`, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao arquivar.');
         loadAreas(); loadStats();
@@ -862,7 +877,7 @@ async function runDocsSearch() {
     // precisão da página de Busca RAG, útil pra conferir o que está
     // realmente no índice de uma área.
     try {
-        const res = await fetch(ADMIN_API + '/api/search', {
+        const res = await adminFetch(ADMIN_API + '/api/search', {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ query, area_id: currentDocAreaFilter, top_k: 15 })
         });
@@ -882,12 +897,12 @@ async function runDocsSearch() {
 
 async function reprocessDoc(id) {
     if (!confirm('Reprocessar RAG deste documento?')) return;
-    try { await fetch(ADMIN_API + `/admin/documents/${id}/reprocess`, { method: 'POST' }); alert('Reprocessamento iniciado.'); loadDocs(); } catch(e) { alert('Erro no reprocessamento.'); }
+    try { await adminFetch(ADMIN_API + `/admin/documents/${id}/reprocess`, { method: 'POST' }); alert('Reprocessamento iniciado.'); loadDocs(); } catch(e) { alert('Erro no reprocessamento.'); }
 }
 
 async function showDocEditModal(docId) {
     try {
-        const res = await fetch(ADMIN_API + `/admin/documents/${docId}`);
+        const res = await adminFetch(ADMIN_API + `/admin/documents/${docId}`);
         const doc = await res.json();
         if (!res.ok) return alert(doc.error || 'Erro ao carregar documento.');
 
@@ -935,7 +950,7 @@ async function saveDocEdit() {
     const areaChanged = payload.area_id !== originalAreaId;
 
     try {
-        const res = await fetch(ADMIN_API + `/admin/documents/${id}`, {
+        const res = await adminFetch(ADMIN_API + `/admin/documents/${id}`, {
             method: 'PATCH',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(payload)
@@ -954,7 +969,7 @@ async function saveDocEdit() {
 
 async function deleteDoc(id, title) {
     if (!confirm(`Excluir "${title}"?`)) return;
-    try { await fetch(ADMIN_API + `/admin/documents/${id}`, { method: 'DELETE' }); loadDocs(); loadStats(); loadAreas(); } catch(e) { alert('Erro ao excluir.'); }
+    try { await adminFetch(ADMIN_API + `/admin/documents/${id}`, { method: 'DELETE' }); loadDocs(); loadStats(); loadAreas(); } catch(e) { alert('Erro ao excluir.'); }
 }
 
 // ---- Clientes ----
@@ -962,7 +977,7 @@ let allClients = [];
 
 async function loadClients() {
     try {
-        const res = await fetch(ADMIN_API + '/admin/users');
+        const res = await adminFetch(ADMIN_API + '/admin/users');
         const data = await res.json();
         const users = data.users || [];
         allClients = users;
@@ -1009,7 +1024,7 @@ async function createKnowledgeBase(userId, email) {
     const name = prompt('Nome da base de conhecimento deste cliente:', `Base de Conhecimento — ${email}`);
     if (!name) return;
     try {
-        const res = await fetch(ADMIN_API + '/admin/areas', {
+        const res = await adminFetch(ADMIN_API + '/admin/areas', {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ name, owner_user_id: userId })
         });
@@ -1038,7 +1053,7 @@ async function saveDeposit() {
     const description = document.getElementById('depositDescription').value.trim() || null;
     if (!amount) return alert('Informe um valor diferente de zero.');
     try {
-        const res = await fetch(ADMIN_API + '/admin/credits/deposit', {
+        const res = await adminFetch(ADMIN_API + '/admin/credits/deposit', {
             method: 'POST', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ user_id, amount, description })
         });
@@ -1056,7 +1071,7 @@ async function showExtractModal(userId, email) {
     document.getElementById('extractTableBox').innerHTML = '<p style="color:#64748b;">Carregando...</p>';
     document.getElementById('extractModal').classList.add('active');
     try {
-        const res = await fetch(ADMIN_API + `/admin/credits/${userId}`);
+        const res = await adminFetch(ADMIN_API + `/admin/credits/${userId}`);
         const data = await res.json();
         if (!res.ok) { document.getElementById('extractTableBox').innerHTML = `<p style="color:#ef4444;">${esc(data.error || 'Erro ao carregar extrato.')}</p>`; return; }
         const typeLabel = { deposit: 'Depósito', consumption: 'Consumo', adjustment: 'Ajuste' };
@@ -1081,7 +1096,7 @@ async function showExtractModal(userId, email) {
 
 async function changeClientPlan(userId, planId) {
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}`, {
+        const res = await adminFetch(ADMIN_API + `/admin/users/${userId}`, {
             method: 'PATCH', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ plan_id: planId ? Number(planId) : null })
         });
@@ -1096,7 +1111,7 @@ async function toggleClientStatus(userId, currentStatus) {
     const verb = newStatus === 'inactive' ? 'desativar' : 'reativar';
     if (!confirm(`Confirma ${verb} este cliente? ${newStatus === 'inactive' ? 'Ele fica bloqueado nas pesquisas e na navegação até você reativar.' : ''}`)) return;
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}`, {
+        const res = await adminFetch(ADMIN_API + `/admin/users/${userId}`, {
             method: 'PATCH', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ status: newStatus })
         });
@@ -1154,7 +1169,7 @@ async function loadClientWhatsappUsage(userId) {
     const box = document.getElementById('clientWhatsappUsageBox');
     box.textContent = 'Carregando...';
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}/whatsapp-usage`);
+        const res = await adminFetch(ADMIN_API + `/admin/users/${userId}/whatsapp-usage`);
         const data = await res.json();
         if (!res.ok) { box.textContent = data.error || 'Erro ao carregar uso.'; return; }
         const fmt = (d, label) => `${label}: ${d.count} mensagens (${d.charged_count} cobradas, R$ ${d.total.toFixed(2)})`;
@@ -1166,7 +1181,7 @@ async function loadClientAreasWhatsapp(userId) {
     const box = document.getElementById('clientAreasWhatsappBox');
     box.innerHTML = '<p style="color:#64748b; font-size:0.85rem; margin:0;">Carregando...</p>';
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}/areas-whatsapp`);
+        const res = await adminFetch(ADMIN_API + `/admin/users/${userId}/areas-whatsapp`);
         const data = await res.json();
         if (!res.ok) { box.innerHTML = `<p style="color:#f87171; font-size:0.85rem; margin:0;">${esc(data.error || 'Erro ao carregar áreas.')}</p>`; return; }
 
@@ -1197,7 +1212,7 @@ async function loadClientAreasWhatsapp(userId) {
 
 async function onAreaWhatsappChange(userId, areaId, accountId) {
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}/areas/${areaId}/whatsapp-account`, {
+        const res = await adminFetch(ADMIN_API + `/admin/users/${userId}/areas/${areaId}/whatsapp-account`, {
             method: 'PUT', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ account_id: accountId ? Number(accountId) : null })
         });
@@ -1212,7 +1227,7 @@ async function regenerateClientKey() {
     if (!confirm('Gerar uma nova chave aleatória agora? A chave atual deixa de funcionar imediatamente.')) return;
     const id = document.getElementById('editClientId').value;
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${id}`, {
+        const res = await adminFetch(ADMIN_API + `/admin/users/${id}`, {
             method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ regenerate_key: true })
         });
         const data = await res.json();
@@ -1230,7 +1245,7 @@ async function saveClientEdit() {
     if (!email) return alert('Email é obrigatório.');
     if (!apiKey) return alert('Chave de acesso não pode ficar vazia.');
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${id}`, {
+        const res = await adminFetch(ADMIN_API + `/admin/users/${id}`, {
             method: 'PATCH', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email, api_key: apiKey })
         });
         const data = await res.json();
@@ -1257,7 +1272,7 @@ async function saveClient() {
     const email = document.getElementById('clientEmail').value.trim();
     if (!email) return alert('Email é obrigatório.');
     try {
-        const res = await fetch(ADMIN_API + '/admin/users', {
+        const res = await adminFetch(ADMIN_API + '/admin/users', {
             method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ email })
         });
         const data = await res.json();
@@ -1280,7 +1295,7 @@ function modelStatusBadge(status) {
 
 async function loadModels() {
     try {
-        const res = await fetch(ADMIN_API + '/admin/models');
+        const res = await adminFetch(ADMIN_API + '/admin/models');
         const data = await res.json();
         allModels = data.models || [];
         if (!allModels.length) { document.getElementById('models-list').innerHTML = '<p style="color:#64748b;">Nenhum modelo cadastrado.</p>'; return; }
@@ -1353,7 +1368,7 @@ async function saveModel() {
     };
 
     try {
-        const res = await fetch(ADMIN_API + (id ? `/admin/models/${id}` : '/admin/models'), {
+        const res = await adminFetch(ADMIN_API + (id ? `/admin/models/${id}` : '/admin/models'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify(payload)
@@ -1368,7 +1383,7 @@ async function saveModel() {
 async function deactivateModel(id, name) {
     if (!confirm(`Desativar o modelo "${name}"? Planos que usam esse modelo passam a usar a configuração global até um novo modelo ser escolhido.`)) return;
     try {
-        const res = await fetch(ADMIN_API + `/admin/models/${id}`, { method: 'DELETE' });
+        const res = await adminFetch(ADMIN_API + `/admin/models/${id}`, { method: 'DELETE' });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao desativar.');
         loadModels();
@@ -1380,7 +1395,7 @@ let allPlans = [];
 
 async function loadPlans() {
     try {
-        const res = await fetch(ADMIN_API + '/admin/plans');
+        const res = await adminFetch(ADMIN_API + '/admin/plans');
         const data = await res.json();
         allPlans = data.plans || [];
         if (!allPlans.length) { document.getElementById('plans-list').innerHTML = '<p style="color:#64748b;">Nenhum plano cadastrado.</p>'; return; }
@@ -1543,7 +1558,7 @@ async function savePlan() {
     const pesquisa_context_tokens = pesquisaContextVal ? Number(pesquisaContextVal) : null;
 
     try {
-        const res = await fetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
+        const res = await adminFetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens })
@@ -1559,7 +1574,7 @@ async function savePlan() {
 async function deletePlan(id, name) {
     if (!confirm(`Excluir o plano "${name}"? Clientes nesse plano ficam sem plano (sem checagem de cota) até serem reatribuídos.`)) return;
     try {
-        await fetch(ADMIN_API + `/admin/plans/${id}`, { method: 'DELETE' });
+        await adminFetch(ADMIN_API + `/admin/plans/${id}`, { method: 'DELETE' });
         loadPlans();
         loadClients();
     } catch(e) { alert('Erro ao excluir plano.'); }
@@ -1568,7 +1583,7 @@ async function deletePlan(id, name) {
 // ---- Health ----
 async function loadHealth() {
     try {
-        const res = await fetch(ADMIN_API + '/api/health');
+        const res = await adminFetch(ADMIN_API + '/api/health');
         const data = await res.json();
         document.getElementById('health-info').innerHTML = `
             <div class="card-item">
@@ -1588,7 +1603,7 @@ async function loadHealth() {
 async function loadOpenclawStatus() {
     const statusEl = document.getElementById('openclaw-status');
     try {
-        const res = await fetch(ADMIN_API + '/admin/openclaw/status');
+        const res = await adminFetch(ADMIN_API + '/admin/openclaw/status');
         const data = await res.json();
         if (!res.ok) { statusEl.innerHTML = `<span style="color:#ef4444;">${esc(data.error || 'Erro ao consultar status.')}</span>`; return; }
         statusEl.innerHTML = data.active
@@ -1602,7 +1617,7 @@ async function restartOpenclaw() {
     const statusEl = document.getElementById('openclaw-status');
     statusEl.innerHTML = '<span style="color:#facc15;">Reiniciando...</span>';
     try {
-        const res = await fetch(ADMIN_API + '/admin/openclaw/restart', { method: 'POST' });
+        const res = await adminFetch(ADMIN_API + '/admin/openclaw/restart', { method: 'POST' });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'Erro ao reiniciar OpenClaw.'); }
     } catch(e) { alert('Erro ao reiniciar OpenClaw.'); }
@@ -1614,7 +1629,7 @@ async function stopOpenclaw() {
     const statusEl = document.getElementById('openclaw-status');
     statusEl.innerHTML = '<span style="color:#facc15;">Parando...</span>';
     try {
-        const res = await fetch(ADMIN_API + '/admin/openclaw/stop', { method: 'POST' });
+        const res = await adminFetch(ADMIN_API + '/admin/openclaw/stop', { method: 'POST' });
         const data = await res.json();
         if (!res.ok) { alert(data.error || 'Erro ao parar OpenClaw.'); }
     } catch(e) { alert('Erro ao parar OpenClaw.'); }
@@ -1624,7 +1639,7 @@ async function stopOpenclaw() {
 // ---- DDNS ----
 async function loadDdns() {
     try {
-        const res = await fetch(ADMIN_API + '/admin/ddns');
+        const res = await adminFetch(ADMIN_API + '/admin/ddns');
         const d = await res.json();
         document.getElementById('ddnsEnabled').checked = d.enabled;
         document.getElementById('ddnsInterval').value = d.interval_minutes;
@@ -1652,7 +1667,7 @@ async function saveDdns() {
     const pw = document.getElementById('ddnsPassword').value;
     if (pw) payload.password = pw;
     try {
-        const res = await fetch(ADMIN_API + '/admin/ddns', {
+        const res = await adminFetch(ADMIN_API + '/admin/ddns', {
             method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload)
         });
         const data = await res.json();
@@ -1667,7 +1682,7 @@ async function testDdns() {
     const btn = document.getElementById('ddnsTestBtn');
     btn.disabled = true; btn.textContent = 'Testando...';
     try {
-        const res = await fetch(ADMIN_API + '/admin/ddns/test', { method: 'POST' });
+        const res = await adminFetch(ADMIN_API + '/admin/ddns/test', { method: 'POST' });
         const data = await res.json();
         alert((data.ok ? '✅ ' : '❌ ') + data.message);
         loadDdns();
@@ -1698,7 +1713,7 @@ async function showClientAccessModal(userId) {
     document.getElementById('access-pages-list-modal').innerHTML = '<p style="color:#64748b;">Carregando...</p>';
     document.getElementById('clientAccessModal').classList.add('active');
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}/allowed-pages`);
+        const res = await adminFetch(ADMIN_API + `/admin/users/${userId}/allowed-pages`);
         const data = await res.json();
         if (!res.ok) { document.getElementById('access-pages-list-modal').innerHTML = `<p style="color:#ef4444;">${esc(data.error || 'Erro ao carregar.')}</p>`; return; }
         const allowed = new Set(data.pages || []);
@@ -1720,7 +1735,7 @@ async function saveClientAccess() {
     const userId = document.getElementById('accessClientId').value;
     const pages = Array.from(document.querySelectorAll('#access-pages-list-modal input[type="checkbox"]:checked')).map(el => el.value);
     try {
-        const res = await fetch(ADMIN_API + `/admin/users/${userId}/allowed-pages`, {
+        const res = await adminFetch(ADMIN_API + `/admin/users/${userId}/allowed-pages`, {
             method: 'PUT', headers: {'Content-Type':'application/json'},
             body: JSON.stringify({ pages })
         });

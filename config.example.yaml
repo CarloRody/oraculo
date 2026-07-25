@@ -7,6 +7,8 @@
 # Depois de editar config.yaml, reinicie os serviços pra aplicar:
 #   systemctl restart ai-tutor-api monitor-agent backup-manager whatsapp-agent
 
+admin_api_key: null   # chave mestra do Painel Admin/Portal (index.html, admin.html, config.html, etc.) — sem ela configurada, essas páginas ficam bloqueadas até logar (nenhum acesso liberado por padrão). Gere uma string aleatória longa (ex: `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`) e guarde em local seguro.
+
 database:
   host: /var/run/postgresql
   port: 5432          # sem uso enquanto host for um socket Unix; fica pronto para TCP+senha no futuro

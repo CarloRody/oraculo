@@ -100,6 +100,15 @@
 <script>
 const API = window.location.protocol + '//' + window.location.host;
 
+// /admin/* agora exige a chave de admin no header (ver before_request em
+// api/server.py) — access-guard.js já validou a chave antes de deixar a
+// página carregar; aqui só precisamos mandar ela em toda chamada.
+function adminFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'X-Oraculo-Key': localStorage.getItem('oraculo_api_key') || '' }, opts.headers || {});
+    return fetch(url, opts);
+}
+
 function configuredBadge(isSet) {
     return isSet
         ? '<span style="color:#4ade80;">configurado</span>'
@@ -108,7 +117,7 @@ function configuredBadge(isSet) {
 
 async function loadConfig() {
     try {
-        const res = await fetch(API + '/admin/config');
+        const res = await adminFetch(API + '/admin/config');
         const data = await res.json();
         const llm = data.llm || {};
         const db = data.database || {};
@@ -181,7 +190,7 @@ async function saveConfig(andRestart) {
     statusEl.style.color = '#94a3b8';
     statusEl.textContent = 'Salvando...';
     try {
-        const res = await fetch(API + '/admin/config', {
+        const res = await adminFetch(API + '/admin/config', {
             method: 'POST',
             headers: {'Content-Type': 'application/json'},
             body: JSON.stringify(payload)
@@ -206,7 +215,7 @@ async function restartServices() {
     statusEl.style.color = '#facc15';
     statusEl.textContent = 'Reiniciando serviços... aguarde alguns segundos.';
     try {
-        await fetch(API + '/admin/config/restart', { method: 'POST' });
+        await adminFetch(API + '/admin/config/restart', { method: 'POST' });
     } catch(e) {
         // Esperado: este servidor está entre os que reiniciam, a conexão pode cair.
     }

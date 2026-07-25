@@ -1,4 +1,4 @@
-(function() {
+(async function() {
     // Chegou com ?k= = link cross-origin passando a chave do cliente (Área
     // do Cliente, Monitor Agent, Backup Manager) — salva nesta origem e
     // limpa da URL, mesmo padrão já usado por index.html.
@@ -11,38 +11,50 @@
         history.replaceState({}, '', location.pathname + (qs ? '?' + qs : '') + location.hash);
     }
 
-    var key = localStorage.getItem('oraculo_api_key');
-    if (!key) return; // sem chave de cliente = admin, acesso total (comportamento de sempre)
-
     var page = location.pathname.split('/').pop() || 'index.html';
-    if (page === 'index.html' || page === '') return; // portal sempre abre; os cards é que filtram
-    // admin.html pode ser restringida como qualquer outra página — se isso
-    // te trancar pra fora, é só limpar a chave salva neste navegador
-    // (botão "Sair" no index.html, ou localStorage.removeItem('oraculo_api_key')
-    // no console) pra voltar a ser tratado como admin, acesso total.
+    if (page === 'index.html' || page === '') return; // portal cuida do próprio gate de login
 
-    // Acesso é por cliente (não mais uma lista global igual pra todo mundo) —
-    // manda a chave pra API resolver as páginas liberadas DESSE cliente.
-    fetch(location.protocol + '//' + location.host + '/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } })
-        .then(function(r) { return r.json(); })
-        .then(function(data) {
-            // active=false = conta desativada na mão pelo admin — mensagem
-            // diferente do "sem acesso a esta página" (não é sobre permissão
-            // granular, é a conta inteira desligada).
-            if (data.active === false) {
-                alert('Sua conta está desativada. Entre em contato com o administrador.');
-                location.href = 'index.html';
-                return;
-            }
-            // restricted=false = esse cliente ainda não tem nenhuma restrição
-            // configurada no admin — acesso total, mesma filosofia de "sem
-            // configuração explícita não bloqueia" do resto do sistema.
-            if (!data.restricted) return;
-            var allowed = data.pages || [];
-            if (allowed.indexOf(page) === -1) {
-                alert('Você não tem acesso a esta página.');
-                location.href = 'index.html';
-            }
-        })
-        .catch(function() { /* falha ao checar não bloqueia — mesma filosofia de falha aberta do resto do sistema */ });
+    var key = localStorage.getItem('oraculo_api_key');
+    var origin = location.protocol + '//' + location.host;
+
+    function blockPage(message) {
+        alert(message || 'Você precisa entrar com uma chave de acesso pra ver esta página.');
+        location.href = 'index.html';
+    }
+
+    if (!key) {
+        blockPage();
+        return;
+    }
+
+    try {
+        // Chave de admin de verdade (admin_api_key configurada em
+        // config.yaml) = acesso total, sem restrição de página nenhuma.
+        var adminRes = await fetch(origin + '/admin/whoami', { headers: { 'X-Oraculo-Key': key } });
+        if (adminRes.ok) return;
+
+        // Não é admin — tenta como cliente (chave de cliente, restrita por
+        // config de "páginas liberadas" desse cliente específico).
+        var pagesRes = await fetch(origin + '/api/allowed-pages', { headers: { 'X-Oraculo-Key': key } });
+        if (!pagesRes.ok) {
+            localStorage.removeItem('oraculo_api_key');
+            blockPage('Chave de acesso inválida ou expirada.');
+            return;
+        }
+        var data = await pagesRes.json();
+        if (data.active === false) {
+            blockPage('Sua conta está desativada. Entre em contato com o administrador.');
+            return;
+        }
+        if (!data.restricted) return; // sem restrição configurada pra esse cliente = acesso total
+        var allowed = data.pages || [];
+        if (allowed.indexOf(page) === -1) {
+            blockPage('Você não tem acesso a esta página.');
+        }
+    } catch (err) {
+        // Falha de rede ao validar — filosofia de "falha fechada" pra rotas
+        // administrativas (diferente do resto do sistema, que falha aberto
+        // em checagens não-críticas): sem confirmar a chave, bloqueia.
+        blockPage('Não foi possível verificar sua chave de acesso agora.');
+    }
 })();

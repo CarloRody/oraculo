@@ -28,6 +28,12 @@ def save_config(data):
 
 CONFIG = load_config()
 
+# Chave mestra do Painel Admin/Portal — protege TODAS as rotas /admin/* (ver
+# before_request em api/server.py) e o gate de login do index.html/
+# access-guard.js. Sem ela configurada, essas páginas ficam bloqueadas por
+# padrão (nunca "sem chave = acesso total").
+ADMIN_API_KEY = CONFIG.get("admin_api_key")
+
 # Drop null values (password/port) so psycopg2 falls back to its defaults —
 # a bare {"host": "/var/run/postgresql", "dbname": ..., "user": ...} connects
 # via Unix socket peer auth, exactly like the old hardcoded DB_CONFIG did.

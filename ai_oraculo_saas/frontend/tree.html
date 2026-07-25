@@ -81,6 +81,15 @@
 <script>
 const API = window.location.protocol + '//' + window.location.host;
 
+// /admin/* agora exige a chave de admin no header (ver before_request em
+// api/server.py) — access-guard.js já validou a chave antes de deixar a
+// página carregar; aqui só precisamos mandar ela em toda chamada.
+function adminFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'X-Oraculo-Key': localStorage.getItem('oraculo_api_key') || '' }, opts.headers || {});
+    return fetch(url, opts);
+}
+
 function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;') : ''; }
 
 function statusBadge(status) {
@@ -99,7 +108,7 @@ async function loadTree() {
     updateActionsBar();
     document.getElementById('treeContainer').innerHTML = '<p class="loading-text">Carregando...</p>';
     try {
-        const res = await fetch(API + '/admin/documents');
+        const res = await adminFetch(API + '/admin/documents');
         const data = await res.json();
         allDocs = data.documents || [];
         buildIndexes();
@@ -219,7 +228,7 @@ async function deleteSelected() {
     for (const id of ids) {
         btn.textContent = `Apagando ${done + 1} de ${total}...`;
         try {
-            await fetch(API + `/admin/documents/${id}`, { method: 'DELETE' });
+            await adminFetch(API + `/admin/documents/${id}`, { method: 'DELETE' });
         } catch (e) {
             // segue tentando os próximos mesmo se um falhar
         }
@@ -236,7 +245,7 @@ async function checkDuplicates() {
     const panel = document.getElementById('dupPanel');
     panel.innerHTML = '<p class="loading-text">Verificando duplicados...</p>';
     try {
-        const res = await fetch(API + '/admin/documents/duplicates');
+        const res = await adminFetch(API + '/admin/documents/duplicates');
         const data = await res.json();
         dupGroups = data.groups || [];
         if (!dupGroups.length) {
@@ -296,7 +305,7 @@ async function resolveDuplicates() {
     if (!ok) return;
 
     try {
-        const res = await fetch(API + '/admin/documents/duplicates/resolve', {
+        const res = await adminFetch(API + '/admin/documents/duplicates/resolve', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ resolutions })
         });
@@ -319,7 +328,7 @@ async function checkLowContent() {
     const panel = document.getElementById('lowContentPanel');
     panel.innerHTML = '<p class="loading-text">Verificando conteúdo fraco...</p>';
     try {
-        const res = await fetch(API + '/admin/documents/low-content');
+        const res = await adminFetch(API + '/admin/documents/low-content');
         const data = await res.json();
         const docs = data.documents || [];
         if (!docs.length) {
@@ -361,7 +370,7 @@ function renderLowContentPanel(docs) {
 async function reprocessDoc(id) {
     if (!confirm('Reprocessar RAG deste documento?')) return;
     try {
-        await fetch(API + `/admin/documents/${id}/reprocess`, { method: 'POST' });
+        await adminFetch(API + `/admin/documents/${id}/reprocess`, { method: 'POST' });
         alert('Reprocessamento iniciado.');
         loadTree();
     } catch (e) { alert('Erro no reprocessamento.'); }
