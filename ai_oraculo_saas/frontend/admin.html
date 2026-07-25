@@ -816,7 +816,7 @@ async function loadDocs() {
         if (currentDocAreaFilter) params.push(`area_id=${currentDocAreaFilter}`);
         if (currentDocParentFilter) params.push(`parent_doc_id=${currentDocParentFilter.id}`);
         const url = ADMIN_API + '/admin/documents' + (params.length ? '?' + params.join('&') : '');
-        const res = await fetch(url);
+        const res = await adminFetch(url);
         const data = await res.json();
         const docs = data.documents || [];
 
@@ -862,7 +862,7 @@ async function runDocsSearch() {
         // Filtro local por nome, sobre os documentos já carregados na área atual
         const url = ADMIN_API + '/admin/documents' + (currentDocAreaFilter ? `?area_id=${currentDocAreaFilter}` : '');
         try {
-            const res = await fetch(url);
+            const res = await adminFetch(url);
             const data = await res.json();
             const docs = (data.documents || []).filter(d => d.name.toLowerCase().includes(query.toLowerCase()));
             document.getElementById('docsSearchHint').style.display = 'block';
