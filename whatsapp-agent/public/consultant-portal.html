@@ -35,8 +35,45 @@
         padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent;
     }
     .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+    .tab-icon { display: none; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
+
+    /* ---- Em telas largas (médico abrindo no desktop/notebook), a barra de
+       abas vira uma sidebar fixa, igual aos demais painéis. No celular
+       (a maioria dos acessos, vindos do link do WhatsApp) o layout continua
+       idêntico ao de sempre — nada muda abaixo de 900px. ---- */
+    @media (min-width: 900px) {
+        body { padding: 0; }
+        .wrap { display: flex; max-width: none; margin: 0; min-height: 100vh; align-items: stretch; }
+        .sidebar {
+            width: 260px;
+            flex-shrink: 0;
+            background: #0d1526;
+            border-right: 1px solid #1a2744;
+            display: flex;
+            flex-direction: column;
+            position: sticky;
+            top: 0;
+            align-self: flex-start;
+            height: 100vh;
+            overflow-y: auto;
+        }
+        .sidebar-brand { padding: 1.5rem 1.25rem 1rem; border-bottom: 1px solid #1a2744; }
+        .sidebar-brand h1 { font-size: 1.25rem; }
+        .sidebar-brand .subtitle { font-size: 0.78rem; margin-bottom: 0; }
+        .tabs { flex-direction: column; border-bottom: none; margin-bottom: 0; flex: 1; padding: 0.6rem 0; gap: 0; }
+        .tab-btn {
+            display: flex; align-items: center; gap: 0.7rem;
+            width: 100%; text-align: left;
+            border-left: 3px solid transparent; border-bottom: none;
+            padding: 0.7rem 1.25rem;
+        }
+        .tab-btn:hover { background: #141f38; color: #cbd5e1; }
+        .tab-btn.active { background: #16233d; border-left-color: #60a5fa; border-bottom-color: transparent; }
+        .tab-icon { display: inline-block; font-size: 1.05rem; width: 1.3rem; text-align: center; flex-shrink: 0; }
+        .main-content { flex: 1; min-width: 0; padding: 1.5rem 2rem; }
+    }
     .empty { color: #64748b; font-size: 0.85rem; padding: 0.5rem 0; }
     .appt-row {
         display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
@@ -88,15 +125,21 @@
 </head>
 <body>
 <div class="wrap" id="app">
-    <h1>📅 Minha Agenda</h1>
-    <p class="subtitle" id="subtitle">Carregando...</p>
-    <div class="tabs" id="topTabs" style="display:none;">
-        <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')">Agenda</button>
-        <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')">Pacientes</button>
-        <button class="tab-btn" id="topTabRecibos" onclick="switchTab('recibos')">Recibos</button>
-        <button class="tab-btn" id="topTabConfig" onclick="switchTab('config')">Configurações</button>
-    </div>
-    <div id="content"></div>
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h1>📅 Minha Agenda</h1>
+            <p class="subtitle" id="subtitle">Carregando...</p>
+        </div>
+        <div class="tabs" id="topTabs" style="display:none;">
+            <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')"><span class="tab-icon">📅</span>Agenda</button>
+            <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')"><span class="tab-icon">🗂️</span>Pacientes</button>
+            <button class="tab-btn" id="topTabRecibos" onclick="switchTab('recibos')"><span class="tab-icon">🧾</span>Recibos</button>
+            <button class="tab-btn" id="topTabConfig" onclick="switchTab('config')"><span class="tab-icon">⚙️</span>Configurações</button>
+        </div>
+    </aside>
+    <main class="main-content">
+        <div id="content"></div>
+    </main>
 </div>
 
 <script>
