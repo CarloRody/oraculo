@@ -1771,9 +1771,13 @@ def admin_delete_area(area_id):
 @app.route('/admin/documents', methods=['GET'])
 def admin_get_documents():
     """Lista todos os documentos com nome da área. Aceita ?area_id= e ?parent_doc_id=
-    (parent_doc_id=0 filtra só documentos raiz, sem pai)."""
+    (parent_doc_id=0 filtra só documentos raiz, sem pai). ?limit= é opcional
+    (sem ele, retorna tudo — mantém tree.html e outros chamadores existentes
+    intactos; só o Painel Admin passa limit hoje, pra não deixar a lista
+    principal infinita)."""
     area_id = request.args.get('area_id')
     parent_doc_id = request.args.get('parent_doc_id')
+    limit = request.args.get('limit', type=int)
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "total": 0, "documents": []}), 500
@@ -1790,6 +1794,10 @@ def admin_get_documents():
             where.append("d.parent_doc_id = %s")
             params.append(parent_doc_id)
         where_clause = ("WHERE " + " AND ".join(where)) if where else ""
+        limit_clause = ""
+        if limit:
+            limit_clause = "LIMIT %s"
+            params.append(limit)
         cur.execute(
             f"""SELECT d.id, d.name, a.name as area_name, d.is_external_link, d.url,
                        d.processing_status, d.chunk_count, d.status, d.fetch_mode,
@@ -1798,7 +1806,8 @@ def admin_get_documents():
                 FROM documents d JOIN areas a ON a.id = d.area_id
                 LEFT JOIN documents p ON p.id = d.parent_doc_id
                 {where_clause}
-                ORDER BY d.upload_date DESC""",
+                ORDER BY d.upload_date DESC
+                {limit_clause}""",
             params
         )
         rows = cur.fetchall()

@@ -190,7 +190,8 @@
 
     <!-- DOCUMENTOS -->
     <div id="documents-tab" class="tab-content">
-        <h2 style="color:#60a5fa; margin-bottom:1rem;">Documentos</h2>
+        <h2 style="color:#60a5fa; margin-bottom:0.25rem;">Documentos</h2>
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1rem;">Mostrando os 50 mais recentes. Use os filtros por área ou a busca por nome para encontrar documentos fora dessa lista.</p>
 
         <div class="filter-row" id="docs-area-filter"></div>
 
@@ -786,10 +787,10 @@ function renderDocCard(d) {
 
 async function loadDocs() {
     try {
-        const params = [];
+        const params = ['limit=50'];
         if (currentDocAreaFilter) params.push(`area_id=${currentDocAreaFilter}`);
         if (currentDocParentFilter) params.push(`parent_doc_id=${currentDocParentFilter.id}`);
-        const url = ADMIN_API + '/admin/documents' + (params.length ? '?' + params.join('&') : '');
+        const url = ADMIN_API + '/admin/documents' + '?' + params.join('&');
         const res = await adminFetch(url);
         const data = await res.json();
         const docs = data.documents || [];
