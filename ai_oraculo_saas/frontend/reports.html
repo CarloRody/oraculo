@@ -7,14 +7,59 @@
     <title>Oráculo — Análise & Relatórios</title>
     <link rel="stylesheet" href="style.css">
     <style>
+        * { box-sizing: border-box; }
+
+        /* ---- Shell: sidebar fixa + área de conteúdo (mesmo padrão do Painel Admin) ---- */
+        .app-shell { display: flex; min-height: 100vh; align-items: stretch; }
+        .sidebar {
+            width: 250px;
+            flex-shrink: 0;
+            background: #0d1526;
+            border-right: 1px solid #1a2744;
+            display: flex;
+            flex-direction: column;
+            position: sticky;
+            top: 0;
+            align-self: flex-start;
+            height: 100vh;
+            overflow-y: auto;
+        }
+        .sidebar-brand { padding: 1.5rem 1.25rem 1rem; border-bottom: 1px solid #1a2744; }
+        .sidebar-brand h1 { font-size: 1.3rem; background: linear-gradient(135deg, #60a5fa, #a78bfa); -webkit-background-clip: text; -webkit-text-fill-color: transparent; margin-bottom: 0.3rem; }
+        .sidebar-brand p { color: #94a3b8; font-size: 0.78rem; line-height: 1.3; }
+        .sidebar-nav { flex: 1; display: flex; flex-direction: column; padding: 0.6rem 0; }
+        .nav-item {
+            display: flex; align-items: center; gap: 0.7rem;
+            width: 100%; text-align: left;
+            background: none; border: none; border-left: 3px solid transparent;
+            color: #94a3b8; font-size: 0.9rem;
+            padding: 0.7rem 1.25rem; cursor: pointer; white-space: nowrap;
+        }
+        .nav-item:hover { background: #141f38; color: #cbd5e1; }
+        .nav-item.active { background: #16233d; color: #60a5fa; border-left-color: #60a5fa; }
+        .nav-icon { font-size: 1.05rem; width: 1.3rem; text-align: center; flex-shrink: 0; }
+        .sidebar-footer { padding: 1rem 1.25rem; border-top: 1px solid #1a2744; }
+        .sidebar-footer a { color: #60a5fa; text-decoration: none; font-size: 0.9rem; }
+        .sidebar-footer a:hover { text-decoration: underline; }
+
+        .main-content { flex: 1; min-width: 0; padding: 1.5rem 2rem; }
+        .content-header {
+            display: flex; align-items: flex-end; justify-content: space-between;
+            flex-wrap: wrap; gap: 0.75rem;
+            margin-bottom: 1.5rem; padding-bottom: 1rem;
+            border-bottom: 1px solid #1a2744;
+        }
+        .content-header h2 { font-size: 1.4rem; color: #f8fafc; }
+
+        .period-row { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; }
+        .period-row label { margin: 0; color: #94a3b8; font-size: 0.85rem; }
+        .period-row input[type="month"] { width: auto; }
+        .period-row button { flex-shrink: 0; }
+
         .stats-row { display: flex; gap: 1rem; margin-bottom: 2rem; flex-wrap: wrap; }
         .stat-card { background: #1e293b; border-radius: 8px; padding: 1.5rem; flex: 1; min-width: 160px; text-align: center; border: 1px solid #334155; }
         .stat-value { font-size: 1.8rem; color: #60a5fa; font-weight: 700; }
         .stat-label { color: #64748b; font-size: 0.8rem; text-transform: uppercase; letter-spacing: 1px; margin-top: 0.5rem; }
-
-        .period-row { display: flex; align-items: center; gap: 0.75rem; margin-bottom: 1.5rem; flex-wrap: wrap; }
-        .period-row input[type="month"] { width: auto; }
-        .period-row button { flex-shrink: 0; }
 
         table { width: 100%; border-collapse: collapse; }
         th, td { text-align: left; padding: 0.75rem; border-bottom: 1px solid #334155; font-size: 0.9rem; }
@@ -27,79 +72,112 @@
 
         .tab-content { display: none; }
         .tab-content.active { display: block; }
+
+        @media (max-width: 900px) {
+            .app-shell { flex-direction: column; }
+            .sidebar {
+                width: 100%; height: auto; position: relative; top: auto;
+                flex-direction: row; flex-wrap: wrap; align-items: center;
+                border-right: none; border-bottom: 1px solid #1a2744;
+            }
+            .sidebar-brand { border-bottom: none; padding: 0.9rem 1rem; flex-shrink: 0; }
+            .sidebar-nav { flex-direction: row; flex-wrap: wrap; padding: 0.4rem; }
+            .nav-item {
+                width: auto; border-left: none; border-bottom: 3px solid transparent;
+                padding: 0.5rem 0.8rem; font-size: 0.85rem;
+            }
+            .nav-item.active { border-left-color: transparent; border-bottom-color: #60a5fa; }
+            .sidebar-footer { border-top: none; padding: 0.5rem 1rem; flex-shrink: 0; }
+            .main-content { padding: 1rem; }
+            .content-header h2 { font-size: 1.15rem; }
+        }
     </style>
 </head>
 <body>
 
-<a href="index.html" class="back-link">&larr; Voltar ao Portal</a>
+<div class="app-shell">
+    <aside class="sidebar">
+        <div class="sidebar-brand">
+            <h1>&#128202; Relatórios</h1>
+            <p>Consumo de tokens, custo estimado e cota por cliente e área</p>
+        </div>
 
-<div class="header">
-    <h1>&#128202; Análise & Relatórios</h1>
-    <p>Consumo de tokens, custo estimado e cota por cliente e área</p>
+        <nav class="sidebar-nav">
+            <button class="nav-item active" onclick="switchTab('overview')"><span class="nav-icon">📈</span><span>Visão Geral</span></button>
+            <button class="nav-item" onclick="switchTab('by-client')"><span class="nav-icon">🧑‍💼</span><span>Por Cliente</span></button>
+            <button class="nav-item" onclick="switchTab('by-area')"><span class="nav-icon">🗺️</span><span>Por Área</span></button>
+        </nav>
+
+        <div class="sidebar-footer">
+            <a href="index.html">&larr; Voltar ao Portal</a>
+        </div>
+    </aside>
+
+    <main class="main-content">
+        <div class="content-header">
+            <h2 id="contentTitle">Visão Geral</h2>
+            <div class="period-row">
+                <label for="periodInput">Período:</label>
+                <input type="month" id="periodInput">
+                <button class="btn-primary" onclick="loadReport()">Atualizar</button>
+            </div>
+        </div>
+
+        <!-- Visão Geral -->
+        <div id="overview-tab" class="tab-content active">
+            <div class="stats-row" id="overviewStats"></div>
+            <h3 style="color:#a78bfa; margin-bottom:0.75rem;">Top clientes por consumo</h3>
+            <div class="table-scroll">
+            <table>
+                <thead><tr><th>Cliente</th><th>Área</th><th>Tokens</th><th>Custo Estimado</th></tr></thead>
+                <tbody id="topClientsBody"></tbody>
+            </table>
+            </div>
+        </div>
+
+        <!-- Por Cliente -->
+        <div id="by-client-tab" class="tab-content">
+            <div class="table-scroll">
+            <table>
+                <thead><tr><th>Cliente</th><th>Área</th><th>Entrada</th><th>Saída</th><th>Requisições</th><th>Cota Mensal</th><th>% Usado</th><th>Custo Estimado</th></tr></thead>
+                <tbody id="byClientBody"></tbody>
+            </table>
+            </div>
+        </div>
+
+        <!-- Por Área -->
+        <div id="by-area-tab" class="tab-content">
+            <div class="table-scroll">
+            <table>
+                <thead><tr><th>Área</th><th>Entrada</th><th>Saída</th><th>Total</th><th>Requisições</th></tr></thead>
+                <tbody id="byAreaBody"></tbody>
+            </table>
+            </div>
+        </div>
+    </main>
 </div>
-
-<div class="container wide">
-
-    <div class="period-row">
-        <label for="periodInput" style="margin:0;">Período:</label>
-        <input type="month" id="periodInput">
-        <button class="btn-primary" onclick="loadReport()">Atualizar</button>
-    </div>
-
-    <div class="tabs">
-        <div class="tab active" data-tab="overview" onclick="showTab('overview', this)">Visão Geral</div>
-        <div class="tab" data-tab="by-client" onclick="showTab('by-client', this)">Por Cliente</div>
-        <div class="tab" data-tab="by-area" onclick="showTab('by-area', this)">Por Área</div>
-    </div>
-
-    <!-- Visão Geral -->
-    <div id="overview-tab" class="tab-content active" style="margin-top:1.5rem;">
-        <div class="stats-row" id="overviewStats"></div>
-        <h3 style="color:#a78bfa; margin-bottom:0.75rem;">Top clientes por consumo</h3>
-        <div class="table-scroll">
-        <table>
-            <thead><tr><th>Cliente</th><th>Área</th><th>Tokens</th><th>Custo Estimado</th></tr></thead>
-            <tbody id="topClientsBody"></tbody>
-        </table>
-        </div>
-    </div>
-
-    <!-- Por Cliente -->
-    <div id="by-client-tab" class="tab-content" style="margin-top:1.5rem;">
-        <div class="table-scroll">
-        <table>
-            <thead><tr><th>Cliente</th><th>Área</th><th>Entrada</th><th>Saída</th><th>Requisições</th><th>Cota Mensal</th><th>% Usado</th><th>Custo Estimado</th></tr></thead>
-            <tbody id="byClientBody"></tbody>
-        </table>
-        </div>
-    </div>
-
-    <!-- Por Área -->
-    <div id="by-area-tab" class="tab-content" style="margin-top:1.5rem;">
-        <div class="table-scroll">
-        <table>
-            <thead><tr><th>Área</th><th>Entrada</th><th>Saída</th><th>Total</th><th>Requisições</th></tr></thead>
-            <tbody id="byAreaBody"></tbody>
-        </table>
-        </div>
-    </div>
-
-</div>
-
-<div class="footer">Oráculo</div>
 
 <script>
 const API = window.location.protocol + '//' + window.location.host;
+
+const TAB_TITLES = {
+    overview: 'Visão Geral',
+    'by-client': 'Por Cliente',
+    'by-area': 'Por Área',
+};
 
 function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;') : ''; }
 function fmtNum(n) { return (n ?? 0).toLocaleString('pt-BR'); }
 function fmtCost(c) { return c === null || c === undefined ? '—' : `R$ ${c.toLocaleString('pt-BR', {minimumFractionDigits:2, maximumFractionDigits:2})}`; }
 
-function showTab(name, el) {
+function switchTab(name) {
     document.querySelectorAll('.tab-content').forEach(t => t.classList.remove('active'));
-    document.querySelectorAll('.tab').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.nav-item').forEach(b => b.classList.remove('active'));
     document.getElementById(name + '-tab').classList.add('active');
-    el.classList.add('active');
+    const clicked = (typeof event !== 'undefined' && event && event.target) ? event.target.closest('.nav-item') : null;
+    const btn = clicked || document.querySelector(`.nav-item[onclick*="'${name}'"]`);
+    if (btn) btn.classList.add('active');
+    document.getElementById('contentTitle').textContent = TAB_TITLES[name] || name;
 }
 
 function currentPeriod() {

@@ -940,15 +940,36 @@ def log_chat_message(user_id, area_ids, message, response_text, tokens_input, to
 
 def log_area_usage(user_id, session_id, area_id, tokens_input, tokens_output):
     """Grava uma linha de usage_logs para uma área, com a fatia de tokens já
-    calculada (rateio proporcional é feito pelo chamador). Nunca levanta."""
+    calculada (rateio proporcional é feito pelo chamador). Nunca levanta.
+
+    O preço (price_per_1k_tokens) e o custo já saem CALCULADOS e GRAVADOS
+    aqui, no momento do registro — não são recalculados depois a partir do
+    plano atual do cliente. Isso é proposital: se o cliente trocar de plano
+    ou o preço do plano mudar depois, os relatórios de uso passado não podem
+    mudar de valor retroativamente (ver /admin/usage-summary, que só lê
+    estimated_cost, sem recalcular)."""
     conn = get_db_connection()
     if not conn:
         return
     try:
         cur = conn.cursor()
+        price = None
+        if area_id is not None:
+            cur.execute(
+                """SELECT pap.price_per_1k_tokens
+                   FROM users u JOIN plan_area_pricing pap ON pap.plan_id = u.plan_id AND pap.area_id = %s
+                   WHERE u.id = %s""",
+                (area_id, user_id)
+            )
+            row = cur.fetchone()
+            price = row[0] if row else None
+        total_tokens = (tokens_input or 0) + (tokens_output or 0)
+        cost = round(float(total_tokens) / 1000 * float(price), 4) if price is not None else None
         cur.execute(
-            "INSERT INTO usage_logs (user_id, session_id, area_id, tokens_input, tokens_output) VALUES (%s, %s, %s, %s, %s)",
-            (user_id, session_id, area_id, tokens_input, tokens_output)
+            """INSERT INTO usage_logs (user_id, session_id, area_id, tokens_input, tokens_output,
+                                        price_per_1k_tokens_snapshot, estimated_cost)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (user_id, session_id, area_id, tokens_input, tokens_output, price, cost)
         )
         conn.commit()
         conn.close()
@@ -2905,9 +2926,16 @@ def admin_usage_summary():
         )
         by_area = [{"area_id": r[0], "name": r[1], "tokens_input": r[2], "tokens_output": r[3], "requests": r[4]} for r in cur.fetchall()]
 
+        # estimated_cost vem SOMADO diretamente de usage_logs — já foi
+        # calculado e gravado no momento de cada registro (log_area_usage),
+        # não é recalculado aqui com o preço atual do plano. Assim, um
+        # cliente que trocou de plano (ou teve o preço do plano alterado)
+        # não vê o custo histórico mudar retroativamente. O join com
+        # plan_area_pricing aqui serve só pra cota (monthly_token_quota),
+        # que é mesmo um valor "ao vivo" (não faz sentido cota histórica).
         cur.execute(
             """SELECT u.user_id, us.email, u.area_id, a.name, COALESCE(SUM(u.tokens_input),0), COALESCE(SUM(u.tokens_output),0),
-                      COUNT(u.id), MAX(s.price_per_1k_tokens), MAX(s.monthly_token_quota)
+                      COUNT(u.id), SUM(u.estimated_cost), MAX(s.monthly_token_quota)
                FROM usage_logs u
                JOIN users us ON us.id = u.user_id
                JOIN areas a ON a.id = u.area_id
@@ -2918,9 +2946,9 @@ def admin_usage_summary():
         )
         by_user = []
         total_cost = 0.0
-        for uid, email, aid, area_name, tin, tout, reqs, price, quota in cur.fetchall():
+        for uid, email, aid, area_name, tin, tout, reqs, cost, quota in cur.fetchall():
             total_tokens = tin + tout
-            cost = round(total_tokens / 1000 * float(price), 2) if price is not None else None
+            cost = round(float(cost), 2) if cost is not None else None
             if cost is not None:
                 total_cost += cost
             pct_used = round(total_tokens / quota * 100, 1) if quota else None

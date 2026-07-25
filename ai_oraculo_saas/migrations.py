@@ -387,6 +387,31 @@ MIGRATIONS = [
     ALTER TABLE plans ADD COLUMN IF NOT EXISTS consultores_mode VARCHAR(20) NOT NULL DEFAULT 'agendamento'
         CHECK (consultores_mode IN ('agendamento', 'fluxo'));
     """,
+
+    # 22 — custo de uso gravado no momento do registro (snapshot), não mais
+    # recalculado no relatório com o preço ATUAL do plano — antes, trocar de
+    # plano (ou só mudar o preço de um plano) fazia o custo de meses já
+    # fechados mudar de valor retroativamente nos relatórios, e um cliente
+    # sem preço configurado pra área aparecia como "sem custo" pra sempre,
+    # mesmo depois de ganhar um preço. price_per_1k_tokens_snapshot documenta
+    # qual preço foi usado; estimated_cost é o valor já calculado, somado
+    # direto pelos relatórios (ver log_area_usage e /admin/usage-summary).
+    # Backfill: registros antigos não têm preço da época gravado em lugar
+    # nenhum, então a única aproximação possível é usar o preço ATUAL do
+    # plano de cada cliente — só roda uma vez (WHERE estimated_cost IS NULL).
+    """
+    ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS price_per_1k_tokens_snapshot NUMERIC(10,4);
+    ALTER TABLE usage_logs ADD COLUMN IF NOT EXISTS estimated_cost NUMERIC(10,4);
+
+    UPDATE usage_logs u
+    SET price_per_1k_tokens_snapshot = s.price_per_1k_tokens,
+        estimated_cost = ROUND((COALESCE(u.tokens_input,0) + COALESCE(u.tokens_output,0))::numeric / 1000.0 * s.price_per_1k_tokens, 4)
+    FROM users us
+    JOIN plan_area_pricing s ON s.plan_id = us.plan_id AND s.area_id = u.area_id
+    WHERE u.user_id = us.id
+      AND u.estimated_cost IS NULL
+      AND s.price_per_1k_tokens IS NOT NULL;
+    """,
 ]
 
 
