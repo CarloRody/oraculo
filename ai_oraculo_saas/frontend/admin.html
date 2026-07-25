@@ -76,6 +76,7 @@
 
         /* Cards */
         .card-list { display: flex; flex-direction: column; gap: 1rem; }
+        .card-list.scrollable { max-height: 65vh; overflow-y: auto; padding-right: 0.5rem; }
         .card-item { background: #1e293b; border-radius: 8px; padding: 1.5rem; border: 1px solid #334155; }
         .card-item h3 { color: #f8fafc; margin-bottom: 0.5rem; }
         .card-item p { color: #94a3b8; font-size: 0.9rem; }
@@ -209,7 +210,7 @@
             <button class="btn btn-sm" onclick="clearDocsParentFilter()">Ver todos</button>
         </div>
 
-        <div id="docs-list" class="card-list"></div>
+        <div id="docs-list" class="card-list scrollable"></div>
     </div>
 
     <!-- CLIENTES -->
