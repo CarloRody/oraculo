@@ -688,7 +688,7 @@ async function loadFichaPatient() {
             api(`/contacts/${contactId}/appointments`),
             api(`/contacts/${contactId}/evolution-notes`),
             api(`/contacts/${contactId}/documents`),
-            api(`/contacts/${contactId}/receipts`),
+            api(`/receipts?contact_id=${contactId}`),
         ]);
         box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true }, receiptsData);
     } catch (e) {
