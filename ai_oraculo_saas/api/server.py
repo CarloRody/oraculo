@@ -28,16 +28,34 @@ def _require_admin_key_for_admin_routes():
     modelos, usuários, config, restart do OpenClaw, DDNS, etc.) — antes,
     essas rotas não exigiam nada e o único "controle de acesso" era o
     frontend esconder os links (facilmente contornável chamando a rota
-    direto). Corrigido pra negar por padrão: sem admin_api_key configurada
-    em config.yaml, ninguém entra; com ela configurada, só quem manda a
-    chave certa no header X-Oraculo-Key passa."""
+    direto). Corrigido pra negar por padrão — mas várias dessas rotas
+    (ex: /admin/areas, /admin/documents*, /admin/usage-summary) também são
+    usadas por páginas liberadas pra CLIENTES comuns (extract.html,
+    tree.html, reports.html — ver allowed_pages/access-guard.js), então
+    aceitar só a admin_api_key quebraria o uso normal delas. Regra: chave de
+    admin sempre passa; chave de cliente válida (resolve pra um user_id de
+    verdade) passa em qualquer rota MENOS /admin/whoami (essa é usada só
+    pra distinguir "é o admin de verdade" — se aceitasse chave de cliente,
+    qualquer cliente logado seria tratado como admin com acesso irrestrito)."""
     if not request.path.startswith("/admin/"):
         return None
+
+    key = request.headers.get("X-Oraculo-Key")
+    is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
+
+    if request.path == "/admin/whoami":
+        if is_admin:
+            return None
+        return jsonify({"error": "Chave de administrador inválida ou ausente"}), 401
+
+    if is_admin:
+        return None
+    if key and resolve_user_from_request():
+        return None
+
     if not ADMIN_API_KEY:
         return jsonify({"error": "admin_api_key não configurada — acesso bloqueado por segurança"}), 503
-    if request.headers.get("X-Oraculo-Key") != ADMIN_API_KEY:
-        return jsonify({"error": "Chave de administrador inválida ou ausente"}), 401
-    return None
+    return jsonify({"error": "Chave de acesso inválida ou ausente"}), 401
 
 
 @app.route("/admin/whoami", methods=["GET"])
