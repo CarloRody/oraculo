@@ -362,10 +362,32 @@ def get_stats():
 
 @app.route('/api/search', methods=['POST'])
 def rag_search():
-    """Busca semântica RAG via embeddings + cosine similarity no Postgres."""
+    """Busca semântica RAG via embeddings + cosine similarity no Postgres.
+
+    Exige X-Oraculo-Key: chave de admin busca em qualquer área (ferramenta
+    de teste interna — rag.html, "busca direta" do admin.html); chave de
+    cliente fica restrita às áreas do próprio plano, igual ao /api/chat.
+    Antes, essa rota não exigia nada e devolvia conteúdo de área privada de
+    QUALQUER cliente pra quem chamasse a rota direto (a tela só filtrava
+    visualmente, o backend não)."""
     data = request.get_json()
     query = data.get('query', '')
-    area_ids = resolve_area_ids(data)
+    requested_area_ids = resolve_area_ids(data)
+
+    api_key = request.headers.get('X-Oraculo-Key')
+    is_admin = bool(ADMIN_API_KEY) and api_key == ADMIN_API_KEY
+    if is_admin:
+        area_ids = requested_area_ids
+    else:
+        user_id = resolve_user_from_request()
+        if not user_id:
+            return jsonify({"error": "Chave de acesso inválida ou ausente"}), 401
+        area_ids, had_unauthorized_request = resolve_authorized_area_ids(requested_area_ids, user_id)
+        if not area_ids:
+            msg = ("Nenhuma das áreas pedidas está disponível pra essa chave de acesso."
+                   if had_unauthorized_request else
+                   "Nenhuma área disponível no seu plano de acesso.")
+            return jsonify({"error": msg}), 403
     try:
         top_k = max(1, min(int(data.get('top_k') or 8), 20))
     except (TypeError, ValueError):
@@ -1655,17 +1677,41 @@ def admin_get_areas():
     """Lista TODAS as áreas (qualquer status) com contagem de documentos, pro
     admin poder gerenciar rascunho/arquivada — só as públicas (/api/areas)
     filtram por status='active'. owner_user_id/owner_email preenchidos = base
-    de conhecimento privada de um cliente (não uma área global)."""
+    de conhecimento privada de um cliente (não uma área global).
+
+    Esta rota também é usada por páginas client-facing (extract.html,
+    tree.html) com uma chave de CLIENTE comum, não só a admin_api_key (ver
+    comentário do before_request). Sem a chave de admin, restringe às áreas
+    globais (owner_user_id NULL) + só a própria área privada do chamador —
+    antes disso, qualquer cliente com uma chave válida via essa rota via as
+    áreas privadas de TODOS os outros clientes."""
+    key = request.headers.get('X-Oraculo-Key')
+    is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
+    scope_user_id = None
+    if not is_admin:
+        scope_user_id = resolve_user_from_request()
+        if not scope_user_id:
+            return jsonify({"error": "Chave de acesso inválida"}), 401
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "total": 0, "areas": []}), 500
     try:
         cur = conn.cursor()
-        cur.execute(
-            """SELECT a.id, a.name, a.slug, a.status, a.owner_user_id, u.email, a.custom_prompt
-               FROM areas a LEFT JOIN users u ON u.id = a.owner_user_id
-               ORDER BY a.name"""
-        )
+        if is_admin:
+            cur.execute(
+                """SELECT a.id, a.name, a.slug, a.status, a.owner_user_id, u.email, a.custom_prompt
+                   FROM areas a LEFT JOIN users u ON u.id = a.owner_user_id
+                   ORDER BY a.name"""
+            )
+        else:
+            cur.execute(
+                """SELECT a.id, a.name, a.slug, a.status, a.owner_user_id, u.email, a.custom_prompt
+                   FROM areas a LEFT JOIN users u ON u.id = a.owner_user_id
+                   WHERE a.owner_user_id IS NULL OR a.owner_user_id = %s
+                   ORDER BY a.name""",
+                (scope_user_id,)
+            )
         rows = cur.fetchall()
         areas = []
         for r in rows:
@@ -1795,10 +1841,25 @@ def admin_get_documents():
     (parent_doc_id=0 filtra só documentos raiz, sem pai). ?limit= é opcional
     (sem ele, retorna tudo — mantém tree.html e outros chamadores existentes
     intactos; só o Painel Admin passa limit hoje, pra não deixar a lista
-    principal infinita)."""
+    principal infinita).
+
+    Mesma restrição de dono do /admin/areas: sem a chave de admin, só
+    devolve documentos de áreas globais ou da própria área privada do
+    chamador — antes, um ?area_id de outro cliente (ou nenhum area_id,
+    "todas") devolvia documentos de QUALQUER clínica pra qualquer chave
+    válida."""
     area_id = request.args.get('area_id')
     parent_doc_id = request.args.get('parent_doc_id')
     limit = request.args.get('limit', type=int)
+
+    key = request.headers.get('X-Oraculo-Key')
+    is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
+    scope_user_id = None
+    if not is_admin:
+        scope_user_id = resolve_user_from_request()
+        if not scope_user_id:
+            return jsonify({"error": "Chave de acesso inválida"}), 401
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "total": 0, "documents": []}), 500
@@ -1814,6 +1875,9 @@ def admin_get_documents():
         elif parent_doc_id:
             where.append("d.parent_doc_id = %s")
             params.append(parent_doc_id)
+        if not is_admin:
+            where.append("(a.owner_user_id IS NULL OR a.owner_user_id = %s)")
+            params.append(scope_user_id)
         where_clause = ("WHERE " + " AND ".join(where)) if where else ""
         limit_clause = ""
         if limit:
@@ -1915,7 +1979,10 @@ def admin_get_low_content_documents():
     fragmento cortado — mesmo quando o total não é tão pequeno assim).
     'pending' fica de fora: ainda não processado não é a mesma coisa que
     processado e raso. Ação (reprocessar/apagar) continua sendo por
-    documento inteiro — não existe gestão por chunk avulso."""
+    documento inteiro — não existe gestão por chunk avulso.
+
+    Mesma restrição de dono das outras rotas de documentos: sem a chave de
+    admin, só considera áreas globais + a própria área privada do chamador."""
     try:
         doc_threshold = int(request.args.get('doc_threshold', 400))
         chunk_threshold = int(request.args.get('chunk_threshold', 80))
@@ -1923,13 +1990,26 @@ def admin_get_low_content_documents():
     except ValueError:
         return jsonify({"error": "Parâmetros de threshold inválidos"}), 400
 
+    key = request.headers.get('X-Oraculo-Key')
+    is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
+    scope_user_id = None
+    if not is_admin:
+        scope_user_id = resolve_user_from_request()
+        if not scope_user_id:
+            return jsonify({"error": "Chave de acesso inválida"}), 401
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "documents": []}), 500
     try:
         cur = conn.cursor()
+        params = {"doc_threshold": doc_threshold, "chunk_threshold": chunk_threshold, "ratio_threshold": ratio_threshold}
+        scope_clause = ""
+        if not is_admin:
+            scope_clause = "AND (a.owner_user_id IS NULL OR a.owner_user_id = %(scope_user_id)s)"
+            params["scope_user_id"] = scope_user_id
         cur.execute(
-            """WITH chunk_stats AS (
+            f"""WITH chunk_stats AS (
                    SELECT doc_id,
                           COUNT(*) as total_chunks,
                           COUNT(*) FILTER (WHERE LENGTH(content_chunk) < %(chunk_threshold)s) as short_chunks,
@@ -1952,12 +2032,13 @@ def admin_get_low_content_documents():
                FROM documents d
                JOIN areas a ON a.id = d.area_id
                LEFT JOIN chunk_stats cs ON cs.doc_id = d.id
-               WHERE d.processing_status = 'failed'
+               WHERE (d.processing_status = 'failed'
                   OR (d.processing_status = 'indexed' AND COALESCE(LENGTH(d.content_text), 0) < %(doc_threshold)s)
                   OR (d.processing_status = 'indexed' AND cs.total_chunks > 0
-                      AND cs.short_chunks::float / cs.total_chunks >= %(ratio_threshold)s)
+                      AND cs.short_chunks::float / cs.total_chunks >= %(ratio_threshold)s))
+               {scope_clause}
                ORDER BY content_length ASC""",
-            {"doc_threshold": doc_threshold, "chunk_threshold": chunk_threshold, "ratio_threshold": ratio_threshold}
+            params
         )
         rows = cur.fetchall()
         documents = [{
@@ -1987,18 +2068,38 @@ def admin_get_duplicate_documents():
     nova em vez de reaproveitar a existente). Cada grupo já vem com
     recommended_keep_id calculado pela heurística: indexado > mais chunks >
     processado mais recentemente > status ativo — o front pré-seleciona
-    esse, mas o admin pode trocar antes de resolver."""
+    esse, mas o admin pode trocar antes de resolver.
+
+    Mesma restrição de dono das outras rotas de documentos: sem a chave de
+    admin, só considera áreas globais + a própria área privada do chamador."""
+    key = request.headers.get('X-Oraculo-Key')
+    is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
+    scope_user_id = None
+    if not is_admin:
+        scope_user_id = resolve_user_from_request()
+        if not scope_user_id:
+            return jsonify({"error": "Chave de acesso inválida"}), 401
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível", "groups": []}), 500
     try:
         cur = conn.cursor()
-        cur.execute(
-            """SELECT area_id, url FROM documents
-               WHERE url IS NOT NULL
-               GROUP BY area_id, url
-               HAVING COUNT(*) > 1"""
-        )
+        if is_admin:
+            cur.execute(
+                """SELECT area_id, url FROM documents
+                   WHERE url IS NOT NULL
+                   GROUP BY area_id, url
+                   HAVING COUNT(*) > 1"""
+            )
+        else:
+            cur.execute(
+                """SELECT d.area_id, d.url FROM documents d JOIN areas a ON a.id = d.area_id
+                   WHERE d.url IS NOT NULL AND (a.owner_user_id IS NULL OR a.owner_user_id = %s)
+                   GROUP BY d.area_id, d.url
+                   HAVING COUNT(*) > 1""",
+                (scope_user_id,)
+            )
         dup_keys = cur.fetchall()
 
         groups = []
@@ -2897,32 +2998,48 @@ def _period_bounds(period):
 
 @app.route('/admin/usage-summary', methods=['GET'])
 def admin_usage_summary():
-    """Resumo de consumo de tokens do período — total, por área, por cliente, com custo estimado."""
+    """Resumo de consumo de tokens do período — total, por área, por cliente, com custo estimado.
+
+    Usada pelo Painel Admin (sem filtro) e por reports.html (client-facing).
+    Sem a chave de admin, restringe TUDO (total, por área, por cliente) ao
+    próprio chamador — antes, qualquer chave de cliente válida via consumo,
+    custo e e-mail de TODOS os outros clientes, não só o seu."""
     period = request.args.get('period')
     try:
         start, end = _period_bounds(period)
     except Exception:
         return jsonify({"error": "period inválido, use o formato YYYY-MM"}), 400
 
+    key = request.headers.get('X-Oraculo-Key')
+    is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
+    scope_user_id = None
+    if not is_admin:
+        scope_user_id = resolve_user_from_request()
+        if not scope_user_id:
+            return jsonify({"error": "Chave de acesso inválida"}), 401
+
     conn = get_db_connection()
     if not conn:
         return jsonify({"error": "Banco indisponível"}), 500
     try:
         cur = conn.cursor()
+        user_scope_bare = "" if is_admin else "AND user_id = %s"
+        user_scope_aliased = "" if is_admin else "AND u.user_id = %s"
+        user_scope_params = () if is_admin else (scope_user_id,)
 
         cur.execute(
-            """SELECT COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0), COUNT(*)
-               FROM usage_logs WHERE timestamp >= %s AND timestamp < %s""",
-            (start, end)
+            f"""SELECT COALESCE(SUM(tokens_input),0), COALESCE(SUM(tokens_output),0), COUNT(*)
+               FROM usage_logs WHERE timestamp >= %s AND timestamp < %s {user_scope_bare}""",
+            (start, end) + user_scope_params
         )
         total_in, total_out, total_req = cur.fetchone()
 
         cur.execute(
-            """SELECT a.id, a.name, COALESCE(SUM(u.tokens_input),0), COALESCE(SUM(u.tokens_output),0), COUNT(u.id)
+            f"""SELECT a.id, a.name, COALESCE(SUM(u.tokens_input),0), COALESCE(SUM(u.tokens_output),0), COUNT(u.id)
                FROM usage_logs u JOIN areas a ON a.id = u.area_id
-               WHERE u.timestamp >= %s AND u.timestamp < %s
+               WHERE u.timestamp >= %s AND u.timestamp < %s {user_scope_aliased}
                GROUP BY a.id, a.name ORDER BY a.name""",
-            (start, end)
+            (start, end) + user_scope_params
         )
         by_area = [{"area_id": r[0], "name": r[1], "tokens_input": r[2], "tokens_output": r[3], "requests": r[4]} for r in cur.fetchall()]
 
@@ -2934,15 +3051,15 @@ def admin_usage_summary():
         # plan_area_pricing aqui serve só pra cota (monthly_token_quota),
         # que é mesmo um valor "ao vivo" (não faz sentido cota histórica).
         cur.execute(
-            """SELECT u.user_id, us.email, u.area_id, a.name, COALESCE(SUM(u.tokens_input),0), COALESCE(SUM(u.tokens_output),0),
+            f"""SELECT u.user_id, us.email, u.area_id, a.name, COALESCE(SUM(u.tokens_input),0), COALESCE(SUM(u.tokens_output),0),
                       COUNT(u.id), SUM(u.estimated_cost), MAX(s.monthly_token_quota)
                FROM usage_logs u
                JOIN users us ON us.id = u.user_id
                JOIN areas a ON a.id = u.area_id
                LEFT JOIN plan_area_pricing s ON s.plan_id = us.plan_id AND s.area_id = u.area_id
-               WHERE u.timestamp >= %s AND u.timestamp < %s AND u.user_id IS NOT NULL
+               WHERE u.timestamp >= %s AND u.timestamp < %s AND u.user_id IS NOT NULL {user_scope_aliased}
                GROUP BY u.user_id, us.email, u.area_id, a.name ORDER BY us.email""",
-            (start, end)
+            (start, end) + user_scope_params
         )
         by_user = []
         total_cost = 0.0
