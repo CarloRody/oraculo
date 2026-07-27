@@ -11,6 +11,7 @@ via HTTP, nunca lê o banco dele diretamente pra isso.
 import base64
 import datetime
 import hashlib
+import io
 import mimetypes
 import os
 import re
@@ -18,6 +19,7 @@ import secrets
 import threading
 import time
 import uuid
+import zipfile
 from decimal import Decimal
 
 import psycopg2
@@ -1786,6 +1788,61 @@ def get_annual_statement_data(contact_id, consultant_id, year):
         return patient_snapshot, consultant_snapshot, rows
     finally:
         conn.close()
+
+
+def _patients_with_receipts_in_year(consultant_id, year):
+    """Ids de contato distintos com pelo menos um recibo ativo desse médico
+    nesse ano — base pro botão 'Todos os pacientes' da declaração anual."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT DISTINCT contact_id FROM whatsapp_receipts
+               WHERE consultant_id = %s AND status = 'active'
+                 AND EXTRACT(YEAR FROM service_date) = %s
+               ORDER BY contact_id""",
+            (consultant_id, year),
+        )
+        return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def build_annual_statement_zip(consultant_id, year, professional_term):
+    """Gera um .zip em memória com uma declaração anual em PDF POR
+    paciente — nunca um PDF só juntando todos, porque cada declaração
+    mostra CPF/dado de saúde só daquele paciente (misturar vazaria dado de
+    um paciente pro outro). Retorna (zip_bytes, quantidade_de_pacientes)."""
+    buf = io.BytesIO()
+    count = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for contact_id in _patients_with_receipts_in_year(consultant_id, year):
+            data = get_annual_statement_data(contact_id, consultant_id, year)
+            if not data:
+                continue
+            patient_snapshot, consultant_snapshot, rows = data
+            pdf_bytes = receipts_pdf.generate_annual_statement_pdf(
+                consultant_snapshot, patient_snapshot, rows, year, professional_term=professional_term,
+            )
+            safe_name = re.sub(r"[^\w\-]+", "_", patient_snapshot["patient_name"] or f"paciente-{contact_id}").strip("_")
+            zf.writestr(f"declaracao-ir-{year}-{safe_name}.pdf", pdf_bytes)
+            count += 1
+    buf.seek(0)
+    return buf.getvalue(), count
+
+
+def send_annual_statement_to_all_patients(consultant_id, year):
+    """Manda a declaração anual de TODOS os pacientes desse médico/ano pro
+    WhatsApp de cada um — reaproveita send_annual_statement_to_contact por
+    paciente. Retorna (enviados, falhados)."""
+    sent, failed = 0, 0
+    for contact_id in _patients_with_receipts_in_year(consultant_id, year):
+        result = send_annual_statement_to_contact(contact_id, consultant_id, year)
+        if result == "ok":
+            sent += 1
+        else:
+            failed += 1
+    return sent, failed
 
 
 def send_receipt_to_contact(receipt_id):
@@ -4627,6 +4684,46 @@ def cp_send_annual_statement(contact_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/client-portal/consultants/<int:consultant_id>/annual-statement/all", methods=["GET"])
+def cp_annual_statement_pdf_all(consultant_id):
+    """Declaração anual de TODOS os pacientes desse médico/ano de uma vez,
+    num .zip — pra secretária não precisar escolher paciente por paciente."""
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Médico não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    year = request.args.get("year", type=int)
+    if not year:
+        return jsonify({"ok": False, "message": "Informe o ano."}), 400
+    term = get_nomenclature(user_id)["consultant"]["singular"]
+    zip_bytes, count = build_annual_statement_zip(consultant_id, year, term)
+    if count == 0:
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido neste ano."}), 404
+    return Response(zip_bytes, mimetype="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="declaracoes-ir-{year}.zip"',
+    })
+
+
+@app.route("/api/client-portal/consultants/<int:consultant_id>/annual-statement/all/send-whatsapp", methods=["POST"])
+def cp_send_annual_statement_all(consultant_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _consultant_owner(consultant_id) != user_id:
+        return _not_found("Médico não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    year = data.get("year")
+    if not year:
+        return jsonify({"ok": False, "message": "Informe o ano."}), 400
+    sent, failed = send_annual_statement_to_all_patients(consultant_id, year)
+    if sent == 0 and failed == 0:
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido neste ano."}), 404
+    return jsonify({"ok": True, "sent": sent, "failed": failed})
+
+
 # ---------------------------------------------------------------------------
 # Portal do consultor — autenticado por token (link mandado por WhatsApp),
 # nunca por sessão de admin. Cada rota resolve o consultor pelo token e só
@@ -4962,6 +5059,41 @@ def api_portal_send_annual_statement(token, contact_id):
     if result != "ok":
         return jsonify({"ok": False, "message": "Falha ao enviar a declaração pelo WhatsApp"}), 502
     return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/annual-statement/all", methods=["GET"])
+def api_portal_annual_statement_pdf_all(token):
+    """Declaração anual de TODOS os pacientes do médico/ano de uma vez,
+    num .zip — pra ele não precisar escolher paciente por paciente."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    year = request.args.get("year", type=int)
+    if not year:
+        return jsonify({"ok": False, "message": "Informe o ano."}), 400
+    account = get_account(consultant["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    zip_bytes, count = build_annual_statement_zip(consultant["id"], year, term)
+    if count == 0:
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido neste ano."}), 404
+    return Response(zip_bytes, mimetype="application/zip", headers={
+        "Content-Disposition": f'attachment; filename="declaracoes-ir-{year}.zip"',
+    })
+
+
+@app.route("/api/consultant-portal/<token>/annual-statement/all/send-whatsapp", methods=["POST"])
+def api_portal_send_annual_statement_all(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    data = request.json or {}
+    year = data.get("year")
+    if not year:
+        return jsonify({"ok": False, "message": "Informe o ano."}), 400
+    sent, failed = send_annual_statement_to_all_patients(consultant["id"], year)
+    if sent == 0 and failed == 0:
+        return jsonify({"ok": False, "message": "Nenhum recibo emitido neste ano."}), 404
+    return jsonify({"ok": True, "sent": sent, "failed": failed})
 
 
 @app.route("/api/consultant-portal/<token>/appointments", methods=["POST"])

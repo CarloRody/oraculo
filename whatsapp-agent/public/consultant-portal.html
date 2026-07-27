@@ -1149,7 +1149,9 @@ function populateRecibosSelects() {
     const options = '<option value="">Selecione...</option>' +
         knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
     document.getElementById('reciboPatient').innerHTML = options;
-    document.getElementById('statementPatient').innerHTML = options;
+    document.getElementById('statementPatient').innerHTML =
+        '<option value="">Selecione...</option><option value="all">— Todos os pacientes —</option>' +
+        knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
     document.getElementById('recibosFilterPatient').innerHTML = '<option value="">Todos</option>' +
         knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
 }
@@ -1268,12 +1270,13 @@ async function downloadAnnualStatement() {
     const contactId = document.getElementById('statementPatient').value;
     const year = document.getElementById('statementYear').value;
     if (!contactId || !year) return alert('Selecione paciente e ano.');
+    const isAll = contactId === 'all';
     try {
-        const blob = await apiBlob(`/contacts/${contactId}/annual-statement?year=${year}`);
+        const blob = await apiBlob(isAll ? `/annual-statement/all?year=${year}` : `/contacts/${contactId}/annual-statement?year=${year}`);
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = `declaracao-ir-${year}.pdf`;
+        a.download = isAll ? `declaracoes-ir-${year}.zip` : `declaracao-ir-${year}.pdf`;
         a.click();
         URL.revokeObjectURL(url);
     } catch (e) { alert(e.message); }
@@ -1283,6 +1286,14 @@ async function sendAnnualStatement() {
     const contactId = document.getElementById('statementPatient').value;
     const year = document.getElementById('statementYear').value;
     if (!contactId || !year) return alert('Selecione paciente e ano.');
+    if (contactId === 'all') {
+        if (!confirm('Enviar a declaração anual em PDF pelo WhatsApp de TODOS os seus pacientes neste ano?')) return;
+        try {
+            const data = await api(`/annual-statement/all/send-whatsapp`, { method: 'POST', body: JSON.stringify({ year: Number(year) }) });
+            alert(`${data.sent} declaração(ões) enviada(s)${data.failed ? `, ${data.failed} falharam` : ''}.`);
+        } catch (e) { alert(e.message); }
+        return;
+    }
     if (!confirm('Enviar a declaração anual em PDF pelo WhatsApp do paciente?')) return;
     try {
         await api(`/contacts/${contactId}/annual-statement/send-whatsapp`, { method: 'POST', body: JSON.stringify({ year: Number(year) }) });
