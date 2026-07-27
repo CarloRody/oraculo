@@ -2639,14 +2639,14 @@ def get_checklist_template(account_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT id, step_key, label, sort_order, notify_patient, notify_consultant, notify_secretary,
-                      auto_message_template
+                      auto_message_template, consultant_id
                FROM whatsapp_checklist_templates
                WHERE account_id = %s AND active
                ORDER BY sort_order""",
             (account_id,),
         )
         cols = ["id", "step_key", "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary",
-                "auto_message_template"]
+                "auto_message_template", "consultant_id"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -2670,6 +2670,9 @@ def set_checklist_template(account_id, steps):
         used_keys = set(existing.values())
         kept_ids = set()
 
+        cur.execute("SELECT id FROM whatsapp_consultants WHERE account_id = %s", (account_id,))
+        valid_consultant_ids = {r[0] for r in cur.fetchall()}
+
         for idx, step in enumerate(steps or []):
             if not isinstance(step, dict):
                 continue
@@ -2680,15 +2683,22 @@ def set_checklist_template(account_id, steps):
             notify_patient = bool(step.get("notify_patient")) and bool(auto_template)
             notify_consultant = bool(step.get("notify_consultant")) and bool(auto_template)
             notify_secretary = bool(step.get("notify_secretary")) and bool(auto_template)
+            # Etapa de encaminhamento: consultor específico da clínica (não o
+            # que atendeu a consulta) — marcar essa etapa concluída dispara o
+            # início do agendamento com ele (ver mark_checklist_item). Nunca
+            # aceita um id de fora desta conta.
+            raw_consultant_id = step.get("consultant_id")
+            consultant_id = raw_consultant_id if isinstance(raw_consultant_id, int) and raw_consultant_id in valid_consultant_ids else None
 
             step_id = step.get("id")
             if isinstance(step_id, int) and step_id in existing:
                 cur.execute(
                     """UPDATE whatsapp_checklist_templates
                        SET label = %s, sort_order = %s, notify_patient = %s, notify_consultant = %s,
-                           notify_secretary = %s, auto_message_template = %s, active = TRUE
+                           notify_secretary = %s, auto_message_template = %s, consultant_id = %s, active = TRUE
                        WHERE id = %s AND account_id = %s""",
-                    (label, idx, notify_patient, notify_consultant, notify_secretary, auto_template, step_id, account_id),
+                    (label, idx, notify_patient, notify_consultant, notify_secretary, auto_template,
+                     consultant_id, step_id, account_id),
                 )
                 kept_ids.add(step_id)
             else:
@@ -2701,9 +2711,10 @@ def set_checklist_template(account_id, steps):
                 cur.execute(
                     """INSERT INTO whatsapp_checklist_templates
                        (account_id, step_key, label, sort_order, notify_patient, notify_consultant,
-                        notify_secretary, auto_message_template)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-                    (account_id, key, label, idx, notify_patient, notify_consultant, notify_secretary, auto_template),
+                        notify_secretary, auto_message_template, consultant_id)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                    (account_id, key, label, idx, notify_patient, notify_consultant, notify_secretary,
+                     auto_template, consultant_id),
                 )
                 kept_ids.add(cur.fetchone()[0])
 
@@ -2920,16 +2931,19 @@ def get_checklist_items_for_appointment(appointment_id):
         cur.execute(
             """SELECT i.id, i.status, i.done_at,
                       i.auto_message_sent_patient_at, i.auto_message_sent_consultant_at, i.auto_message_sent_secretary_at,
-                      t.label, t.sort_order, t.notify_patient, t.notify_consultant, t.notify_secretary
+                      t.label, t.sort_order, t.notify_patient, t.notify_consultant, t.notify_secretary,
+                      t.consultant_id, fc.name
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
+               LEFT JOIN whatsapp_consultants fc ON fc.id = t.consultant_id
                WHERE i.appointment_id = %s
                ORDER BY t.sort_order""",
             (appointment_id,),
         )
         cols = ["id", "status", "done_at",
                 "auto_message_sent_patient_at", "auto_message_sent_consultant_at", "auto_message_sent_secretary_at",
-                "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary"]
+                "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary",
+                "forward_consultant_id", "forward_consultant_name"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -2948,12 +2962,14 @@ def get_checklist_items_for_account(account_id, status=None):
             f"""SELECT i.id, i.status, i.done_at, t.label, t.notify_patient, t.notify_consultant, t.notify_secretary,
                        a.id, a.scheduled_at, a.subject,
                        con.id, con.name,
-                       ct.id, ct.push_name, ct.wa_id
+                       ct.id, ct.push_name, ct.wa_id,
+                       t.consultant_id, fc.name
                 FROM whatsapp_checklist_items i
                 JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                 JOIN whatsapp_appointments a ON a.id = i.appointment_id
                 JOIN whatsapp_consultants con ON con.id = a.consultant_id
                 JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+                LEFT JOIN whatsapp_consultants fc ON fc.id = t.consultant_id
                 WHERE con.account_id = %s {where_status}
                 ORDER BY ct.push_name, a.scheduled_at DESC, t.sort_order""",
             params,
@@ -2961,7 +2977,8 @@ def get_checklist_items_for_account(account_id, status=None):
         cols = ["id", "status", "done_at", "label", "notify_patient", "notify_consultant", "notify_secretary",
                 "appointment_id", "scheduled_at", "subject",
                 "consultant_id", "consultant_name",
-                "client_contact_id", "client_name", "client_wa_id"]
+                "client_contact_id", "client_name", "client_wa_id",
+                "forward_consultant_id", "forward_consultant_name"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
             r["scheduled_at"] = r["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
@@ -2989,7 +3006,8 @@ def mark_checklist_item(item_id, new_status):
             """SELECT i.auto_message_sent_patient_at, i.auto_message_sent_consultant_at, i.auto_message_sent_secretary_at,
                       t.notify_patient, t.notify_consultant, t.notify_secretary, t.auto_message_template,
                       a.scheduled_at, a.subject, acc.wa_session_name, acc.label,
-                      con.name, ct.wa_id, ct.push_name, cons_ct.wa_id, sec_ct.wa_id, acc.id
+                      con.name, ct.wa_id, ct.push_name, cons_ct.wa_id, sec_ct.wa_id, acc.id,
+                      t.label, t.consultant_id, fc.name, i.booking_triggered_at
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                JOIN whatsapp_appointments a ON a.id = i.appointment_id
@@ -2998,6 +3016,7 @@ def mark_checklist_item(item_id, new_status):
                JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
                JOIN whatsapp_contacts cons_ct ON cons_ct.id = con.contact_id
                LEFT JOIN whatsapp_contacts sec_ct ON sec_ct.id = acc.secretary_contact_id
+               LEFT JOIN whatsapp_consultants fc ON fc.id = t.consultant_id
                WHERE i.id = %s""",
             (item_id,),
         )
@@ -3007,7 +3026,8 @@ def mark_checklist_item(item_id, new_status):
                 "notify_patient", "notify_consultant", "notify_secretary", "auto_message_template",
                 "scheduled_at", "subject", "wa_session_name", "account_label",
                 "consultant_name", "client_wa_id", "client_push_name", "consultant_wa_id", "secretary_wa_id",
-                "account_id"]
+                "account_id",
+                "step_label", "forward_consultant_id", "forward_consultant_name", "booking_triggered_at"]
         return dict(zip(cols, row)) if row else None
     finally:
         conn.close()
@@ -3026,6 +3046,16 @@ def _mark_checklist_auto_message_sent(item_id, recipient):
     try:
         cur = conn.cursor()
         cur.execute(f"UPDATE whatsapp_checklist_items SET {column} = NOW() WHERE id = %s", (item_id,))
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _mark_checklist_booking_triggered(item_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_checklist_items SET booking_triggered_at = NOW() WHERE id = %s", (item_id,))
         conn.commit()
     finally:
         conn.close()
@@ -4260,6 +4290,7 @@ def cp_set_checklist_template(account_id):
     data = request.json or {}
     steps = data.get("steps") or []
     account = get_account(account_id)
+    valid_consultant_ids = {c["id"] for c in get_consultants(account_id)}
     # Sem essa checagem, set_checklist_template() derruba os 3 flags de
     # destinatário pra False em silêncio quando o texto vem vazio (ver
     # server.py mais abaixo) — e quem tá preenchendo o formulário só descobre
@@ -4268,6 +4299,13 @@ def cp_set_checklist_template(account_id):
         if not isinstance(step, dict):
             continue
         label = (step.get("label") or "").strip()
+        raw_consultant_id = step.get("consultant_id")
+        if label and raw_consultant_id is not None and raw_consultant_id not in valid_consultant_ids:
+            return jsonify({
+                "ok": False,
+                "message": f'A etapa "{label}" aponta pra um profissional que não pertence mais a esta clínica. '
+                           f'Escolha outro ou remova o encaminhamento.',
+            }), 400
         wants_message = step.get("notify_patient") or step.get("notify_consultant") or step.get("notify_secretary")
         if label and wants_message and not (step.get("auto_message_template") or "").strip():
             return jsonify({
@@ -4473,7 +4511,11 @@ def cp_update_checklist_item(item_id):
             "assunto": result["subject"] or "",
             "clinica": result["account_label"],
         }
-        texto = render_message_template(result["auto_message_template"], ctx)
+        # Etapa sem texto de mensagem configurado (comum em etapa puramente
+        # administrativa, ou numa etapa de encaminhamento que só usa o aviso
+        # fixo da secretária lá embaixo) — sem isso, render_message_template
+        # quebra tentando chamar .replace() em None.
+        texto = render_message_template(result["auto_message_template"], ctx) if result["auto_message_template"] else None
         # Um texto só, renderizado 1x — os 3 checkboxes da etapa só decidem
         # quem recebe essa mesma mensagem. Cada destinatário tem sua própria
         # marca de "já enviado" e falha independente dos outros (ex: número
@@ -4501,6 +4543,29 @@ def cp_update_checklist_item(item_id):
             except EvolutionError as e:
                 log_event(None, "checklist_auto_message_failed", level="error",
                           detail={"item_id": item_id, "recipient": recipient, "error": str(e)})
+
+        # Etapa de encaminhamento (aponta pra um profissional específico da
+        # clínica) — avisa a secretária que precisa agendar, ela quem cria o
+        # agendamento pelo painel (CRM médico não deixa o paciente agendar
+        # sozinho por WhatsApp, ver booking_flow.handle_incoming). Independente
+        # dos 3 checkboxes de notificação acima — isso é estrutural da etapa,
+        # não uma mensagem opcional configurada pela clínica. booking_triggered_at
+        # evita avisar de novo se a etapa for desmarcada e marcada outra vez.
+        if result["forward_consultant_id"] and not result["booking_triggered_at"]:
+            _mark_checklist_booking_triggered(item_id)
+            if result["secretary_wa_id"]:
+                paciente = result["client_push_name"] or _phone_from_wa_id(result["client_wa_id"])
+                texto = (f"📋 Encaminhamento: {paciente} concluiu \"{result['step_label']}\" e precisa ser "
+                         f"agendado(a) com {result['forward_consultant_name']}. Agenda no painel quando puder.")
+                try:
+                    evolution.send_text(result["wa_session_name"], _phone_from_wa_id(result["secretary_wa_id"]), texto)
+                    report_whatsapp_sent_usage(result["account_id"])
+                except EvolutionError as e:
+                    log_event(None, "checklist_forward_notice_failed", level="error",
+                              detail={"item_id": item_id, "error": str(e)})
+            else:
+                log_event(None, "checklist_forward_notice_skipped_no_secretary", level="warning",
+                          detail={"item_id": item_id})
     return jsonify({"ok": True})
 
 

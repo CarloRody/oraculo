@@ -765,6 +765,22 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_receipts_annual_statement
         ON whatsapp_receipts(contact_id, consultant_id, service_date) WHERE status = 'active';
     """,
+
+    # 34 — encaminhamento entre especialistas via etapa do checklist. Uma
+    # etapa pode apontar pra um consultor específico da clínica (não mais só
+    # "quem atendeu a consulta", que era o único sentido de notify_consultant
+    # até aqui) — marcar essa etapa como concluída dispara o início do fluxo
+    # de agendamento com esse consultor (ver booking_flow.start_booking_with_consultant).
+    # notify_consultant fica congelada no schema (mesmo espírito da migração
+    # #24) — nenhuma etapa existente tem consultant_id, então nada muda pra
+    # quem já usa o checklist hoje. booking_triggered_at evita disparar o
+    # agendamento de novo se a etapa for desmarcada e marcada de novo.
+    """
+    ALTER TABLE whatsapp_checklist_templates
+        ADD COLUMN IF NOT EXISTS consultant_id INTEGER REFERENCES whatsapp_consultants(id) ON DELETE SET NULL;
+    ALTER TABLE whatsapp_checklist_items
+        ADD COLUMN IF NOT EXISTS booking_triggered_at TIMESTAMPTZ;
+    """,
 ]
 
 
