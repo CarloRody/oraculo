@@ -769,17 +769,99 @@ MIGRATIONS = [
     # 34 — encaminhamento entre especialistas via etapa do checklist. Uma
     # etapa pode apontar pra um consultor específico da clínica (não mais só
     # "quem atendeu a consulta", que era o único sentido de notify_consultant
-    # até aqui) — marcar essa etapa como concluída dispara o início do fluxo
-    # de agendamento com esse consultor (ver booking_flow.start_booking_with_consultant).
+    # até aqui) — marcar essa etapa como concluída avisa a secretária pra
+    # agendar com esse consultor (CRM médico não deixa o paciente agendar
+    # sozinho por WhatsApp, ver booking_flow.handle_incoming — por isso o
+    # aviso vai pra secretária, não um fluxo automático de agendamento).
     # notify_consultant fica congelada no schema (mesmo espírito da migração
     # #24) — nenhuma etapa existente tem consultant_id, então nada muda pra
-    # quem já usa o checklist hoje. booking_triggered_at evita disparar o
-    # agendamento de novo se a etapa for desmarcada e marcada de novo.
+    # quem já usa o checklist hoje. booking_triggered_at evita avisar de novo
+    # se a etapa for desmarcada e marcada de novo.
     """
     ALTER TABLE whatsapp_checklist_templates
         ADD COLUMN IF NOT EXISTS consultant_id INTEGER REFERENCES whatsapp_consultants(id) ON DELETE SET NULL;
     ALTER TABLE whatsapp_checklist_items
         ADD COLUMN IF NOT EXISTS booking_triggered_at TIMESTAMPTZ;
+    """,
+
+    # 35 — checklist vira um só por TRATAMENTO do paciente, não mais um
+    # conjunto novo a cada consulta concluída. whatsapp_patient_treatments
+    # agrupa várias consultas (mesmo médico ou médicos diferentes, ex:
+    # retorno, encaminhamento) do mesmo paciente nessa clínica — início
+    # automático (1ª consulta concluída sem tratamento ativo cria um),
+    # fim manual (secretária marca "concluído", ver complete_patient_treatment
+    # em server.py). Índice único parcial garante no máximo 1 tratamento
+    # ATIVO por paciente por vez, sem impedir vários concluídos ao longo do
+    # tempo. appointment_id em whatsapp_checklist_items vira informativo
+    # (qual consulta criou aquele item) — quem identifica o item agora é
+    # (treatment_id, template_id), daí a troca de constraint única.
+    #
+    # Backfill: cada consulta que já tinha itens de checklist antes desta
+    # migração (o bug que gerava um conjunto novo por consulta) vira o seu
+    # próprio tratamento retroativo — só o mais recente por paciente fica
+    # 'active' (pra continuar de onde parou se essa pessoa tiver uma consulta
+    # nova no futuro), os outros nascem 'completed'. Não tenta MESCLAR itens
+    # de consultas antigas num tratamento só: como o bug antigo permitia o
+    # mesmo template_id repetir em consultas diferentes do mesmo paciente,
+    # forçar tudo pra um tratamento violaria a constraint única nova —
+    # preservar a fragmentação já existente é mais seguro que inventar uma
+    # regra de merge/descarte de dado real.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_patient_treatments (
+        id SERIAL PRIMARY KEY,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'completed')),
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_treatment_per_patient
+        ON whatsapp_patient_treatments(contact_id, account_id) WHERE status = 'active';
+    CREATE INDEX IF NOT EXISTS idx_patient_treatments_contact
+        ON whatsapp_patient_treatments(contact_id, started_at DESC);
+
+    ALTER TABLE whatsapp_appointments
+        ADD COLUMN IF NOT EXISTS treatment_id INTEGER REFERENCES whatsapp_patient_treatments(id) ON DELETE SET NULL;
+    ALTER TABLE whatsapp_checklist_items
+        ADD COLUMN IF NOT EXISTS treatment_id INTEGER REFERENCES whatsapp_patient_treatments(id) ON DELETE CASCADE;
+    ALTER TABLE whatsapp_checklist_items ALTER COLUMN appointment_id DROP NOT NULL;
+
+    DO $$
+    DECLARE
+        r RECORD;
+        new_treatment_id INTEGER;
+    BEGIN
+        FOR r IN
+            SELECT sub.appointment_id, sub.client_contact_id, sub.account_id,
+                   (ROW_NUMBER() OVER (PARTITION BY sub.client_contact_id, sub.account_id
+                                        ORDER BY sub.scheduled_at DESC)) = 1 AS is_latest
+            FROM (
+                SELECT DISTINCT i.appointment_id, a.client_contact_id, con.account_id, a.scheduled_at
+                FROM whatsapp_checklist_items i
+                JOIN whatsapp_appointments a ON a.id = i.appointment_id
+                JOIN whatsapp_consultants con ON con.id = a.consultant_id
+                WHERE i.treatment_id IS NULL
+            ) sub
+        LOOP
+            INSERT INTO whatsapp_patient_treatments (contact_id, account_id, status, completed_at)
+            VALUES (
+                r.client_contact_id, r.account_id,
+                CASE WHEN r.is_latest THEN 'active' ELSE 'completed' END,
+                CASE WHEN r.is_latest THEN NULL ELSE NOW() END
+            )
+            RETURNING id INTO new_treatment_id;
+
+            UPDATE whatsapp_checklist_items SET treatment_id = new_treatment_id WHERE appointment_id = r.appointment_id;
+            UPDATE whatsapp_appointments SET treatment_id = new_treatment_id WHERE id = r.appointment_id;
+        END LOOP;
+    END $$;
+
+    ALTER TABLE whatsapp_checklist_items
+        DROP CONSTRAINT IF EXISTS whatsapp_checklist_items_appointment_id_template_id_key;
+    ALTER TABLE whatsapp_checklist_items
+        DROP CONSTRAINT IF EXISTS whatsapp_checklist_items_treatment_id_template_id_key;
+    ALTER TABLE whatsapp_checklist_items
+        ADD CONSTRAINT whatsapp_checklist_items_treatment_id_template_id_key UNIQUE (treatment_id, template_id);
     """,
 ]
 

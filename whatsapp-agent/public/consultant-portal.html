@@ -683,14 +683,15 @@ async function loadFichaPatient() {
     if (!contactId) { box.innerHTML = ''; return; }
     box.innerHTML = '<p class="empty">Carregando...</p>';
     try {
-        const [record, apptData, evoData, docsData, receiptsData] = await Promise.all([
+        const [record, apptData, evoData, docsData, receiptsData, checklistData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
             api(`/contacts/${contactId}/appointments`),
             api(`/contacts/${contactId}/evolution-notes`),
             api(`/contacts/${contactId}/documents`),
             api(`/receipts?contact_id=${contactId}`),
+            api(`/contacts/${contactId}/checklist-items`),
         ]);
-        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true }, receiptsData);
+        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true }, receiptsData, checklistData);
     } catch (e) {
         box.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
     }
@@ -927,7 +928,7 @@ function fmtDateOnly(iso) {
     return `${d}/${m}/${y}`;
 }
 
-function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts, receiptsData) {
+function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts, receiptsData, checklistData) {
     opts = opts || {};
     const excludeApptId = opts.excludeApptId;
 
@@ -976,6 +977,15 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
 
+    const checklistItems = (checklistData && checklistData.items) || [];
+    const checklistHtml = checklistItems.length
+        ? checklistItems.map(it => `
+            <div style="padding:0.3rem 0; font-size:0.82rem; display:flex; align-items:center; gap:0.4rem;">
+                <span>${it.status === 'done' ? '✓' : it.status === 'skipped' ? '—' : '○'}</span>
+                <span style="${it.status === 'done' ? 'color:#64748b; text-decoration:line-through;' : ''}">${esc(it.label)}${it.forward_consultant_name ? ` → ${esc(it.forward_consultant_name)}` : ''}</span>
+            </div>`).join('')
+        : '<p class="empty" style="padding:0.3rem 0;">Sem tratamento em andamento (ou clínica sem checklist configurado).</p>';
+
     const receipts = (receiptsData && receiptsData.receipts) || [];
     const receiptsHtml = opts.editableEvolution ? `
         <details style="margin-bottom:0.6rem;">
@@ -995,6 +1005,10 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
         <details open style="margin-bottom:0.6rem;">
             <summary>Agendamentos (histórico completo e próximos)</summary>
             <div style="margin-top:0.4rem;">${apptHtml}</div>
+        </details>
+        <details style="margin-bottom:0.6rem;">
+            <summary>Checklist do tratamento (${checklistItems.filter(it => it.status !== 'done').length} pendente${checklistItems.filter(it => it.status !== 'done').length === 1 ? '' : 's'})</summary>
+            <div style="margin-top:0.4rem;">${checklistHtml}</div>
         </details>
         <details style="margin-bottom:0.6rem;">
             <summary>Evolução do tratamento (${notes.length})</summary>
