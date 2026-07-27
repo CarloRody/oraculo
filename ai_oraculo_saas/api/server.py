@@ -1,5 +1,6 @@
 from flask import Flask, jsonify, request, send_from_directory
 import psycopg2
+import base64
 import json
 import os
 import secrets
@@ -16,7 +17,7 @@ import sys, os as _os_module
 sys.path.insert(0, _os_module.path.join(_os_module.path.dirname(__file__), '..'))
 from rag_engine import process_document, search_similar, get_model, extract_pdf_text
 from migrations import migrate_if_needed
-from config import ADMIN_API_KEY, CONFIG, DB_CONFIG, save_config, WHATSAPP_AGENT_BASE_URL
+from config import ADMIN_API_KEY, CONFIG, DB_CONFIG, save_config, WHATSAPP_AGENT_BASE_URL, WHATSAPP_MEDIA_OUTBOUND
 
 app = Flask(__name__)
 CORS(app)  # Permite que o frontend acesse de qualquer origem local
@@ -1374,12 +1375,49 @@ Pergunta: {message}"""
         })
 
 
+_WHATSAPP_MEDIA_OUTBOUND_DEFAULT = [
+    "application/pdf", "image/jpeg", "image/png", "image/webp",
+    "application/xml", "text/xml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+]
+
+
+def _validate_outbound_whatsapp_files(files):
+    """Mesma validação (tamanho/mimetype) feita de novo do lado do
+    whatsapp-agent — replicada aqui só pra dar erro rápido e específico sem
+    round-trip até lá; o whatsapp-agent é a fonte de verdade, valida de novo
+    antes de mandar de fato."""
+    if len(files) > 10:
+        return "Máximo de 10 arquivos por chamada"
+    allowed = set(WHATSAPP_MEDIA_OUTBOUND.get("allowed_mimetypes_outbound") or _WHATSAPP_MEDIA_OUTBOUND_DEFAULT)
+    max_bytes = int(WHATSAPP_MEDIA_OUTBOUND.get("max_bytes") or 10_000_000)
+    for idx, item in enumerate(files):
+        mimetype = (item.get("mime_type") or "").strip()
+        if mimetype not in allowed:
+            return f"Arquivo #{idx + 1}: tipo de arquivo não permitido ({mimetype or 'vazio'})"
+        try:
+            raw = base64.b64decode((item.get("file") or ""), validate=True)
+        except Exception:
+            return f"Arquivo #{idx + 1}: base64 inválido"
+        if not raw:
+            return f"Arquivo #{idx + 1}: conteúdo vazio"
+        if len(raw) > max_bytes:
+            return f"Arquivo #{idx + 1}: maior que o limite ({max_bytes} bytes)"
+    return None
+
+
 @app.route('/api/whatsapp/send', methods=['POST'])
 def api_whatsapp_send():
     """API pública (cobrada) pro cliente mandar mensagem de WhatsApp via a
     conexão vinculada a uma das áreas dele. Mesma autenticação de /api/chat
     (X-Oraculo-Key). Sem preço configurado pra essa área no plano do cliente,
-    o envio é bloqueado — nunca manda de graça por omissão de configuração."""
+    o envio é bloqueado — nunca manda de graça por omissão de configuração.
+    Aceita `files` (lista de {file (base64), file_name, mime_type}) opcional
+    — uma mensagem WhatsApp não comporta mais de um anexo, então cada item
+    vira uma mensagem separada, na ordem, e cada uma é cobrada como uma
+    mensagem enviada (mesmo `message_send_price`); `message` (se veio) é
+    repetido como legenda em todas."""
     user_id = resolve_user_from_request()
     if not user_id:
         return jsonify({"error": "Chave de acesso inválida ou ausente (header X-Oraculo-Key)"}), 401
@@ -1390,8 +1428,14 @@ def api_whatsapp_send():
     area_id = data.get('area_id')
     phone = (data.get('phone') or '').strip()
     message = (data.get('message') or '').strip()
-    if not area_id or not phone or not message:
-        return jsonify({"error": "Campos 'area_id', 'phone' e 'message' são obrigatórios"}), 400
+    files = data.get('files') or []
+    if not area_id or not phone or not (message or files):
+        return jsonify({"error": "Campos 'area_id', 'phone' e ('message' e/ou 'files') são obrigatórios"}), 400
+
+    if files:
+        file_err = _validate_outbound_whatsapp_files(files)
+        if file_err:
+            return jsonify({"error": file_err}), 400
 
     if area_id not in _client_area_ids(user_id):
         return jsonify({"error": "Essa área não está disponível para este cliente"}), 400
@@ -1412,16 +1456,48 @@ def api_whatsapp_send():
     if not account:
         return jsonify({"error": "Nenhuma conexão WhatsApp vinculada a esta área para este cliente."}), 400
 
-    send_result = _call_whatsapp_agent('POST', f'/api/whatsapp/accounts/{account["id"]}/chats/start',
-                                        json={"phone": phone, "text": message})
-    if not send_result or not send_result.get("ok"):
+    send_payload = {"phone": phone, "text": message}
+    if files:
+        send_payload["files"] = files
+    # Chamada direta (não via _call_whatsapp_agent) de propósito: esse
+    # helper descarta o corpo da resposta em qualquer status >= 400, e um
+    # envio parcial (alguns arquivos saíram antes de um erro no meio da
+    # lista) volta como 502 mas com `sent_count` > 0 no corpo — precisamos
+    # ler esse corpo pra saber quantos cobrar, não só se deu erro ou não.
+    # Timeout maior que o padrão (8s) porque isso manda até 10 arquivos em
+    # sequência pra Evolution API, não é uma chamada administrativa rápida.
+    try:
+        _resp = _http_requests.post(
+            f'{WHATSAPP_AGENT_BASE_URL}/api/whatsapp/accounts/{account["id"]}/chats/start',
+            json=send_payload, timeout=60,
+        )
+        send_result = _resp.json()
+    except Exception as e:
+        print(f"[api_whatsapp_send] chats/start falhou: {e}")
+        send_result = None
+    sent_count = (send_result or {}).get("sent_count") or 0
+    if sent_count == 0:
         log_whatsapp_message_usage(user_id, area_id, 'sent', None, wa_account_id=account["id"])
-        return jsonify({"error": "Não foi possível enviar a mensagem — conexão WhatsApp indisponível ou erro no envio."}), 502
+        error_msg = (send_result or {}).get("message") or "Não foi possível enviar a mensagem — conexão WhatsApp indisponível ou erro no envio."
+        return jsonify({"error": error_msg}), 502
 
-    new_balance = apply_credit_transaction(
-        user_id, -price, 'consumption', f"WhatsApp — mensagem enviada via API ({_area_name(area_id)})"
-    )
-    log_whatsapp_message_usage(user_id, area_id, 'sent', price, wa_account_id=account["id"])
+    # Cobra 1x message_send_price por mensagem de fato enviada (cada arquivo
+    # vira uma mensagem própria) — se o saldo acabar no meio, para de cobrar
+    # (checado antes de cada débito), mas as mensagens já enviadas continuam
+    # enviadas, não tem como "desmandar" uma que já chegou no WhatsApp.
+    new_balance = current_balance
+    charged_count = 0
+    for _ in range(sent_count):
+        if new_balance is not None and new_balance <= 0:
+            break
+        result_balance = apply_credit_transaction(
+            user_id, -price, 'consumption', f"WhatsApp — mensagem enviada via API ({_area_name(area_id)})"
+        )
+        if result_balance is None:
+            break
+        new_balance = result_balance
+        charged_count += 1
+        log_whatsapp_message_usage(user_id, area_id, 'sent', price, wa_account_id=account["id"])
 
     credit_status = None
     if new_balance is not None:
@@ -1429,7 +1505,18 @@ def api_whatsapp_send():
         if credit_status["depleted"]:
             credit_status["recent"] = get_recent_consumption(user_id)
 
-    return jsonify({"ok": True, "status": "sent", "chat_id": send_result.get("chat_id"), "credit_status": credit_status})
+    ok = sent_count > 0
+    status = "sent" if not send_result.get("message") else "partial"
+    response = {
+        "ok": ok, "status": status, "chat_id": send_result.get("chat_id"),
+        "sent_count": sent_count, "charged_count": charged_count, "credit_status": credit_status,
+    }
+    if send_result.get("message"):
+        # sent_count > 0 mas a lista de arquivos não terminou inteira (erro
+        # de envio no meio) — devolve o motivo sem marcar ok=False, já que
+        # parte de fato foi entregue.
+        response["warning"] = send_result.get("message")
+    return jsonify(response)
 
 
 @app.route('/api/whatsapp/received-usage', methods=['POST'])

@@ -32,7 +32,7 @@ import booking_flow
 import flow_engine
 import receipts_pdf
 import connectors.evolution as evolution
-from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG, WHATSAPP_MEDIA_CONFIG
+from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG, WHATSAPP_MEDIA_CONFIG, WHATSAPP_MEDIA_ALLOWED_OUTBOUND
 from connectors.evolution import EvolutionError
 from db_migrations import migrate_if_needed
 
@@ -1018,6 +1018,99 @@ def _download_patient_media(account, doc_id, contact_id, message_key, media):
         _fail_patient_document(doc_id, str(e)[:400])
         log_event(account["id"], "patient_media_capture_failed", level="error",
                   detail={"doc_id": doc_id, "error": str(e)})
+
+
+_EXT_BY_MIMETYPE.update({
+    "application/xml": ".xml",
+    "text/xml": ".xml",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document": ".docx",
+    "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": ".xlsx",
+})
+
+
+def _store_outbound_attachment(account_id, contact_id, raw, mimetype, original_name):
+    """Grava um anexo de SAÍDA (mandado via /api/whatsapp/send ou pelo chat
+    manual) em disco + whatsapp_files — mesmo layout/nomenclatura de
+    _download_patient_media (mídia de ENTRADA), só sem passar por
+    whatsapp_patient_documents (essa tabela é exclusiva da timeline de
+    exames do CRM médico, não do histórico de chat)."""
+    checksum = hashlib.sha256(raw).hexdigest()
+    ext = _EXT_BY_MIMETYPE.get(mimetype) or mimetypes.guess_extension(mimetype) or ""
+    rel_dir = os.path.join(str(account_id), str(contact_id))
+    rel_path = os.path.join(rel_dir, f"{uuid.uuid4().hex}{ext}")
+    full_dir = os.path.join(MEDIA_STORAGE_DIR, rel_dir)
+    os.makedirs(full_dir, exist_ok=True)
+    full_path = os.path.join(MEDIA_STORAGE_DIR, rel_path)
+    with open(full_path, "wb") as f:
+        f.write(raw)
+
+    file_type = "image" if mimetype.startswith("image/") else "document"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_files
+               (account_id, mime_type, file_type, original_name, storage_path, size_bytes, checksum_sha256)
+               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (account_id, mimetype, file_type, original_name, rel_path, len(raw), checksum),
+        )
+        file_id = cur.fetchone()[0]
+        conn.commit()
+        return file_id, file_type
+    finally:
+        conn.close()
+
+
+def _decode_and_validate_files(files):
+    """Decodifica e valida cada item de `files` (lista de {file, file_name,
+    mime_type}) ANTES de mandar qualquer mensagem — tudo ou nada, nunca manda
+    metade da lista e falha no meio por causa de validação. Devolve
+    (lista_de_bytes_decodificados, None) se tudo ok, ou (None, mensagem_de_erro)
+    apontando qual item (1-based, do jeito que o chamador da API vê) falhou."""
+    if len(files) > 10:
+        return None, "Máximo de 10 arquivos por chamada"
+    decoded = []
+    for idx, item in enumerate(files):
+        mimetype = (item.get("mime_type") or "").strip()
+        if mimetype not in WHATSAPP_MEDIA_ALLOWED_OUTBOUND:
+            return None, f"Arquivo #{idx + 1}: tipo de arquivo não permitido ({mimetype or 'vazio'})"
+        try:
+            raw = base64.b64decode((item.get("file") or ""), validate=True)
+        except Exception:
+            return None, f"Arquivo #{idx + 1}: base64 inválido"
+        if not raw:
+            return None, f"Arquivo #{idx + 1}: conteúdo vazio"
+        if len(raw) > MEDIA_MAX_BYTES:
+            return None, f"Arquivo #{idx + 1}: maior que o limite ({MEDIA_MAX_BYTES} bytes)"
+        decoded.append(raw)
+    return decoded, None
+
+
+def _send_chat_files(wa_session_name, account_id, contact_id, phone, files, decoded_raw, caption):
+    """Manda cada arquivo (já validado/decodificado por _decode_and_validate_files)
+    como uma mensagem WhatsApp separada, na ordem, com `caption` repetida em
+    todas (se veio) — uma mensagem no WhatsApp não comporta mais de um anexo.
+    Para no primeiro erro de ENVIO (Evolution API) e devolve o que já saiu
+    até ali — mensagens já entregues continuam entregues, não tem como
+    'desmandar'. Devolve (sent, error): `sent` é a lista de
+    {message_type, file_id, wa_message_id} de cada arquivo mandado com
+    sucesso; `error` é None ou a mensagem do que deu errado."""
+    sent = []
+    for idx, (item, raw) in enumerate(zip(files, decoded_raw)):
+        mimetype = (item.get("mime_type") or "").strip()
+        file_name = (item.get("file_name") or f"arquivo-{idx + 1}").strip()
+        try:
+            result = evolution.send_media(
+                wa_session_name, phone, item["file"], mimetype, file_name,
+                mediatype="image" if mimetype.startswith("image/") else "document",
+                caption=caption or None,
+            )
+        except EvolutionError as e:
+            return sent, f"Arquivo #{idx + 1}: {e}"
+        wa_message_id = ((result or {}).get("key") or {}).get("id")
+        file_id, file_type = _store_outbound_attachment(account_id, contact_id, raw, mimetype, file_name)
+        sent.append({"message_type": file_type, "file_id": file_id, "wa_message_id": wa_message_id})
+    return sent, None
 
 
 def _enqueue_patient_media(account, contact_id, message_id, message_key, media, wa_message_id):
@@ -3348,22 +3441,38 @@ def api_list_messages(chat_id):
 def api_send_message(chat_id):
     data = request.json or {}
     text = (data.get("text") or "").strip()
-    if not text:
-        return jsonify({"ok": False, "message": "Texto é obrigatório"}), 400
+    files = data.get("files") or []
+    if not text and not files:
+        return jsonify({"ok": False, "message": "Texto ou arquivo é obrigatório"}), 400
 
     chat = get_chat(chat_id)
     if not chat:
         return jsonify({"ok": False, "message": "Conversa não encontrada"}), 404
+    phone = _phone_from_wa_id(chat["wa_id"])
+
+    if files:
+        decoded, err = _decode_and_validate_files(files)
+        if err:
+            return jsonify({"ok": False, "message": err}), 400
+        sent, send_err = _send_chat_files(chat["wa_session_name"], chat["account_id"], chat["contact_id"],
+                                           phone, files, decoded, text)
+        for s in sent:
+            save_message(chat_id, chat["account_id"], "out", text, wa_message_id=s["wa_message_id"],
+                          message_type=s["message_type"], file_id=s["file_id"])
+            report_whatsapp_sent_usage(chat["account_id"])
+        if send_err:
+            return jsonify({"ok": False, "message": send_err, "sent_count": len(sent)}), 502
+        return jsonify({"ok": True, "sent_count": len(sent)})
 
     try:
-        result = evolution.send_text(chat["wa_session_name"], _phone_from_wa_id(chat["wa_id"]), text)
+        result = evolution.send_text(chat["wa_session_name"], phone, text)
     except EvolutionError as e:
         return jsonify({"ok": False, "message": str(e)}), 502
 
     wa_message_id = ((result or {}).get("key") or {}).get("id")
     message_id = save_message(chat_id, chat["account_id"], "out", text, wa_message_id=wa_message_id)
     report_whatsapp_sent_usage(chat["account_id"])
-    return jsonify({"ok": True, "id": message_id})
+    return jsonify({"ok": True, "id": message_id, "sent_count": 1})
 
 
 @app.route("/api/whatsapp/accounts/<int:account_id>/chats/start", methods=["POST"])
@@ -3375,14 +3484,31 @@ def api_start_chat(account_id):
     data = request.json or {}
     phone = re.sub(r"\D", "", data.get("phone") or "")
     text = (data.get("text") or "").strip()
+    files = data.get("files") or []
     if not phone:
         return jsonify({"ok": False, "message": "Telefone é obrigatório (só números, com DDI, ex: 5511999999999)"}), 400
-    if not text:
-        return jsonify({"ok": False, "message": "Texto é obrigatório"}), 400
+    if not text and not files:
+        return jsonify({"ok": False, "message": "Texto ou arquivo é obrigatório"}), 400
 
     wa_id = f"{phone}@s.whatsapp.net"
     contact_id = get_or_create_contact(account_id, wa_id)
     chat_id = get_or_create_chat(account_id, contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
+
+    if files:
+        decoded, err = _decode_and_validate_files(files)
+        if err:
+            return jsonify({"ok": False, "message": err}), 400
+        sent, send_err = _send_chat_files(account["wa_session_name"], account_id, contact_id,
+                                           phone, files, decoded, text)
+        last_wa_message_id = None
+        for s in sent:
+            save_message(chat_id, account_id, "out", text, wa_message_id=s["wa_message_id"],
+                          message_type=s["message_type"], file_id=s["file_id"])
+            report_whatsapp_sent_usage(account_id)
+            last_wa_message_id = s["wa_message_id"]
+        if send_err:
+            return jsonify({"ok": False, "message": send_err, "chat_id": chat_id, "sent_count": len(sent)}), 502
+        return jsonify({"ok": True, "chat_id": chat_id, "wa_message_id": last_wa_message_id, "sent_count": len(sent)})
 
     try:
         result = evolution.send_text(account["wa_session_name"], phone, text)
@@ -3392,7 +3518,7 @@ def api_start_chat(account_id):
     wa_message_id = ((result or {}).get("key") or {}).get("id")
     save_message(chat_id, account_id, "out", text, wa_message_id=wa_message_id)
     report_whatsapp_sent_usage(account_id)
-    return jsonify({"ok": True, "chat_id": chat_id, "wa_message_id": wa_message_id})
+    return jsonify({"ok": True, "chat_id": chat_id, "wa_message_id": wa_message_id, "sent_count": 1})
 
 
 @app.route("/api/whatsapp/chats/<int:chat_id>/read", methods=["POST"])

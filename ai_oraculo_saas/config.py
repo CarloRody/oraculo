@@ -45,3 +45,9 @@ DB_CONFIG = {k: v for k, v in CONFIG["database"].items() if v is not None}
 # vincular área<->conexão WhatsApp no cadastro de clientes; nunca escrevemos
 # direto nas tabelas whatsapp_* daqui.
 WHATSAPP_AGENT_BASE_URL = (CONFIG.get("whatsapp_agent") or {}).get("webhook_base_url") or "http://127.0.0.1:5005"
+
+# Mesmo bloco whatsapp_agent.media que o whatsapp-agent usa (arquivo
+# compartilhado) — lido aqui só pra validar anexo de /api/whatsapp/send
+# cedo (erro rápido e específico) antes de chamar o whatsapp-agent, que
+# valida de novo do lado dele (fonte de verdade).
+WHATSAPP_MEDIA_OUTBOUND = (CONFIG.get("whatsapp_agent") or {}).get("media") or {}

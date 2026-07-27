@@ -32,3 +32,14 @@ WHATSAPP_CONFIG = CONFIG.get("whatsapp_agent") or {}
 EVOLUTION_CONFIG = CONFIG.get("evolution_api") or {}
 ORACULO_API_CONFIG = CONFIG.get("oraculo_api") or {}
 WHATSAPP_MEDIA_CONFIG = WHATSAPP_CONFIG.get("media") or {}
+
+# Tipos aceitos pra anexo de SAÍDA (API pública /api/whatsapp/send e chat
+# manual) — lista separada de WHATSAPP_MEDIA_CONFIG["allowed_mimetypes"]
+# (essa é só pra captura automática de exame vindo do paciente).
+WHATSAPP_MEDIA_ALLOWED_OUTBOUND = set(
+    WHATSAPP_MEDIA_CONFIG.get("allowed_mimetypes_outbound")
+    or ["application/pdf", "image/jpeg", "image/png", "image/webp",
+        "application/xml", "text/xml",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"]
+)

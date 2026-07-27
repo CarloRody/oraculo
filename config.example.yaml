@@ -61,6 +61,16 @@ whatsapp_agent:
     port: 5005
   webhook_base_url: "http://127.0.0.1:5005"   # como a Evolution API (bare-metal, mesmo host) alcança o whatsapp-agent
   portal_base_url: "http://carlorody.jflddns.com.br:5005"   # endereço público (mandado por WhatsApp pro consultor abrir a agenda) — troque se ficar atrás de HTTPS/proxy
+  media:
+    storage_dir: "/root/oraculo_media/whatsapp"   # FORA da pasta public/ (que é servida sem autenticação) — exames/documentos capturados do CRM médico
+    max_bytes: 10000000        # ~10MB por arquivo, protege a placa de 3.8GB (mesmo espírito do monitor_agent.attachments acima)
+    fetch_timeout: 30          # segundos, download da mídia via Evolution API
+    allowed_mimetypes: [image/jpeg, image/png, image/webp, application/pdf]
+    # Tipos aceitos pra ANEXO DE SAÍDA (mandado via /api/whatsapp/send ou
+    # pelo chat manual) — lista separada da de cima de propósito: essa é
+    # iniciada pelo cliente/API, não pelo paciente, então pode ser mais
+    # ampla sem afrouxar o que é aceito automaticamente de pacientes.
+    allowed_mimetypes_outbound: [application/pdf, image/jpeg, image/png, image/webp, application/xml, text/xml, application/vnd.openxmlformats-officedocument.wordprocessingml.document, application/vnd.openxmlformats-officedocument.spreadsheetml.sheet]
 
 evolution_api:
   base_url: "http://127.0.0.1:8090"   # Evolution API bare-metal (Node.js), ver evolution-api/ e evolution-api.service
