@@ -1424,6 +1424,7 @@ async function loadPlans() {
 }
 
 let currentPlanAreaIds = []; // áreas hoje "na lista" do modal de plano (não necessariamente salvas ainda)
+let currentPlanAreaConfigs = {}; // area_id -> config original (monthly_token_quota/price_per_1k_tokens/price_per_message_sent) — usado como fallback em savePlan() pra áreas sem linha visível na tabela (ex: área privada de outro cliente, chave atual sem permissão de enxergar), pra não apagar a config dela sem querer.
 
 function planAreaRowHtml(area, s) {
     s = s || {};
@@ -1440,6 +1441,7 @@ function planAreaRowHtml(area, s) {
 function renderPlanAreasTable(existingAreas) {
     const byArea = {};
     (existingAreas || []).forEach(a => byArea[a.area_id] = a);
+    currentPlanAreaConfigs = byArea;
     currentPlanAreaIds = (existingAreas || []).map(a => a.area_id);
 
     const tbody = document.getElementById('plan-areas-table-body');
@@ -1536,7 +1538,20 @@ async function savePlan() {
     const model_id = modelIdVal ? Number(modelIdVal) : null;
 
     const areas = currentPlanAreaIds.map(id => {
-        const quotaVal = document.getElementById(`planQuota_${id}`).value;
+        const quotaEl = document.getElementById(`planQuota_${id}`);
+        if (!quotaEl) {
+            // Sem linha visível pra esta área (ex: área privada de outro cliente,
+            // chave atual sem permissão de enxergar) — manda a config original de
+            // volta sem alterar, em vez de quebrar ou apagar o preço dela.
+            const orig = currentPlanAreaConfigs[id] || {};
+            return {
+                area_id: id,
+                monthly_token_quota: orig.monthly_token_quota ?? null,
+                price_per_1k_tokens: orig.price_per_1k_tokens ?? null,
+                price_per_message_sent: orig.price_per_message_sent ?? null
+            };
+        }
+        const quotaVal = quotaEl.value;
         const priceVal = document.getElementById(`planPrice_${id}`).value;
         const msgPriceVal = document.getElementById(`planMsgPrice_${id}`).value;
         return {
