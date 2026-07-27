@@ -50,6 +50,8 @@ def _require_admin_key_for_admin_routes():
     if admin_only_route:
         if is_admin:
             return None
+        _resolved_uid = resolve_user_from_request() if key else None
+        print(f"DEBUG admin_only_route rejeitado: path={request.path} key_len={len(key) if key else 0} resolved_user_id={_resolved_uid}", flush=True)
         return jsonify({"error": "Chave de administrador inválida ou ausente"}), 401
 
     if is_admin:
