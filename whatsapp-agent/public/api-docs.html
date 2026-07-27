@@ -117,7 +117,7 @@
 <h2>Enviar mensagem</h2>
 <div class="endpoint"><span class="method">POST</span>/api/whatsapp/send</div>
 
-<p>Envia uma mensagem de texto pelo número de WhatsApp vinculado à área informada. A conexão usada é resolvida automaticamente a partir do vínculo área ↔ conexão configurado no seu cadastro (feito pelo administrador). Cada envio bem-sucedido é cobrado e descontado do seu saldo, conforme o preço configurado no seu plano para essa área.</p>
+<p>Envia uma mensagem de texto e/ou até 10 arquivos anexados pelo número de WhatsApp vinculado à área informada. A conexão usada é resolvida automaticamente a partir do vínculo área ↔ conexão configurado no seu cadastro (feito pelo administrador). Cada mensagem enviada com sucesso é cobrada e descontada do seu saldo, conforme o preço configurado no seu plano para essa área — inclusive cada arquivo anexado, ver <a href="#anexos">Anexando arquivos</a> abaixo.</p>
 
 <h3>Parâmetros do corpo (JSON)</h3>
 <table>
@@ -125,11 +125,12 @@
     <tbody>
         <tr><td><code>area_id</code></td><td>integer</td><td>Sim</td><td>ID da área vinculada à conexão que vai enviar a mensagem</td></tr>
         <tr><td><code>phone</code></td><td>string</td><td>Sim</td><td>Número de destino, só dígitos, com código do país (ex: <code>5511999999999</code>)</td></tr>
-        <tr><td><code>message</code></td><td>string</td><td>Sim</td><td>Texto da mensagem a ser enviada</td></tr>
+        <tr><td><code>message</code></td><td>string</td><td>Sim, a menos que <code>files</code> tenha pelo menos 1 item</td><td>Texto da mensagem. Se enviado junto com <code>files</code>, vira a legenda de cada arquivo anexado</td></tr>
+        <tr><td><code>files</code></td><td>array</td><td>Sim, a menos que <code>message</code> venha preenchido</td><td>Lista de arquivos a anexar (máximo 10) — ver <a href="#anexos">Anexando arquivos</a></td></tr>
     </tbody>
 </table>
 
-<h3>Exemplo de requisição</h3>
+<h3>Exemplo de requisição (texto)</h3>
 <pre><code>POST /api/whatsapp/send HTTP/1.1
 Host: SEU-DOMINIO-ORACULO
 X-Oraculo-Key: SUA_CHAVE_DE_ACESSO
@@ -141,11 +142,60 @@ Content-Type: application/json
   "message": "Olá! Seu pedido foi confirmado."
 }</code></pre>
 
+<h2 id="anexos">Anexando arquivos</h2>
+<p>Cada item de <code>files</code> vira uma <strong>mensagem separada</strong> no WhatsApp — a plataforma não permite mais de um anexo por mensagem. Os arquivos são enviados em sequência, na ordem da lista, todos pra mesma conversa. Se <code>message</code> também for enviado, o mesmo texto aparece como legenda em <strong>cada</strong> arquivo.</p>
+
+<h3>Campos de cada item de <code>files</code></h3>
+<table>
+    <thead><tr><th>Campo</th><th>Tipo</th><th>Obrigatório</th><th>Descrição</th></tr></thead>
+    <tbody>
+        <tr><td><code>file</code></td><td>string</td><td>Sim</td><td>Conteúdo do arquivo em <strong>base64</strong> (sem o prefixo <code>data:...;base64,</code>, só o conteúdo)</td></tr>
+        <tr><td><code>file_name</code></td><td>string</td><td>Sim</td><td>Nome do arquivo como deve aparecer pra quem recebe (ex: <code>exame.pdf</code>)</td></tr>
+        <tr><td><code>mime_type</code></td><td>string</td><td>Sim</td><td>Tipo MIME do arquivo — ver tipos aceitos abaixo</td></tr>
+    </tbody>
+</table>
+
+<h3>Tipos aceitos e limites</h3>
+<table>
+    <thead><tr><th>Tipo</th><th><code>mime_type</code></th></tr></thead>
+    <tbody>
+        <tr><td>PDF</td><td><code>application/pdf</code></td></tr>
+        <tr><td>Imagem JPEG</td><td><code>image/jpeg</code></td></tr>
+        <tr><td>Imagem PNG</td><td><code>image/png</code></td></tr>
+        <tr><td>Imagem WebP</td><td><code>image/webp</code></td></tr>
+        <tr><td>XML</td><td><code>application/xml</code> ou <code>text/xml</code></td></tr>
+        <tr><td>Word (.docx)</td><td><code>application/vnd.openxmlformats-officedocument.wordprocessingml.document</code></td></tr>
+        <tr><td>Excel (.xlsx)</td><td><code>application/vnd.openxmlformats-officedocument.spreadsheetml.sheet</code></td></tr>
+    </tbody>
+</table>
+<p>Tamanho máximo de 10MB por arquivo (antes da conversão pra base64) e no máximo 10 arquivos por chamada. Se qualquer arquivo da lista tiver tipo não permitido, tamanho acima do limite ou base64 inválido, a chamada inteira é rejeitada com <code>400</code> antes de mandar qualquer coisa — nunca envia nem cobra parte da lista nesse caso.</p>
+
+<h3>Exemplo de requisição (com anexo)</h3>
+<pre><code>POST /api/whatsapp/send HTTP/1.1
+Host: SEU-DOMINIO-ORACULO
+X-Oraculo-Key: SUA_CHAVE_DE_ACESSO
+Content-Type: application/json
+
+{
+  "area_id": 3,
+  "phone": "5511999999999",
+  "message": "Segue o resultado do seu exame.",
+  "files": [
+    {
+      "file": "JVBERi0xLjQKJ...",
+      "file_name": "exame.pdf",
+      "mime_type": "application/pdf"
+    }
+  ]
+}</code></pre>
+
 <h3>Resposta de sucesso <span class="badge badge-ok">200 OK</span></h3>
 <pre><code>{
   "ok": true,
   "status": "sent",
   "chat_id": 42,
+  "sent_count": 1,
+  "charged_count": 1,
   "credit_status": {
     "balance": 123.4500,
     "depleted": false
@@ -154,10 +204,13 @@ Content-Type: application/json
 <table>
     <thead><tr><th>Campo</th><th>Descrição</th></tr></thead>
     <tbody>
-        <tr><td><code>status</code></td><td>Sempre <code>"sent"</code> em caso de sucesso — indica que a mensagem foi aceita e enviada. Não há confirmação de entrega/leitura nesta versão da API.</td></tr>
+        <tr><td><code>status</code></td><td><code>"sent"</code> quando tudo foi enviado; <code>"partial"</code> quando <code>files</code> tinha mais de 1 item e algum deles falhou no meio (os anteriores já foram enviados e cobrados, ver <code>warning</code>). Não há confirmação de entrega/leitura nesta versão da API.</td></tr>
         <tr><td><code>chat_id</code></td><td>ID interno da conversa, útil se você quiser consultar o histórico depois</td></tr>
-        <tr><td><code>credit_status.balance</code></td><td>Seu saldo em R$ após o débito desta mensagem</td></tr>
-        <tr><td><code>credit_status.depleted</code></td><td><code>true</code> quando o saldo chegou a zero ou menos após esta mensagem</td></tr>
+        <tr><td><code>sent_count</code></td><td>Quantas mensagens de fato saíram (1 se só texto; 1 por arquivo em <code>files</code>)</td></tr>
+        <tr><td><code>charged_count</code></td><td>Quantas dessas mensagens foram cobradas — normalmente igual a <code>sent_count</code>, só é menor se o saldo zerou no meio do envio (mensagens já enviadas não deixam de ser cobradas por engano, mas também não é cobrado além do que existe de saldo)</td></tr>
+        <tr><td><code>warning</code></td><td>Só aparece quando <code>status</code> é <code>"partial"</code> — descreve o que impediu os arquivos restantes de serem enviados</td></tr>
+        <tr><td><code>credit_status.balance</code></td><td>Seu saldo em R$ após os débitos desta chamada</td></tr>
+        <tr><td><code>credit_status.depleted</code></td><td><code>true</code> quando o saldo chegou a zero ou menos após esta chamada</td></tr>
     </tbody>
 </table>
 
@@ -165,7 +218,7 @@ Content-Type: application/json
 <table>
     <thead><tr><th>Código</th><th>Situação</th></tr></thead>
     <tbody>
-        <tr><td><span class="badge badge-err">400</span></td><td>Parâmetro obrigatório faltando, área não disponível para sua chave, ou nenhuma conexão WhatsApp vinculada a essa área</td></tr>
+        <tr><td><span class="badge badge-err">400</span></td><td>Parâmetro obrigatório faltando, área não disponível para sua chave, nenhuma conexão WhatsApp vinculada a essa área, ou algum item de <code>files</code> inválido (tipo não permitido, maior que 10MB, base64 inválido, ou mais de 10 arquivos)</td></tr>
         <tr><td><span class="badge badge-err">401</span></td><td>Chave de acesso ausente ou inválida</td></tr>
         <tr><td><span class="badge badge-err">402</span></td><td>Seus créditos acabaram</td></tr>
         <tr><td><span class="badge badge-err">403</span></td><td>Conta desativada, ou envio de mensagens não configurado (sem preço definido) para essa área — fale com o administrador</td></tr>
@@ -250,8 +303,29 @@ try {
 }
 </code></pre>
 
+<h3>Exemplo com anexo (PHP)</h3>
+<p>Mesma função acima, só muda o payload — adiciona um item em <code>files</code> com o conteúdo do arquivo em base64:</p>
+<pre><code>$caminhoArquivo = '/caminho/para/exame.pdf';
+
+$payload = json_encode([
+    'area_id' => 3,
+    'phone'   => '5511999999999',
+    'message' => 'Segue o resultado do seu exame.',
+    'files'   => [
+        [
+            'file'      => base64_encode(file_get_contents($caminhoArquivo)),
+            'file_name' => basename($caminhoArquivo),
+            'mime_type' => 'application/pdf',
+        ],
+    ],
+]);
+
+// O resto da chamada (curl_init, headers, etc.) é igual ao exemplo anterior —
+// só troca o $payload por esse.
+</code></pre>
+
 <div class="note">
-    Cada chamada bem-sucedida é cobrada conforme o preço por mensagem configurado para a área usada. Se você receber erro <code>403</code> dizendo que o envio não está configurado, ou <code>402</code> de créditos esgotados, entre em contato com o administrador do Oráculo.
+    Cada mensagem enviada com sucesso é cobrada conforme o preço por mensagem configurado para a área usada — inclusive cada arquivo anexado conta como uma mensagem própria. Se você receber erro <code>403</code> dizendo que o envio não está configurado, ou <code>402</code> de créditos esgotados, entre em contato com o administrador do Oráculo.
 </div>
 
 <a class="back" href="/whatsapp/">← Voltar ao painel</a>
