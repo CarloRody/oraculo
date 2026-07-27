@@ -145,6 +145,7 @@
             <button class="nav-item" onclick="switchTab('models')"><span class="nav-icon">🧠</span><span>Modelos</span></button>
             <button class="nav-item" onclick="switchTab('documents')"><span class="nav-icon">📄</span><span>Documentos</span></button>
             <button class="nav-item" onclick="switchTab('clients')"><span class="nav-icon">🧑‍💼</span><span>Clientes</span></button>
+            <button class="nav-item" onclick="switchTab('checklist')"><span class="nav-icon">✅</span><span>Checklist</span></button>
             <button class="nav-item" onclick="switchTab('health')"><span class="nav-icon">💓</span><span>Saúde do Sistema</span></button>
             <button class="nav-item" onclick="openWhatsApp()" title="Abre o serviço de WhatsApp em outra aba (porta 5005, independente do Oráculo)"><span class="nav-icon">📱</span><span>WhatsApp ↗</span></button>
         </nav>
@@ -221,6 +222,32 @@
             <button class="btn" onclick="showClientModal()">+ Novo Cliente</button>
         </div>
         <div id="clients-list" class="card-list"></div>
+    </div>
+
+    <!-- CHECKLIST -->
+    <div id="checklist-tab" class="tab-content">
+        <h2 class="section-title" style="border:none; padding:0; margin-bottom:0.5rem;">Checklist de Cadastro</h2>
+        <p style="color:#64748b; font-size:0.85rem; margin-bottom:1.5rem;">
+            Confere se um cliente está com tudo configurado certo — cobrança (plano, preço, modelo) e,
+            se for uma clínica, também a operação (WhatsApp conectado, consultor ativo, etc). Use logo
+            depois de criar um cliente novo pra saber o que falta fazer, ou a qualquer momento pra auditar
+            um cliente que já existe.
+        </p>
+        <div style="display:flex; gap:0.75rem; align-items:flex-end; flex-wrap:wrap; margin-bottom:1.5rem;">
+            <div class="form-group" style="flex:1 1 260px; max-width:340px; margin-bottom:0;">
+                <label>Cliente</label>
+                <select class="form-input" id="checklistClient"><option value="">Selecione...</option></select>
+            </div>
+            <div class="form-group" style="flex:1 1 260px; max-width:340px; margin-bottom:0;">
+                <label>Perfil</label>
+                <select class="form-input" id="checklistProfile">
+                    <option value="chat_simples">Só chat/pesquisa</option>
+                    <option value="clinica_resposta_automatica">Clínica com resposta automática</option>
+                </select>
+            </div>
+            <button class="btn" onclick="runClientChecklist()">Verificar</button>
+        </div>
+        <div id="checklist-result"></div>
     </div>
 
     <!-- SAÚDE -->
@@ -625,6 +652,7 @@ const TAB_TITLES = {
     models: 'Modelos',
     documents: 'Documentos',
     clients: 'Clientes',
+    checklist: 'Checklist',
     health: 'Saúde do Sistema',
 };
 
@@ -636,6 +664,7 @@ function switchTab(name) {
     const btn = clicked || document.querySelector(`.nav-item[onclick*="'${name}'"]`);
     if (btn) btn.classList.add('active');
     document.getElementById('contentTitle').textContent = TAB_TITLES[name] || name;
+    if (name === 'checklist') populateChecklistClientSelect();
 }
 
 // ---- Áreas ----
@@ -1553,6 +1582,47 @@ async function deletePlan(id, name) {
         loadPlans();
         loadClients();
     } catch(e) { alert('Erro ao excluir plano.'); }
+}
+
+// ---- Checklist de Cadastro ----
+function populateChecklistClientSelect() {
+    const sel = document.getElementById('checklistClient');
+    const current = sel.value;
+    sel.innerHTML = '<option value="">Selecione...</option>' +
+        allClients.map(c => `<option value="${c.id}">${esc(c.email)}</option>`).join('');
+    if (current) sel.value = current;
+}
+
+const CHECKLIST_STATUS_ICON = { ok: '✅', missing: '❌', warning: '⚠️' };
+
+async function runClientChecklist() {
+    const userId = document.getElementById('checklistClient').value;
+    const profile = document.getElementById('checklistProfile').value;
+    const resultEl = document.getElementById('checklist-result');
+    if (!userId) { alert('Selecione um cliente.'); return; }
+    resultEl.innerHTML = '<p style="color:#64748b;">Verificando...</p>';
+    try {
+        const res = await adminFetch(ADMIN_API + `/admin/client-checklist/${userId}?profile=${profile}`);
+        const data = await res.json();
+        if (!res.ok) { resultEl.innerHTML = `<p style="color:#ef4444;">${esc(data.error || 'Erro ao verificar.')}</p>`; return; }
+        const s = data.summary;
+        resultEl.innerHTML = `
+            <div class="card-item" style="margin-bottom:1rem;">
+                <strong>${esc(data.email)}</strong> — ${s.ok} ok, ${s.missing} faltando, ${s.warning} de atenção
+            </div>
+            <div class="card-list">
+                ${data.items.map(it => `
+                    <div class="card-item" style="padding:0.85rem 1rem;">
+                        <div style="display:flex; align-items:center; gap:0.6rem;">
+                            <span>${CHECKLIST_STATUS_ICON[it.status] || '?'}</span>
+                            <strong>${esc(it.label)}</strong>
+                        </div>
+                        ${it.detail ? `<p style="color:#94a3b8; font-size:0.85rem; margin-top:0.3rem; margin-left:1.7rem;">${esc(it.detail)}</p>` : ''}
+                    </div>
+                `).join('')}
+            </div>
+        `;
+    } catch(e) { resultEl.innerHTML = '<p style="color:#ef4444;">Erro ao conectar com a API.</p>'; }
 }
 
 // ---- Health ----

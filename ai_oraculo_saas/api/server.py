@@ -34,16 +34,20 @@ def _require_admin_key_for_admin_routes():
     tree.html, reports.html — ver allowed_pages/access-guard.js), então
     aceitar só a admin_api_key quebraria o uso normal delas. Regra: chave de
     admin sempre passa; chave de cliente válida (resolve pra um user_id de
-    verdade) passa em qualquer rota MENOS /admin/whoami (essa é usada só
-    pra distinguir "é o admin de verdade" — se aceitasse chave de cliente,
-    qualquer cliente logado seria tratado como admin com acesso irrestrito)."""
+    verdade) passa em qualquer rota MENOS /admin/whoami e
+    /admin/client-checklist/* (essas são admin-only de propósito:
+    /admin/whoami distingue "é o admin de verdade"; /admin/client-checklist
+    expõe configuração/cobrança de um user_id arbitrário passado na URL —
+    se aceitasse chave de cliente, um cliente poderia consultar o
+    checklist de configuração de QUALQUER outro cliente)."""
     if not request.path.startswith("/admin/"):
         return None
 
     key = request.headers.get("X-Oraculo-Key")
     is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
+    admin_only_route = request.path == "/admin/whoami" or request.path.startswith("/admin/client-checklist/")
 
-    if request.path == "/admin/whoami":
+    if admin_only_route:
         if is_admin:
             return None
         return jsonify({"error": "Chave de administrador inválida ou ausente"}), 401
@@ -3157,6 +3161,170 @@ def admin_quota_status_route():
     if status is None:
         return jsonify({"error": "Nenhuma assinatura configurada para esse cliente+área"}), 404
     return jsonify(status)
+
+
+CLIENT_CHECKLIST_PROFILES = ('chat_simples', 'clinica_resposta_automatica')
+
+
+def build_client_checklist(user_id, profile):
+    """Checklist de cadastro/configuração de um cliente — serve tanto pra
+    guiar a criação de um cliente novo (roda logo após criar o usuário
+    básico e mostra tudo que falta fazer, em ordem) quanto pra auditar um
+    cliente que já existe (achar o que ficou errado/faltando, incluindo
+    cobrança — foi assim que achamos o plano sem price_per_1k_tokens).
+
+    Só leitura, nenhuma ação de correção embutida (proposital nesta
+    primeira versão). whatsapp_accounts/whatsapp_consultants são tabelas
+    "do" whatsapp-agent, mas vivem no mesmo Postgres (ai_tutor_db) — dá
+    pra consultar direto daqui, sem chamar o outro serviço por HTTP.
+
+    Devolve None se user_id não existir."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT email, plan_id, status, balance FROM users WHERE id = %s", (user_id,))
+        row = cur.fetchone()
+        if not row:
+            conn.close()
+            return None
+        email, plan_id, user_status, balance = row
+
+        items = []
+
+        def add(key, label, status, detail=""):
+            items.append({"key": key, "label": label, "status": status, "detail": detail})
+
+        add("plan_assigned", "Plano atribuído",
+            "ok" if plan_id else "missing",
+            f"plan_id={plan_id}" if plan_id else "Cliente sem nenhum plano atribuído.")
+
+        add("account_active", "Conta ativa",
+            "ok" if user_status == "active" else "warning",
+            f"status atual: {user_status}")
+
+        add("balance", "Saldo de créditos",
+            "ok" if (balance or 0) > 0 else "warning",
+            f"R$ {balance if balance is not None else 0}")
+
+        plan_row = None
+        if plan_id:
+            cur.execute(
+                """SELECT model_id, booking_mode, charge_unrelated_received_messages, price_per_unrelated_message
+                   FROM plans WHERE id = %s""",
+                (plan_id,)
+            )
+            plan_row = cur.fetchone()
+
+        if plan_row and plan_row[0]:
+            add("model_configured", "Modelo de IA configurado", "ok", f"model_id={plan_row[0]}")
+        else:
+            add("model_configured", "Modelo de IA configurado", "missing",
+                "Plano sem modelo de IA." if plan_id else "Sem plano, não há modelo.")
+
+        if plan_id:
+            cur.execute(
+                """SELECT a.name, pap.price_per_1k_tokens
+                   FROM plan_area_pricing pap JOIN areas a ON a.id = pap.area_id
+                   WHERE pap.plan_id = %s ORDER BY a.name""",
+                (plan_id,)
+            )
+            area_prices = cur.fetchall()
+            if not area_prices:
+                add("area_pricing", "Preço por área", "missing", "Plano não tem NENHUMA área precificada.")
+            else:
+                for area_name, price in area_prices:
+                    if price is None:
+                        add("area_pricing", f"Preço por 1k tokens — {area_name}", "missing",
+                            "Sem price_per_1k_tokens — cliente é atendido de graça nesta área, sem cobrança.")
+                    else:
+                        add("area_pricing", f"Preço por 1k tokens — {area_name}", "ok", f"R$ {price}/1k tokens")
+        else:
+            add("area_pricing", "Preço por área", "missing", "Sem plano, não há preço.")
+
+        cur.execute("SELECT name FROM areas WHERE owner_user_id = %s", (user_id,))
+        own_areas = [r[0] for r in cur.fetchall()]
+        add("private_area", "Base de conhecimento privada",
+            "ok" if own_areas else "warning",
+            ", ".join(own_areas) if own_areas else "Sem área privada — ok se o cliente usa só áreas globais compartilhadas.")
+
+        if plan_row:
+            charge_unrelated, price_unrelated = plan_row[2], plan_row[3]
+            if charge_unrelated:
+                add("unrelated_msg_price", "Preço de mensagem fora de área",
+                    "ok" if price_unrelated is not None else "missing",
+                    f"R$ {price_unrelated}" if price_unrelated is not None else
+                    "Plano cobra mensagem fora de área, mas price_per_unrelated_message está vazio.")
+
+        if profile == "clinica_resposta_automatica":
+            booking_mode = plan_row[1] if plan_row else None
+            add("booking_mode", "Modo de agendamento/resposta automática",
+                "ok" if booking_mode in ("crm_medico", "consultores") else "missing",
+                booking_mode or "none — precisa ser crm_medico ou consultores.")
+
+            cur.execute(
+                """SELECT id, status, area_id, ai_auto_reply_enabled, document_type, document_number,
+                          company_name, secretary_contact_id
+                   FROM whatsapp_accounts WHERE user_id = %s ORDER BY id""",
+                (user_id,)
+            )
+            wa_accounts = cur.fetchall()
+            if not wa_accounts:
+                add("whatsapp_account", "Conta de WhatsApp", "missing",
+                    "Nenhuma conta de WhatsApp criada pra este cliente.")
+            else:
+                for acc_id, wa_status, area_id, auto_reply, doc_type, doc_number, company_name, secretary_id in wa_accounts:
+                    add("whatsapp_account", f"Conta de WhatsApp #{acc_id} — conectada",
+                        "ok" if wa_status == "connected" else "missing", f"status atual: {wa_status}")
+                    add("whatsapp_area", f"Conta #{acc_id} — área de conhecimento vinculada",
+                        "ok" if area_id else "warning",
+                        "" if area_id else "Sem área vinculada — bot responde sem base de conhecimento específica.")
+                    add("whatsapp_auto_reply", f"Conta #{acc_id} — resposta automática ligada",
+                        "ok" if auto_reply else "missing",
+                        "" if auto_reply else "ai_auto_reply_enabled = false")
+                    has_company_data = bool(doc_type and doc_number and company_name)
+                    add("whatsapp_company_data", f"Conta #{acc_id} — dados da empresa/documento",
+                        "ok" if has_company_data else "warning",
+                        company_name if has_company_data else
+                        "Faltando document_type/document_number/company_name — recibos podem sair incompletos.")
+                    add("whatsapp_secretary", f"Conta #{acc_id} — secretária vinculada",
+                        "ok" if secretary_id else "warning",
+                        "" if secretary_id else "Sem secretária vinculada.")
+
+                    cur.execute(
+                        "SELECT count(*) FROM whatsapp_consultants WHERE account_id = %s AND status = 'active'",
+                        (acc_id,)
+                    )
+                    active_consultants = cur.fetchone()[0]
+                    add("whatsapp_consultant", f"Conta #{acc_id} — consultor(es) ativo(s)",
+                        "ok" if active_consultants > 0 else "missing",
+                        f"{active_consultants} consultor(es) confirmado(s)")
+
+        conn.close()
+        summary = {"ok": 0, "missing": 0, "warning": 0}
+        for it in items:
+            summary[it["status"]] = summary.get(it["status"], 0) + 1
+        return {"user_id": user_id, "email": email, "profile": profile, "items": items, "summary": summary}
+    except Exception:
+        if conn: conn.close()
+        raise
+
+
+@app.route('/admin/client-checklist/<int:user_id>', methods=['GET'])
+def admin_client_checklist(user_id):
+    """Admin-only (ver before_request) — checklist de cadastro/config de
+    um cliente, perfil 'chat_simples' ou 'clinica_resposta_automatica'."""
+    profile = request.args.get('profile', 'chat_simples')
+    if profile not in CLIENT_CHECKLIST_PROFILES:
+        return jsonify({"error": f"profile inválido, use um de: {', '.join(CLIENT_CHECKLIST_PROFILES)}"}), 400
+    try:
+        result = build_client_checklist(user_id, profile)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+    if result is None:
+        return jsonify({"error": "Cliente não encontrado"}), 404
+    return jsonify(result)
 
 
 @app.route('/admin/config', methods=['GET'])
