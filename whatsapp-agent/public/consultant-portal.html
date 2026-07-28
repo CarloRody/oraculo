@@ -197,6 +197,7 @@ async function init() {
         ME = me;
         document.getElementById('subtitle').textContent = `${me.name} · ${me.account_label}`;
         renderShell(me);
+        document.getElementById('newTreatmentBlock').style.display = me.booking_mode === 'crm_medico' ? 'block' : 'none';
         await loadAppointments();
         loadContacts();
         loadFichaPatients();
@@ -288,6 +289,18 @@ function renderShell(me) {
                 </div>
                 <div class="form-group"><label>Nome (opcional)</label><input class="form-input" id="newName"></div>
                 <div class="form-group"><label>Assunto (opcional)</label><input class="form-input" id="newSubject" placeholder="Ex: Revisão de contrato"></div>
+                <div id="newTreatmentBlock" style="display:none;">
+                    <div class="form-group">
+                        <label>Tratamento</label>
+                        <select class="form-input" id="newTreatment" onchange="onNewTreatmentChange()">
+                            <option value="">+ Novo tratamento</option>
+                        </select>
+                    </div>
+                    <div class="form-group" id="newTreatmentNameGroup">
+                        <label>Nome do tratamento (ex: a patologia)</label>
+                        <input class="form-input" id="newTreatmentName" placeholder="Ex: Acompanhamento nutricional, Fisioterapia joelho direito...">
+                    </div>
+                </div>
                 <div class="form-group">
                     <label>Data e horário</label>
                     <div style="display:flex; gap:0.5rem;">
@@ -720,12 +733,33 @@ function onContactSelectChange() {
         phoneField.value = '';
         phoneField.readOnly = false;
         nameField.value = '';
+        loadNewTreatments(null);
         return;
     }
     const contact = knownContacts.find(c => c.phone === phone);
     phoneField.value = phone;
     phoneField.readOnly = true;
     nameField.value = (contact && contact.name) || '';
+    loadNewTreatments(contact ? contact.id : null);
+}
+
+async function loadNewTreatments(contactId) {
+    if (ME.booking_mode !== 'crm_medico') return;
+    const sel = document.getElementById('newTreatment');
+    sel.innerHTML = '<option value="">+ Novo tratamento</option>';
+    if (contactId) {
+        try {
+            const data = await api(`/contacts/${contactId}/treatments?status=active`);
+            const treatments = data.treatments || [];
+            sel.innerHTML += treatments.map(t => `<option value="${t.id}">${esc(t.name || 'Tratamento')} (desde ${fmtWhen(t.started_at).split(' ')[0]})</option>`).join('');
+        } catch (e) { /* sem tratamentos existentes pra listar não impede criar um novo */ }
+    }
+    onNewTreatmentChange();
+}
+
+function onNewTreatmentChange() {
+    const isNew = !document.getElementById('newTreatment').value;
+    document.getElementById('newTreatmentNameGroup').style.display = isNew ? '' : 'none';
 }
 
 async function cancelAppt(id) {
@@ -977,12 +1011,17 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
 
-    const checklistItems = (checklistData && checklistData.items) || [];
-    const checklistHtml = checklistItems.length
-        ? checklistItems.map(it => `
-            <div style="padding:0.3rem 0; font-size:0.82rem; display:flex; align-items:center; gap:0.4rem;">
-                <span>${it.status === 'done' ? '✓' : it.status === 'skipped' ? '—' : '○'}</span>
-                <span style="${it.status === 'done' ? 'color:#64748b; text-decoration:line-through;' : ''}">${esc(it.label)}${it.forward_consultant_name ? ` → ${esc(it.forward_consultant_name)}` : ''}</span>
+    const treatments = (checklistData && checklistData.treatments) || [];
+    const totalPending = treatments.reduce((n, t) => n + t.items.filter(it => it.status !== 'done').length, 0);
+    const checklistHtml = treatments.length
+        ? treatments.map(t => `
+            <div style="margin-bottom:0.5rem;">
+                <div style="font-size:0.8rem; color:#94a3b8; font-weight:600; margin-bottom:0.2rem;">${esc(t.treatment_name || 'Tratamento')}</div>
+                ${t.items.map(it => `
+                    <div style="padding:0.3rem 0; font-size:0.82rem; display:flex; align-items:center; gap:0.4rem;">
+                        <span>${it.status === 'done' ? '✓' : it.status === 'skipped' ? '—' : '○'}</span>
+                        <span style="${it.status === 'done' ? 'color:#64748b; text-decoration:line-through;' : ''}">${esc(it.label)}</span>
+                    </div>`).join('')}
             </div>`).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Sem tratamento em andamento (ou clínica sem checklist configurado).</p>';
 
@@ -1007,7 +1046,7 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
             <div style="margin-top:0.4rem;">${apptHtml}</div>
         </details>
         <details style="margin-bottom:0.6rem;">
-            <summary>Checklist do tratamento (${checklistItems.filter(it => it.status !== 'done').length} pendente${checklistItems.filter(it => it.status !== 'done').length === 1 ? '' : 's'})</summary>
+            <summary>Checklist do(s) tratamento(s) (${totalPending} pendente${totalPending === 1 ? '' : 's'})</summary>
             <div style="margin-top:0.4rem;">${checklistHtml}</div>
         </details>
         <details style="margin-bottom:0.6rem;">
@@ -1114,8 +1153,16 @@ async function createAppointment(iso) {
     const name = document.getElementById('newName').value.trim();
     const subject = document.getElementById('newSubject').value.trim();
     if (!phone) return alert('Informe o telefone do cliente primeiro.');
+    const payload = { phone, name, subject, scheduled_at: iso };
+    if (ME.booking_mode === 'crm_medico') {
+        const treatmentIdRaw = document.getElementById('newTreatment').value;
+        const treatmentName = document.getElementById('newTreatmentName').value.trim();
+        if (!treatmentIdRaw && !treatmentName) return alert('Escolha um tratamento existente ou informe o nome do tratamento novo (ex: a patologia).');
+        if (treatmentIdRaw) payload.treatment_id = Number(treatmentIdRaw);
+        else payload.treatment_name = treatmentName;
+    }
     try {
-        await api('/appointments', { method: 'POST', body: JSON.stringify({ phone, name, subject, scheduled_at: iso }) });
+        await api('/appointments', { method: 'POST', body: JSON.stringify(payload) });
         document.getElementById('newContactSelect').value = '';
         document.getElementById('newPhone').value = '';
         document.getElementById('newPhone').readOnly = false;
@@ -1123,6 +1170,8 @@ async function createAppointment(iso) {
         document.getElementById('newSubject').value = '';
         document.getElementById('newDate').value = '';
         document.getElementById('newTime').value = '';
+        document.getElementById('newTreatmentName').value = '';
+        loadNewTreatments(null);
         document.getElementById('newSlots').innerHTML = '<p class="empty">Toque em "Ver horários" abaixo.</p>';
         loadAppointments();
         alert('Agendamento criado! O cliente foi avisado por WhatsApp.');

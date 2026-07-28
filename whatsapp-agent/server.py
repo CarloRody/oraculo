@@ -2596,13 +2596,16 @@ def get_patient_appointments(contact_id):
 def mark_appointment_completed(appointment_id):
     """Único ponto de entrada pra 'a consulta aconteceu' — sempre um clique
     manual da secretária, nunca automático (não existe job que 'adivinha'
-    comparecimento). Ao completar, resolve o TRATAMENTO ativo do paciente
-    nesta clínica (cria um novo se não houver — início automático) e garante
-    um item de checklist por etapa ativa do template QUE O TRATAMENTO AINDA
-    NÃO TEM (ON CONFLICT DO NOTHING em (treatment_id, template_id)) — uma
-    consulta de retorno ou um encaminhamento pra outro especialista continua
-    o MESMO checklist, não recria os itens que já existiam. Ver
-    complete_patient_treatment() pra como um tratamento termina."""
+    comparecimento). O tratamento já foi escolhido na CRIAÇÃO do agendamento
+    (ver _resolve_appointment_treatment em server.py) — aqui só garante um
+    item de checklist por etapa ativa do template QUE O TRATAMENTO AINDA NÃO
+    TEM (ON CONFLICT DO NOTHING em (treatment_id, template_id)), pra não
+    duplicar entre consultas do mesmo tratamento. Se por algum motivo o
+    agendamento não nasceu com treatment_id (ex: criado antes desta versão,
+    ou por um caminho que não passa por _resolve_appointment_treatment), cai
+    num fallback que reaproveita o tratamento ativo mais recente do paciente
+    ou cria um genérico — só pra não perder o checklist, não é o caminho
+    principal."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -2615,26 +2618,27 @@ def mark_appointment_completed(appointment_id):
             conn.commit()
             return False
         cur.execute(
-            """SELECT c.account_id, a.client_contact_id FROM whatsapp_appointments a
+            """SELECT c.account_id, a.client_contact_id, a.treatment_id FROM whatsapp_appointments a
                JOIN whatsapp_consultants c ON c.id = a.consultant_id
                WHERE a.id = %s""",
             (appointment_id,),
         )
-        account_id, contact_id = cur.fetchone()
+        account_id, contact_id, treatment_id = cur.fetchone()
 
-        cur.execute(
-            "SELECT id FROM whatsapp_patient_treatments WHERE contact_id = %s AND account_id = %s AND status = 'active'",
-            (contact_id, account_id),
-        )
-        row = cur.fetchone()
-        treatment_id = row[0] if row else None
         if treatment_id is None:
             cur.execute(
-                "INSERT INTO whatsapp_patient_treatments (contact_id, account_id) VALUES (%s, %s) RETURNING id",
+                "SELECT id FROM whatsapp_patient_treatments WHERE contact_id = %s AND account_id = %s AND status = 'active' ORDER BY started_at DESC LIMIT 1",
                 (contact_id, account_id),
             )
-            treatment_id = cur.fetchone()[0]
-        cur.execute("UPDATE whatsapp_appointments SET treatment_id = %s WHERE id = %s", (treatment_id, appointment_id))
+            row = cur.fetchone()
+            treatment_id = row[0] if row else None
+            if treatment_id is None:
+                cur.execute(
+                    "INSERT INTO whatsapp_patient_treatments (contact_id, account_id) VALUES (%s, %s) RETURNING id",
+                    (contact_id, account_id),
+                )
+                treatment_id = cur.fetchone()[0]
+            cur.execute("UPDATE whatsapp_appointments SET treatment_id = %s WHERE id = %s", (treatment_id, appointment_id))
 
         cur.execute(
             "SELECT id FROM whatsapp_checklist_templates WHERE account_id = %s AND active",
@@ -2652,24 +2656,62 @@ def mark_appointment_completed(appointment_id):
         conn.close()
 
 
-def complete_patient_treatment(contact_id, account_id):
-    """Encerra manualmente o tratamento ativo do paciente nesta clínica —
-    decisão confirmada: início é sempre automático (1ª consulta concluída
-    sem tratamento ativo já cria um, ver mark_appointment_completed), fim é
-    sempre manual (a secretária decide quando o caso terminou). Depois
-    disso, a próxima consulta concluída desse paciente nasce um tratamento
-    novo, com checklist do zero. Retorna True se havia um tratamento ativo
-    pra encerrar, False se não havia (idempotente, sem erro em chamada 2x)."""
+def get_patient_treatments(contact_id, account_id, status=None):
+    """Lista os tratamentos do paciente nesta clínica, mais recente primeiro
+    — usado pra secretária/médico escolherem um tratamento existente na hora
+    de criar um agendamento novo (vira consulta avulsa dentro dele)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        where_status = "AND status = %s" if status else ""
+        params = [contact_id, account_id] + ([status] if status else [])
+        cur.execute(
+            f"""SELECT id, name, status, started_at, completed_at
+                FROM whatsapp_patient_treatments
+                WHERE contact_id = %s AND account_id = %s {where_status}
+                ORDER BY started_at DESC""",
+            params,
+        )
+        cols = ["id", "name", "status", "started_at", "completed_at"]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            for k in ("started_at", "completed_at"):
+                if r[k]:
+                    r[k] = r[k].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+        return rows
+    finally:
+        conn.close()
+
+
+def complete_treatment(treatment_id):
+    """Encerra manualmente um tratamento específico — como agora o paciente
+    pode ter mais de um tratamento ativo em paralelo (ex: fisioterapia e
+    nutrição ao mesmo tempo), 'concluir' precisa mirar um tratamento
+    específico, não mais 'o' tratamento do paciente. Retorna True se havia
+    um tratamento ativo com esse id pra encerrar, False se não (idempotente,
+    sem erro em chamada 2x)."""
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            """UPDATE whatsapp_patient_treatments SET status = 'completed', completed_at = NOW()
-               WHERE contact_id = %s AND account_id = %s AND status = 'active'""",
-            (contact_id, account_id),
+            "UPDATE whatsapp_patient_treatments SET status = 'completed', completed_at = NOW() WHERE id = %s AND status = 'active'",
+            (treatment_id,),
         )
         conn.commit()
         return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def _treatment_contact_account(treatment_id):
+    """(contact_id, account_id) do tratamento, ou (None, None) — usado pelas
+    rotas pra checar dono antes de listar/encerrar."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT contact_id, account_id FROM whatsapp_patient_treatments WHERE id = %s", (treatment_id,))
+        row = cur.fetchone()
+        return row if row else (None, None)
     finally:
         conn.close()
 
@@ -2680,14 +2722,14 @@ def get_checklist_template(account_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT id, step_key, label, sort_order, notify_patient, notify_consultant, notify_secretary,
-                      auto_message_template, consultant_id
+                      auto_message_template
                FROM whatsapp_checklist_templates
                WHERE account_id = %s AND active
                ORDER BY sort_order""",
             (account_id,),
         )
         cols = ["id", "step_key", "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary",
-                "auto_message_template", "consultant_id"]
+                "auto_message_template"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -2711,9 +2753,6 @@ def set_checklist_template(account_id, steps):
         used_keys = set(existing.values())
         kept_ids = set()
 
-        cur.execute("SELECT id FROM whatsapp_consultants WHERE account_id = %s", (account_id,))
-        valid_consultant_ids = {r[0] for r in cur.fetchall()}
-
         for idx, step in enumerate(steps or []):
             if not isinstance(step, dict):
                 continue
@@ -2724,22 +2763,16 @@ def set_checklist_template(account_id, steps):
             notify_patient = bool(step.get("notify_patient")) and bool(auto_template)
             notify_consultant = bool(step.get("notify_consultant")) and bool(auto_template)
             notify_secretary = bool(step.get("notify_secretary")) and bool(auto_template)
-            # Etapa de encaminhamento: consultor específico da clínica (não o
-            # que atendeu a consulta) — marcar essa etapa concluída dispara o
-            # início do agendamento com ele (ver mark_checklist_item). Nunca
-            # aceita um id de fora desta conta.
-            raw_consultant_id = step.get("consultant_id")
-            consultant_id = raw_consultant_id if isinstance(raw_consultant_id, int) and raw_consultant_id in valid_consultant_ids else None
 
             step_id = step.get("id")
             if isinstance(step_id, int) and step_id in existing:
                 cur.execute(
                     """UPDATE whatsapp_checklist_templates
                        SET label = %s, sort_order = %s, notify_patient = %s, notify_consultant = %s,
-                           notify_secretary = %s, auto_message_template = %s, consultant_id = %s, active = TRUE
+                           notify_secretary = %s, auto_message_template = %s, active = TRUE
                        WHERE id = %s AND account_id = %s""",
                     (label, idx, notify_patient, notify_consultant, notify_secretary, auto_template,
-                     consultant_id, step_id, account_id),
+                     step_id, account_id),
                 )
                 kept_ids.add(step_id)
             else:
@@ -2752,10 +2785,10 @@ def set_checklist_template(account_id, steps):
                 cur.execute(
                     """INSERT INTO whatsapp_checklist_templates
                        (account_id, step_key, label, sort_order, notify_patient, notify_consultant,
-                        notify_secretary, auto_message_template, consultant_id)
-                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+                        notify_secretary, auto_message_template)
+                       VALUES (%s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
                     (account_id, key, label, idx, notify_patient, notify_consultant, notify_secretary,
-                     auto_template, consultant_id),
+                     auto_template),
                 )
                 kept_ids.add(cur.fetchone()[0])
 
@@ -2981,31 +3014,28 @@ def get_checklist_items_for_appointment(appointment_id):
         cur.execute(
             """SELECT i.id, i.status, i.done_at,
                       i.auto_message_sent_patient_at, i.auto_message_sent_consultant_at, i.auto_message_sent_secretary_at,
-                      t.label, t.sort_order, t.notify_patient, t.notify_consultant, t.notify_secretary,
-                      t.consultant_id, fc.name
+                      t.label, t.sort_order, t.notify_patient, t.notify_consultant, t.notify_secretary
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
-               LEFT JOIN whatsapp_consultants fc ON fc.id = t.consultant_id
                WHERE i.treatment_id = %s
                ORDER BY t.sort_order""",
             (treatment_id,),
         )
         cols = ["id", "status", "done_at",
                 "auto_message_sent_patient_at", "auto_message_sent_consultant_at", "auto_message_sent_secretary_at",
-                "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary",
-                "forward_consultant_id", "forward_consultant_name"]
+                "label", "sort_order", "notify_patient", "notify_consultant", "notify_secretary"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
 
 
 def get_checklist_items_for_account(account_id, status=None):
-    """Board agregado pro painel da secretária — agrupado por PACIENTE (via
-    o tratamento ativo dele), não mais por consulta: um tratamento acumula
-    itens de várias consultas, mesmo médico ou encaminhado pra outro. Na
-    visão 'pending' só mostra tratamentos ainda ativos (um já concluído não
-    deve poluir o board do dia a dia); na visão 'done' mostra qualquer um,
-    incluindo histórico de tratamentos já encerrados."""
+    """Board agregado pro painel da secretária — agrupado por TRATAMENTO
+    (não por paciente): um paciente pode ter mais de um tratamento ativo ao
+    mesmo tempo (ex: fisioterapia e nutrição em paralelo), cada um com seu
+    próprio checklist. Na visão 'pending' só mostra tratamentos ainda
+    ativos (um já concluído não deve poluir o board do dia a dia); na visão
+    'done' mostra qualquer um, incluindo histórico de tratamentos encerrados."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -3014,15 +3044,13 @@ def get_checklist_items_for_account(account_id, status=None):
         params = [account_id] + ([status] if status else [])
         cur.execute(
             f"""SELECT i.id, i.status, i.done_at, t.label, t.notify_patient, t.notify_consultant, t.notify_secretary,
-                       tr.id, tr.status,
+                       tr.id, tr.status, tr.name,
                        ct.id, ct.push_name, ct.wa_id,
-                       t.consultant_id, fc.name,
                        agg.appointment_count, agg.last_scheduled_at
                 FROM whatsapp_checklist_items i
                 JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                 JOIN whatsapp_patient_treatments tr ON tr.id = i.treatment_id
                 JOIN whatsapp_contacts ct ON ct.id = tr.contact_id
-                LEFT JOIN whatsapp_consultants fc ON fc.id = t.consultant_id
                 LEFT JOIN LATERAL (
                     SELECT COUNT(*) AS appointment_count, MAX(a.scheduled_at) AS last_scheduled_at
                     FROM whatsapp_appointments a WHERE a.treatment_id = tr.id
@@ -3032,9 +3060,8 @@ def get_checklist_items_for_account(account_id, status=None):
             params,
         )
         cols = ["id", "status", "done_at", "label", "notify_patient", "notify_consultant", "notify_secretary",
-                "treatment_id", "treatment_status",
+                "treatment_id", "treatment_status", "treatment_name",
                 "client_contact_id", "client_name", "client_wa_id",
-                "forward_consultant_id", "forward_consultant_name",
                 "appointment_count", "last_scheduled_at"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
@@ -3045,35 +3072,37 @@ def get_checklist_items_for_account(account_id, status=None):
         conn.close()
 
 
-def get_patient_active_checklist(contact_id, account_id):
-    """Checklist do tratamento ATIVO do paciente nesta clínica — usado pelo
-    portal do consultor pra qualquer médico envolvido no caso acompanhar o
-    progresso, mesmo etapas ligadas a OUTRO médico (só leitura; quem marca
-    concluído continua sendo a secretária, ver mark_checklist_item). Sem
-    tratamento ativo, devolve lista vazia — não é erro."""
+def get_patient_active_treatments_with_checklist(contact_id, account_id):
+    """Todos os tratamentos ATIVOS do paciente nesta clínica, cada um com seu
+    checklist — usado pelo portal do consultor pra qualquer médico envolvido
+    em QUALQUER um dos tratamentos acompanhar o progresso (só leitura; quem
+    marca concluído continua sendo a secretária, ver mark_checklist_item).
+    Pode haver mais de um tratamento ativo em paralelo (ex: fisioterapia e
+    nutrição ao mesmo tempo). Sem tratamento ativo, devolve lista vazia."""
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id FROM whatsapp_patient_treatments WHERE contact_id = %s AND account_id = %s AND status = 'active'",
+            "SELECT id, name FROM whatsapp_patient_treatments WHERE contact_id = %s AND account_id = %s AND status = 'active' ORDER BY started_at",
             (contact_id, account_id),
         )
-        row = cur.fetchone()
-        if not row:
+        treatments = cur.fetchall()
+        if not treatments:
             return []
-        treatment_id = row[0]
-        cur.execute(
-            """SELECT i.id, i.status, i.done_at, t.label, t.sort_order,
-                      t.consultant_id, fc.name
-               FROM whatsapp_checklist_items i
-               JOIN whatsapp_checklist_templates t ON t.id = i.template_id
-               LEFT JOIN whatsapp_consultants fc ON fc.id = t.consultant_id
-               WHERE i.treatment_id = %s
-               ORDER BY t.sort_order""",
-            (treatment_id,),
-        )
-        cols = ["id", "status", "done_at", "label", "sort_order", "forward_consultant_id", "forward_consultant_name"]
-        return [dict(zip(cols, r)) for r in cur.fetchall()]
+        result = []
+        for treatment_id, treatment_name in treatments:
+            cur.execute(
+                """SELECT i.id, i.status, i.done_at, t.label, t.sort_order
+                   FROM whatsapp_checklist_items i
+                   JOIN whatsapp_checklist_templates t ON t.id = i.template_id
+                   WHERE i.treatment_id = %s
+                   ORDER BY t.sort_order""",
+                (treatment_id,),
+            )
+            cols = ["id", "status", "done_at", "label", "sort_order"]
+            items = [dict(zip(cols, r)) for r in cur.fetchall()]
+            result.append({"treatment_id": treatment_id, "treatment_name": treatment_name, "items": items})
+        return result
     finally:
         conn.close()
 
@@ -3098,14 +3127,13 @@ def mark_checklist_item(item_id, new_status):
                       t.notify_patient, t.notify_consultant, t.notify_secretary, t.auto_message_template,
                       latest.scheduled_at, latest.subject, acc.wa_session_name, acc.label,
                       latest.consultant_name, ct.wa_id, ct.push_name, latest.consultant_wa_id, sec_ct.wa_id, acc.id,
-                      t.label, t.consultant_id, fc.name, i.booking_triggered_at
+                      t.label
                FROM whatsapp_checklist_items i
                JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                JOIN whatsapp_patient_treatments tr ON tr.id = i.treatment_id
                JOIN whatsapp_contacts ct ON ct.id = tr.contact_id
                JOIN whatsapp_accounts acc ON acc.id = tr.account_id
                LEFT JOIN whatsapp_contacts sec_ct ON sec_ct.id = acc.secretary_contact_id
-               LEFT JOIN whatsapp_consultants fc ON fc.id = t.consultant_id
                LEFT JOIN LATERAL (
                    SELECT a2.scheduled_at, a2.subject, con2.name AS consultant_name, cons_ct2.wa_id AS consultant_wa_id
                    FROM whatsapp_appointments a2
@@ -3124,7 +3152,7 @@ def mark_checklist_item(item_id, new_status):
                 "scheduled_at", "subject", "wa_session_name", "account_label",
                 "consultant_name", "client_wa_id", "client_push_name", "consultant_wa_id", "secretary_wa_id",
                 "account_id",
-                "step_label", "forward_consultant_id", "forward_consultant_name", "booking_triggered_at"]
+                "step_label"]
         return dict(zip(cols, row)) if row else None
     finally:
         conn.close()
@@ -3143,16 +3171,6 @@ def _mark_checklist_auto_message_sent(item_id, recipient):
     try:
         cur = conn.cursor()
         cur.execute(f"UPDATE whatsapp_checklist_items SET {column} = NOW() WHERE id = %s", (item_id,))
-        conn.commit()
-    finally:
-        conn.close()
-
-
-def _mark_checklist_booking_triggered(item_id):
-    conn = _conn()
-    try:
-        cur = conn.cursor()
-        cur.execute("UPDATE whatsapp_checklist_items SET booking_triggered_at = NOW() WHERE id = %s", (item_id,))
         conn.commit()
     finally:
         conn.close()
@@ -4387,7 +4405,6 @@ def cp_set_checklist_template(account_id):
     data = request.json or {}
     steps = data.get("steps") or []
     account = get_account(account_id)
-    valid_consultant_ids = {c["id"] for c in get_consultants(account_id)}
     # Sem essa checagem, set_checklist_template() derruba os 3 flags de
     # destinatário pra False em silêncio quando o texto vem vazio (ver
     # server.py mais abaixo) — e quem tá preenchendo o formulário só descobre
@@ -4396,13 +4413,6 @@ def cp_set_checklist_template(account_id):
         if not isinstance(step, dict):
             continue
         label = (step.get("label") or "").strip()
-        raw_consultant_id = step.get("consultant_id")
-        if label and raw_consultant_id is not None and raw_consultant_id not in valid_consultant_ids:
-            return jsonify({
-                "ok": False,
-                "message": f'A etapa "{label}" aponta pra um profissional que não pertence mais a esta clínica. '
-                           f'Escolha outro ou remova o encaminhamento.',
-            }), 400
         wants_message = step.get("notify_patient") or step.get("notify_consultant") or step.get("notify_secretary")
         if label and wants_message and not (step.get("auto_message_template") or "").strip():
             return jsonify({
@@ -4609,9 +4619,8 @@ def cp_update_checklist_item(item_id):
             "clinica": result["account_label"],
         }
         # Etapa sem texto de mensagem configurado (comum em etapa puramente
-        # administrativa, ou numa etapa de encaminhamento que só usa o aviso
-        # fixo da secretária lá embaixo) — sem isso, render_message_template
-        # quebra tentando chamar .replace() em None.
+        # administrativa) — sem isso, render_message_template quebra
+        # tentando chamar .replace() em None.
         texto = render_message_template(result["auto_message_template"], ctx) if result["auto_message_template"] else None
         # Um texto só, renderizado 1x — os 3 checkboxes da etapa só decidem
         # quem recebe essa mesma mensagem. Cada destinatário tem sua própria
@@ -4640,29 +4649,6 @@ def cp_update_checklist_item(item_id):
             except EvolutionError as e:
                 log_event(None, "checklist_auto_message_failed", level="error",
                           detail={"item_id": item_id, "recipient": recipient, "error": str(e)})
-
-        # Etapa de encaminhamento (aponta pra um profissional específico da
-        # clínica) — avisa a secretária que precisa agendar, ela quem cria o
-        # agendamento pelo painel (CRM médico não deixa o paciente agendar
-        # sozinho por WhatsApp, ver booking_flow.handle_incoming). Independente
-        # dos 3 checkboxes de notificação acima — isso é estrutural da etapa,
-        # não uma mensagem opcional configurada pela clínica. booking_triggered_at
-        # evita avisar de novo se a etapa for desmarcada e marcada outra vez.
-        if result["forward_consultant_id"] and not result["booking_triggered_at"]:
-            _mark_checklist_booking_triggered(item_id)
-            if result["secretary_wa_id"]:
-                paciente = result["client_push_name"] or _phone_from_wa_id(result["client_wa_id"])
-                texto = (f"📋 Encaminhamento: {paciente} concluiu \"{result['step_label']}\" e precisa ser "
-                         f"agendado(a) com {result['forward_consultant_name']}. Agenda no painel quando puder.")
-                try:
-                    evolution.send_text(result["wa_session_name"], _phone_from_wa_id(result["secretary_wa_id"]), texto)
-                    report_whatsapp_sent_usage(result["account_id"])
-                except EvolutionError as e:
-                    log_event(None, "checklist_forward_notice_failed", level="error",
-                              detail={"item_id": item_id, "error": str(e)})
-            else:
-                log_event(None, "checklist_forward_notice_skipped_no_secretary", level="warning",
-                          detail={"item_id": item_id})
     return jsonify({"ok": True})
 
 
@@ -4774,8 +4760,8 @@ def cp_update_patient_record(contact_id):
     return jsonify(get_patient_record(contact_id))
 
 
-@app.route("/api/client-portal/contacts/<int:contact_id>/treatment/complete", methods=["POST"])
-def cp_complete_treatment(contact_id):
+@app.route("/api/client-portal/contacts/<int:contact_id>/treatments", methods=["GET"])
+def cp_list_patient_treatments(contact_id):
     user_id, err = _require_client()
     if err: return err
     if _contact_owner(contact_id) != user_id:
@@ -4783,8 +4769,21 @@ def cp_complete_treatment(contact_id):
     err = _require_crm_medico(user_id)
     if err: return err
     account_id = _contact_account_id(contact_id)
-    if not complete_patient_treatment(contact_id, account_id):
-        return jsonify({"ok": False, "message": "Este paciente não tem um tratamento ativo no momento."}), 400
+    status = request.args.get("status") or None
+    return jsonify({"treatments": get_patient_treatments(contact_id, account_id, status)})
+
+
+@app.route("/api/client-portal/treatments/<int:treatment_id>/complete", methods=["POST"])
+def cp_complete_treatment(treatment_id):
+    user_id, err = _require_client()
+    if err: return err
+    contact_id, account_id = _treatment_contact_account(treatment_id)
+    if contact_id is None or _contact_owner(contact_id) != user_id:
+        return _not_found("Tratamento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    if not complete_treatment(treatment_id):
+        return jsonify({"ok": False, "message": "Este tratamento não está mais ativo."}), 400
     return jsonify({"ok": True})
 
 
@@ -5049,6 +5048,7 @@ def api_portal_me(token):
         "address": consultant["address"],
         "alt_phone": consultant["alt_phone"],
         "specialties": consultant["specialties"],
+        "booking_mode": plan_booking_mode(_account_owner(consultant["account_id"])),
     })
 
 
@@ -5080,6 +5080,45 @@ def get_account_contacts(account_id):
         conn.close()
 
 
+def _resolve_appointment_treatment(consultant, client_contact_id, data):
+    """Só crm_medico usa tratamento (é o único modo com checklist). Se vier
+    treatment_id, precisa ser um tratamento ATIVO desse paciente nessa
+    clínica — essa consulta vira avulsa dentro dele. Sem treatment_id, cria
+    um tratamento novo com o nome informado (obrigatório — é a
+    patologia/motivo). Pode haver mais de um tratamento ativo ao mesmo tempo
+    pro mesmo paciente (ex: fisioterapia e nutrição em paralelo). Devolve
+    (treatment_id, erro) — erro é None quando deu certo, ou quando o modo
+    nem usa tratamento (aí treatment_id também vem None)."""
+    account_id = consultant["account_id"]
+    if plan_booking_mode(_account_owner(account_id)) != "crm_medico":
+        return None, None
+    raw_treatment_id = data.get("treatment_id")
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if isinstance(raw_treatment_id, int):
+            cur.execute(
+                """SELECT id FROM whatsapp_patient_treatments
+                   WHERE id = %s AND contact_id = %s AND account_id = %s AND status = 'active'""",
+                (raw_treatment_id, client_contact_id, account_id),
+            )
+            if not cur.fetchone():
+                return None, "Tratamento selecionado não é válido ou não está mais ativo."
+            return raw_treatment_id, None
+        name = (data.get("treatment_name") or "").strip()[:255]
+        if not name:
+            return None, "Informe o nome do tratamento (ex: a patologia) para iniciar um novo, ou escolha um já existente."
+        cur.execute(
+            "INSERT INTO whatsapp_patient_treatments (contact_id, account_id, name) VALUES (%s, %s, %s) RETURNING id",
+            (client_contact_id, account_id, name),
+        )
+        new_treatment_id = cur.fetchone()[0]
+        conn.commit()
+        return new_treatment_id, None
+    finally:
+        conn.close()
+
+
 def _create_appointment_for_consultant(consultant, data):
     """Corpo comum de criação de agendamento — usado tanto pelo próprio
     consultor (portal por token) quanto pela secretária (client-portal, modo
@@ -5098,7 +5137,10 @@ def _create_appointment_for_consultant(consultant, data):
 
     wa_id = f"{phone}@s.whatsapp.net"
     client_contact_id = get_or_create_contact(consultant["account_id"], wa_id, name or None)
-    ok = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False, subject=subject)
+    treatment_id, treatment_err = _resolve_appointment_treatment(consultant, client_contact_id, data)
+    if treatment_err:
+        return jsonify({"ok": False, "message": treatment_err}), 400
+    ok = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False, subject=subject, treatment_id=treatment_id)
     if not ok:
         return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
     return jsonify({"ok": True}), 201
@@ -5217,7 +5259,18 @@ def api_portal_patient_checklist(token, contact_id):
         return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
     if not _consultant_sees_contact(consultant["id"], contact_id):
         return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
-    return jsonify({"items": get_patient_active_checklist(contact_id, consultant["account_id"])})
+    return jsonify({"treatments": get_patient_active_treatments_with_checklist(contact_id, consultant["account_id"])})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/treatments", methods=["GET"])
+def api_portal_patient_treatments(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    status = request.args.get("status") or None
+    return jsonify({"treatments": get_patient_treatments(contact_id, consultant["account_id"], status)})
 
 
 @app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/evolution-notes", methods=["GET"])

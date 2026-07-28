@@ -1294,7 +1294,6 @@ async function submitConsultant() {
 let currentChecklistAccountId = null;
 let checklistAccounts = [];
 let templateSteps = [];
-let checklistConsultants = []; // consultores da conta atual, pro select de encaminhamento por etapa
 
 async function initChecklistTab() {
     checklistAccounts = await fetchAccounts();
@@ -1309,21 +1308,13 @@ async function initChecklistTab() {
     }
     sel.value = currentChecklistAccountId;
     loadSecretaryContactField();
-    await loadChecklistConsultants();
     await loadChecklistTemplate();
 }
 
 async function onChecklistAccountChange() {
     currentChecklistAccountId = Number(document.getElementById('checklistAccountSelect').value);
     loadSecretaryContactField();
-    await loadChecklistConsultants();
     await loadChecklistTemplate();
-}
-
-async function loadChecklistConsultants() {
-    const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/consultants`);
-    const data = await res.json();
-    checklistConsultants = res.ok ? (data.consultants || []) : [];
 }
 
 function loadSecretaryContactField() {
@@ -1368,16 +1359,9 @@ function renderTemplateEditor() {
                 <button class="btn btn-sm btn-secondary" ${i === templateSteps.length - 1 ? 'disabled' : ''} onclick="moveTemplateStep(${i}, 1)">▼</button>
                 <button class="btn btn-sm btn-danger" onclick="removeTemplateStep(${i})">Excluir</button>
             </div>
-            <div class="form-group" style="margin-top:0.6rem; margin-bottom:0;">
-                <label>Encaminhar para</label>
-                <select class="form-input" onchange="templateSteps[${i}].consultant_id = this.value ? Number(this.value) : null">
-                    <option value="">— Sem encaminhamento (etapa administrativa) —</option>
-                    ${checklistConsultants.map(c => `<option value="${c.id}" ${s.consultant_id === c.id ? 'selected' : ''}>${esc(c.name)}${c.specialties ? ' — ' + esc(c.specialties) : ''}${c.status !== 'active' ? ' (inativo)' : ''}</option>`).join('')}
-                </select>
-                ${s.consultant_id ? '<p style="color:#94a3b8; font-size:0.78rem; margin-top:0.3rem;">Quando esta etapa for marcada como concluída, a secretária recebe um aviso pra agendar o paciente com esse profissional.</p>' : ''}
-            </div>
             <div class="form-group" style="margin-top:0.6rem; margin-bottom:0; display:flex; gap:1rem; flex-wrap:wrap;">
                 <label><input type="checkbox" ${s.notify_patient ? 'checked' : ''} onchange="templateSteps[${i}].notify_patient = this.checked"> Avisar paciente</label>
+                <label><input type="checkbox" ${s.notify_consultant ? 'checked' : ''} onchange="templateSteps[${i}].notify_consultant = this.checked"> Avisar médico</label>
                 <label><input type="checkbox" ${s.notify_secretary ? 'checked' : ''} onchange="templateSteps[${i}].notify_secretary = this.checked"> Avisar secretária</label>
             </div>
             <div class="form-group" style="margin-top:0.4rem; margin-bottom:0;">
@@ -1389,7 +1373,7 @@ function renderTemplateEditor() {
 }
 
 function addTemplateStep() {
-    templateSteps.push({ label: '', sort_order: templateSteps.length, notify_patient: false, notify_consultant: false, notify_secretary: false, auto_message_template: '', consultant_id: null });
+    templateSteps.push({ label: '', sort_order: templateSteps.length, notify_patient: false, notify_consultant: false, notify_secretary: false, auto_message_template: '' });
     renderTemplateEditor();
 }
 

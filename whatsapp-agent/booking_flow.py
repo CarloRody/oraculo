@@ -160,7 +160,7 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
     return slots
 
 
-def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=None, status="confirmed"):
+def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=None, status="confirmed", treatment_id=None):
     """pg_advisory_xact_lock serializa tentativas de agendar o MESMO
     consultor — evita duas pessoas confirmarem o mesmo horário ao mesmo
     tempo (checar disponibilidade e inserir não são atômicos sem isso).
@@ -185,9 +185,9 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
             conn.rollback()
             return False
         cur.execute(
-            """INSERT INTO whatsapp_appointments (consultant_id, client_contact_id, scheduled_at, duration_minutes, subject, status)
-               VALUES (%s, %s, %s, %s, %s, %s)""",
-            (consultant["id"], client_contact_id, scheduled_at, duration, subject, status),
+            """INSERT INTO whatsapp_appointments (consultant_id, client_contact_id, scheduled_at, duration_minutes, subject, status, treatment_id)
+               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+            (consultant["id"], client_contact_id, scheduled_at, duration, subject, status, treatment_id),
         )
         conn.commit()
         return True
@@ -195,7 +195,7 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
         conn.close()
 
 
-def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None, requires_confirmation=False):
+def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None, requires_confirmation=False, treatment_id=None):
     """Cria o agendamento (se o horário ainda estiver livre) e avisa o
     cliente. Usado tanto pelo fluxo self-service do cliente (notify_consultant
     =True, ele ainda não sabe do agendamento) quanto pelo portal do próprio
@@ -212,7 +212,7 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
     Retorna True se criou, False se o horário já não estava livre."""
     import server  # tardio — ver docstring do módulo
     status = "pending_consultant" if requires_confirmation else "confirmed"
-    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject, status=status):
+    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject, status=status, treatment_id=treatment_id):
         return False
     when = scheduled_at.strftime("%d/%m às %H:%M")
     client_phone = _phone(client_wa_id)

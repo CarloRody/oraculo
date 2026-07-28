@@ -863,6 +863,22 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_checklist_items
         ADD CONSTRAINT whatsapp_checklist_items_treatment_id_template_id_key UNIQUE (treatment_id, template_id);
     """,
+
+    # 36 — tratamento passa a ser escolhido explicitamente pela secretária na
+    # hora de CRIAR o agendamento (não mais resolvido sozinho na conclusão da
+    # consulta, ver _resolve_appointment_treatment em server.py): ela escolhe
+    # um tratamento já ativo do paciente (essa consulta vira avulsa dentro
+    # dele) ou informa o nome/patologia de um tratamento novo — daí a coluna
+    # `name`. Índice único que limitava a 1 tratamento ativo por paciente cai:
+    # agora é esperado ter mais de um em paralelo (ex: fisioterapia e
+    # nutrição rodando ao mesmo tempo), cada um encerrado manualmente na sua
+    # hora. idx_patient_treatments_contact (não único) segue servindo pras
+    # buscas por paciente.
+    """
+    ALTER TABLE whatsapp_patient_treatments ADD COLUMN IF NOT EXISTS name VARCHAR(255);
+    UPDATE whatsapp_patient_treatments SET name = 'Tratamento' WHERE name IS NULL;
+    DROP INDEX IF EXISTS idx_one_active_treatment_per_patient;
+    """,
 ]
 
 
