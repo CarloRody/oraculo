@@ -5189,6 +5189,11 @@ def _create_appointment_for_consultant(consultant, data):
     except ValueError:
         return jsonify({"ok": False, "message": "Horário inválido"}), 400
 
+    duration_minutes = data.get("duration_minutes")
+    if duration_minutes is not None:
+        if not isinstance(duration_minutes, int) or not (1 <= duration_minutes <= 20160):
+            return jsonify({"ok": False, "message": "Duração inválida"}), 400
+
     wa_id = f"{phone}@s.whatsapp.net"
     client_contact_id = get_or_create_contact(consultant["account_id"], wa_id, name or None)
     treatment_id, treatment_err = _resolve_appointment_treatment(consultant, client_contact_id, data)
@@ -5207,7 +5212,7 @@ def _create_appointment_for_consultant(consultant, data):
     new_appointment_id = booking_flow.book_appointment(
         consultant, client_contact_id, wa_id, name, scheduled_at,
         notify_consultant=False, subject=subject, treatment_id=treatment_id,
-        notify_client=not suppress_patient_notice,
+        notify_client=not suppress_patient_notice, duration_minutes=duration_minutes,
     )
     if not new_appointment_id:
         return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409

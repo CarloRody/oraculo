@@ -280,9 +280,22 @@ function renderShell(me) {
                 <div class="form-group">
                     <label>Data e horário</label>
                     <div style="display:flex; gap:0.5rem;">
-                        <input type="date" class="form-input" id="newDate">
-                        <input type="time" class="form-input" id="newTime" style="flex:0.7;">
+                        <input type="date" class="form-input" id="newDate" oninput="updateNewApptDurationSummary()">
+                        <input type="time" class="form-input" id="newTime" style="flex:0.7;" oninput="updateNewApptDurationSummary()">
                     </div>
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" id="newLongBlock" onchange="onNewLongBlockChange()"> Preciso de mais tempo (bloco longo, ex: cirurgia, período reservado)</label>
+                </div>
+                <div id="newLongBlockFields" style="display:none;">
+                    <div class="form-group">
+                        <label>Término</label>
+                        <div style="display:flex; gap:0.5rem;">
+                            <input type="date" class="form-input" id="newEndDate" oninput="updateNewApptDurationSummary()">
+                            <input type="time" class="form-input" id="newEndTime" style="flex:0.7;" oninput="updateNewApptDurationSummary()">
+                        </div>
+                    </div>
+                    <p id="newApptDurationSummary" style="color:#94a3b8; font-size:0.82rem; margin:-0.4rem 0 0.8rem;"></p>
                 </div>
                 <button class="btn btn-block" onclick="createAppointmentManual()">Agendar</button>
                 <details style="margin-top:0.9rem;">
@@ -1157,12 +1170,67 @@ async function loadNewSlots() {
     } catch (e) { box.innerHTML = `<p class="empty">${esc(e.message)}</p>`; }
 }
 
+function onNewLongBlockChange() {
+    const checked = document.getElementById('newLongBlock').checked;
+    document.getElementById('newLongBlockFields').style.display = checked ? '' : 'none';
+    if (checked) {
+        const endDate = document.getElementById('newEndDate');
+        const endTime = document.getElementById('newEndTime');
+        // Sugestão inicial editável: mesmo dia, 1h depois do início.
+        if (!endDate.value) endDate.value = document.getElementById('newDate').value;
+        if (!endTime.value) {
+            const startTime = document.getElementById('newTime').value;
+            if (startTime) {
+                const [h, m] = startTime.split(':').map(Number);
+                const d = new Date(2000, 0, 1, h, m);
+                d.setHours(d.getHours() + 1);
+                endTime.value = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+            }
+        }
+    }
+    updateNewApptDurationSummary();
+}
+
+function newApptDurationMinutes() {
+    if (!document.getElementById('newLongBlock').checked) return null;
+    const startDate = document.getElementById('newDate').value;
+    const startTime = document.getElementById('newTime').value;
+    const endDate = document.getElementById('newEndDate').value;
+    const endTime = document.getElementById('newEndTime').value;
+    if (!startDate || !startTime || !endDate || !endTime) return undefined;
+    const startMs = new Date(`${startDate}T${startTime}:00`).getTime();
+    const endMs = new Date(`${endDate}T${endTime}:00`).getTime();
+    if (!(endMs > startMs)) return NaN;
+    return Math.round((endMs - startMs) / 60000);
+}
+
+function updateNewApptDurationSummary() {
+    if (!document.getElementById('newLongBlock').checked) return;
+    const el = document.getElementById('newApptDurationSummary');
+    const minutes = newApptDurationMinutes();
+    if (minutes === undefined) { el.textContent = ''; return; }
+    if (Number.isNaN(minutes)) { el.textContent = 'O término deve ser depois do início.'; el.style.color = '#f87171'; return; }
+    el.style.color = '#94a3b8';
+    const days = Math.floor(minutes / 1440);
+    const hours = Math.floor((minutes % 1440) / 60);
+    const mins = minutes % 60;
+    const parts = [];
+    if (days) parts.push(`${days} dia${days === 1 ? '' : 's'}`);
+    if (hours) parts.push(`${hours}h`);
+    if (mins) parts.push(`${mins}min`);
+    el.textContent = `Duração: ${parts.join(' ') || '0min'}`;
+}
+
 async function createAppointment(iso) {
     const phone = document.getElementById('newPhone').value.trim();
     const name = document.getElementById('newName').value.trim();
     const subject = document.getElementById('newSubject').value.trim();
     if (!phone) return alert('Informe o telefone do cliente primeiro.');
+    const durationMinutes = newApptDurationMinutes();
+    if (durationMinutes === undefined) return alert('Informe a data e hora de término do bloco.');
+    if (Number.isNaN(durationMinutes)) return alert('O término do bloco deve ser depois do início.');
     const payload = { phone, name, subject, scheduled_at: iso };
+    if (durationMinutes !== null) payload.duration_minutes = durationMinutes;
     if (ME.booking_mode === 'crm_medico') {
         const treatmentIdRaw = document.getElementById('newTreatment').value;
         const treatmentName = document.getElementById('newTreatmentName').value.trim();
@@ -1180,6 +1248,11 @@ async function createAppointment(iso) {
         document.getElementById('newDate').value = '';
         document.getElementById('newTime').value = '';
         document.getElementById('newTreatmentName').value = '';
+        document.getElementById('newLongBlock').checked = false;
+        document.getElementById('newEndDate').value = '';
+        document.getElementById('newEndTime').value = '';
+        document.getElementById('newLongBlockFields').style.display = 'none';
+        document.getElementById('newApptDurationSummary').textContent = '';
         loadNewTreatments(null);
         document.getElementById('newSlots').innerHTML = '<p class="empty">Toque em "Ver horários" abaixo.</p>';
         loadAppointments();

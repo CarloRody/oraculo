@@ -160,7 +160,7 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
     return slots
 
 
-def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=None, status="confirmed", treatment_id=None):
+def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=None, status="confirmed", treatment_id=None, duration_minutes=None):
     """pg_advisory_xact_lock serializa tentativas de agendar o MESMO
     consultor — evita duas pessoas confirmarem o mesmo horário ao mesmo
     tempo (checar disponibilidade e inserir não são atômicos sem isso).
@@ -168,12 +168,16 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
     O conflito é checado contra 'confirmed' E 'pending_consultant' — um
     horário aguardando confirmação do consultor já fica reservado, ninguém
     mais pode escolhê-lo enquanto isso (senão dois clientes poderiam disputar
-    o mesmo horário até o consultor decidir)."""
+    o mesmo horário até o consultor decidir).
+
+    `duration_minutes` opcional sobrepõe o slot padrão do consultor — usado
+    pra blocos longos (ex: cirurgia, dia todo) agendados manualmente pela
+    secretária ou pelo próprio consultor."""
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute("SELECT pg_advisory_xact_lock(%s)", (consultant["id"],))
-        duration = consultant["slot_duration_minutes"]
+        duration = duration_minutes if duration_minutes is not None else consultant["slot_duration_minutes"]
         end_at = scheduled_at + datetime.timedelta(minutes=duration)
         cur.execute(
             """SELECT 1 FROM whatsapp_appointments
@@ -196,12 +200,16 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
         conn.close()
 
 
-def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None, requires_confirmation=False, treatment_id=None, notify_client=True):
+def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None, requires_confirmation=False, treatment_id=None, notify_client=True, duration_minutes=None):
     """Cria o agendamento (se o horário ainda estiver livre) e avisa o
     cliente. Usado tanto pelo fluxo self-service do cliente (notify_consultant
     =True, ele ainda não sabe do agendamento) quanto pelo portal do próprio
     consultor (notify_consultant=False — não faz sentido avisar quem tá
     criando). `subject` é opcional — só o portal do consultor coleta isso hoje.
+
+    `duration_minutes` opcional cria um bloco de duração diferente do slot
+    padrão do consultor (ex: cirurgia de 2h, dia todo) — ver
+    _create_appointment_if_free.
 
     `requires_confirmation=True` (usado só no fluxo self-service do cliente)
     cria o agendamento como 'pending_consultant' em vez de 'confirmed' direto
@@ -389,7 +397,10 @@ def reschedule_appointment_and_notify(appointment_id, consultant_id, new_schedul
     try:
         cur = conn.cursor()
         cur.execute("SELECT pg_advisory_xact_lock(%s)", (consultant_id,))
-        end_at = new_scheduled_at + datetime.timedelta(minutes=appt["slot_duration_minutes"])
+        # Preserva a duração própria do agendamento (não o slot padrão atual
+        # do consultor) — importante pra blocos longos remarcados não
+        # encolherem de volta pro slot padrão.
+        end_at = new_scheduled_at + datetime.timedelta(minutes=appt["duration_minutes"])
         cur.execute(
             """SELECT 1 FROM whatsapp_appointments
                WHERE consultant_id = %s AND status IN ('confirmed', 'pending_consultant') AND id != %s
