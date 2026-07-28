@@ -132,6 +132,7 @@
         </div>
         <div class="tabs" id="topTabs" style="display:none;">
             <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')"><span class="tab-icon">📅</span>Agenda</button>
+            <button class="tab-btn" id="topTabAtendimento" onclick="switchTab('atendimento')"><span class="tab-icon">🩺</span>Atendimento</button>
             <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')"><span class="tab-icon">🗂️</span>Pacientes</button>
             <button class="tab-btn" id="topTabRecibos" onclick="switchTab('recibos')"><span class="tab-icon">🧾</span>Recibos</button>
             <button class="tab-btn" id="topTabConfig" onclick="switchTab('config')"><span class="tab-icon">⚙️</span>Configurações</button>
@@ -250,31 +251,6 @@ function renderShell(me) {
                 <div id="upcomingList"><p class="empty">Carregando...</p></div>
                 <div id="weekView" style="display:none;"></div>
             </div>
-            <div class="card" id="consultationCard" style="display:none;">
-                <h2>Atendimento</h2>
-                <p class="empty" id="consultationInfo" style="padding-top:0;"></p>
-                <div id="consultationPatientBox"></div>
-                <div class="form-group"><label>Detalhes da consulta</label><textarea class="form-input" id="consultationNotes" rows="3"></textarea></div>
-                <div class="form-group"><label>Diagnóstico</label><textarea class="form-input" id="consultationDiagnosis" rows="2"></textarea></div>
-                <div class="form-group"><label>Prescrição</label><textarea class="form-input" id="consultationPrescription" rows="2"></textarea></div>
-                <h3 style="font-size:0.9rem; margin:0.75rem 0 0.4rem;">Sinais vitais</h3>
-                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                    <div style="flex:1 1 100px;"><label>Peso (kg)</label><input type="number" step="0.1" class="form-input" id="bioWeight" oninput="updateBioImc()"></div>
-                    <div style="flex:1 1 100px;"><label>Altura (cm)</label><input type="number" step="1" class="form-input" id="bioHeight" oninput="updateBioImc()"></div>
-                    <div style="flex:1 1 100px;"><label>IMC</label><input class="form-input" id="bioImc" readonly></div>
-                </div>
-                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                    <div style="flex:1 1 100px;"><label>PA sistólica</label><input type="number" step="1" class="form-input" id="bioBpSystolic"></div>
-                    <div style="flex:1 1 100px;"><label>PA diastólica</label><input type="number" step="1" class="form-input" id="bioBpDiastolic"></div>
-                    <div style="flex:1 1 100px;"><label>Freq. cardíaca (bpm)</label><input type="number" step="1" class="form-input" id="bioHeartRate"></div>
-                </div>
-                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                    <div style="flex:1 1 100px;"><label>Glicemia (mg/dL)</label><input type="number" step="1" class="form-input" id="bioGlucose"></div>
-                    <div style="flex:1 1 100px;"><label>Temperatura (°C)</label><input type="number" step="0.1" class="form-input" id="bioTemperature"></div>
-                </div>
-                <button class="btn btn-block" onclick="saveConsultation()">Salvar e concluir atendimento</button>
-                <button class="btn btn-secondary btn-block" onclick="closeConsultation()">Cancelar</button>
-            </div>
             <div class="card">
                 <h2>+ Novo agendamento</h2>
                 <div class="form-group">
@@ -326,6 +302,36 @@ function renderShell(me) {
                 <p class="empty" id="rescheduleInfo"></p>
                 <div id="rescheduleSlots"></div>
                 <button class="btn btn-secondary btn-block" onclick="closeReschedule()">Cancelar</button>
+            </div>
+        </div>
+        <div id="atendimento-tab" class="tab-content">
+            <div class="card" id="atendimentoEmptyState">
+                <p class="empty" style="padding-top:0;">Nenhum atendimento em andamento. Vá em Agenda e clique em "Iniciar atendimento".</p>
+            </div>
+            <div class="card" id="consultationCard" style="display:none;">
+                <h2>Atendimento</h2>
+                <p class="empty" id="consultationInfo" style="padding-top:0;"></p>
+                <div id="consultationPatientBox"></div>
+                <div class="form-group"><label>Detalhes da consulta</label><textarea class="form-input" id="consultationNotes" rows="3"></textarea></div>
+                <div class="form-group"><label>Diagnóstico</label><textarea class="form-input" id="consultationDiagnosis" rows="2"></textarea></div>
+                <div class="form-group"><label>Prescrição</label><textarea class="form-input" id="consultationPrescription" rows="2"></textarea></div>
+                <h3 style="font-size:0.9rem; margin:0.75rem 0 0.4rem;">Sinais vitais</h3>
+                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <div style="flex:1 1 100px;"><label>Peso (kg)</label><input type="number" step="0.1" class="form-input" id="bioWeight" oninput="updateBioImc()"></div>
+                    <div style="flex:1 1 100px;"><label>Altura (cm)</label><input type="number" step="1" class="form-input" id="bioHeight" oninput="updateBioImc()"></div>
+                    <div style="flex:1 1 100px;"><label>IMC</label><input class="form-input" id="bioImc" readonly></div>
+                </div>
+                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <div style="flex:1 1 100px;"><label>PA sistólica</label><input type="number" step="1" class="form-input" id="bioBpSystolic"></div>
+                    <div style="flex:1 1 100px;"><label>PA diastólica</label><input type="number" step="1" class="form-input" id="bioBpDiastolic"></div>
+                    <div style="flex:1 1 100px;"><label>Freq. cardíaca (bpm)</label><input type="number" step="1" class="form-input" id="bioHeartRate"></div>
+                </div>
+                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <div style="flex:1 1 100px;"><label>Glicemia (mg/dL)</label><input type="number" step="1" class="form-input" id="bioGlucose"></div>
+                    <div style="flex:1 1 100px;"><label>Temperatura (°C)</label><input type="number" step="0.1" class="form-input" id="bioTemperature"></div>
+                </div>
+                <button class="btn btn-block" onclick="saveConsultation()">Salvar e concluir atendimento</button>
+                <button class="btn btn-secondary btn-block" onclick="closeConsultation()">Cancelar</button>
             </div>
         </div>
         <div id="pacientes-tab" class="tab-content">
@@ -1081,9 +1087,10 @@ async function loadConsultationPatientBox(appointmentId, contactId) {
 
 async function openConsultation(id, contactId, clientName, scheduledAt) {
     consultationApptId = id;
+    switchTab('atendimento');
+    document.getElementById('atendimentoEmptyState').style.display = 'none';
     document.getElementById('consultationInfo').textContent = `Paciente: ${clientName} · ${fmtWhen(scheduledAt)}`;
     document.getElementById('consultationCard').style.display = 'block';
-    document.getElementById('consultationCard').scrollIntoView({ behavior: 'smooth' });
     document.getElementById('consultationNotes').value = '';
     document.getElementById('consultationDiagnosis').value = '';
     document.getElementById('consultationPrescription').value = '';
@@ -1107,6 +1114,8 @@ function closeConsultation() {
     consultationApptId = null;
     document.getElementById('consultationCard').style.display = 'none';
     document.getElementById('consultationPatientBox').innerHTML = '';
+    document.getElementById('atendimentoEmptyState').style.display = 'block';
+    switchTab('agenda');
 }
 
 async function saveConsultation() {
