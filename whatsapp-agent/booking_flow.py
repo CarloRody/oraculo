@@ -183,14 +183,15 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
         )
         if cur.fetchone():
             conn.rollback()
-            return False
+            return None
         cur.execute(
             """INSERT INTO whatsapp_appointments (consultant_id, client_contact_id, scheduled_at, duration_minutes, subject, status, treatment_id)
-               VALUES (%s, %s, %s, %s, %s, %s, %s)""",
+               VALUES (%s, %s, %s, %s, %s, %s, %s) RETURNING id""",
             (consultant["id"], client_contact_id, scheduled_at, duration, subject, status, treatment_id),
         )
+        new_appointment_id = cur.fetchone()[0]
         conn.commit()
-        return True
+        return new_appointment_id
     finally:
         conn.close()
 
@@ -209,11 +210,13 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
     consultor cria pelo portal, não faz sentido esperar confirmação da
     própria criação, por isso o padrão é False.
 
-    Retorna True se criou, False se o horário já não estava livre."""
+    Retorna o id da consulta criada, ou None se o horário já não estava
+    livre."""
     import server  # tardio — ver docstring do módulo
     status = "pending_consultant" if requires_confirmation else "confirmed"
-    if not _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject, status=status, treatment_id=treatment_id):
-        return False
+    new_appointment_id = _create_appointment_if_free(consultant, client_contact_id, scheduled_at, subject=subject, status=status, treatment_id=treatment_id)
+    if not new_appointment_id:
+        return None
     when = scheduled_at.strftime("%d/%m às %H:%M")
     client_phone = _phone(client_wa_id)
     subject_line = f"\nAssunto: {subject}" if subject else ""
@@ -240,7 +243,7 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
             server.report_whatsapp_sent_usage(consultant["account_id"])
         except EvolutionError:
             pass
-    return True
+    return new_appointment_id
 
 
 def _get_appointment_full(appointment_id):

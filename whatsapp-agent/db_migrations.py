@@ -879,6 +879,17 @@ MIGRATIONS = [
     UPDATE whatsapp_patient_treatments SET name = 'Tratamento' WHERE name IS NULL;
     DROP INDEX IF EXISTS idx_one_active_treatment_per_patient;
     """,
+
+    # 37 — botão "Agendar" na etapa do checklist (painel da secretária): a
+    # etapa fica ligada à consulta criada a partir dela, pra trocar o botão
+    # pela data/hora marcada assim que existir um agendamento vinculado.
+    # Não precisa de lógica de "desvincular ao cancelar" — cancelamento só
+    # marca whatsapp_appointments.status='cancelled' (nunca apaga a linha),
+    # então quem lê filtra status <> 'cancelled' e o botão volta sozinho.
+    """
+    ALTER TABLE whatsapp_checklist_items
+        ADD COLUMN IF NOT EXISTS scheduled_appointment_id INTEGER REFERENCES whatsapp_appointments(id) ON DELETE SET NULL;
+    """,
 ]
 
 

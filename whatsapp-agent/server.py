@@ -3046,7 +3046,8 @@ def get_checklist_items_for_account(account_id, status=None):
             f"""SELECT i.id, i.status, i.done_at, t.label, t.notify_patient, t.notify_consultant, t.notify_secretary,
                        tr.id, tr.status, tr.name,
                        ct.id, ct.push_name, ct.wa_id,
-                       agg.appointment_count, agg.last_scheduled_at
+                       agg.appointment_count, agg.last_scheduled_at,
+                       sched.scheduled_at
                 FROM whatsapp_checklist_items i
                 JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                 JOIN whatsapp_patient_treatments tr ON tr.id = i.treatment_id
@@ -3055,6 +3056,7 @@ def get_checklist_items_for_account(account_id, status=None):
                     SELECT COUNT(*) AS appointment_count, MAX(a.scheduled_at) AS last_scheduled_at
                     FROM whatsapp_appointments a WHERE a.treatment_id = tr.id
                 ) agg ON true
+                LEFT JOIN whatsapp_appointments sched ON sched.id = i.scheduled_appointment_id AND sched.status <> 'cancelled'
                 WHERE tr.account_id = %s {where_status} {where_active}
                 ORDER BY ct.push_name, tr.id, t.sort_order""",
             params,
@@ -3062,11 +3064,12 @@ def get_checklist_items_for_account(account_id, status=None):
         cols = ["id", "status", "done_at", "label", "notify_patient", "notify_consultant", "notify_secretary",
                 "treatment_id", "treatment_status", "treatment_name",
                 "client_contact_id", "client_name", "client_wa_id",
-                "appointment_count", "last_scheduled_at"]
+                "appointment_count", "last_scheduled_at", "item_scheduled_at"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
-            if r["last_scheduled_at"]:
-                r["last_scheduled_at"] = r["last_scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+            for k in ("last_scheduled_at", "item_scheduled_at"):
+                if r[k]:
+                    r[k] = r[k].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
         return rows
     finally:
         conn.close()
@@ -5119,6 +5122,28 @@ def _resolve_appointment_treatment(consultant, client_contact_id, data):
         conn.close()
 
 
+def _link_checklist_item_to_appointment(item_id, appointment_id, account_id, contact_id):
+    """Liga a consulta recém-criada à etapa do checklist que originou o
+    agendamento (clique em "Agendar" na etapa, ver painel-secretaria.html
+    scheduleChecklistItem) — só se a etapa pertencer a um tratamento deste
+    paciente nesta clínica e ainda estiver pendente, senão ignora em
+    silêncio (não trava a criação do agendamento por causa de um vínculo
+    que não bate)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_checklist_items i SET scheduled_appointment_id = %s
+               FROM whatsapp_patient_treatments tr
+               WHERE i.id = %s AND i.treatment_id = tr.id AND i.status = 'pending'
+                 AND tr.account_id = %s AND tr.contact_id = %s""",
+            (appointment_id, item_id, account_id, contact_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _create_appointment_for_consultant(consultant, data):
     """Corpo comum de criação de agendamento — usado tanto pelo próprio
     consultor (portal por token) quanto pela secretária (client-portal, modo
@@ -5140,9 +5165,12 @@ def _create_appointment_for_consultant(consultant, data):
     treatment_id, treatment_err = _resolve_appointment_treatment(consultant, client_contact_id, data)
     if treatment_err:
         return jsonify({"ok": False, "message": treatment_err}), 400
-    ok = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False, subject=subject, treatment_id=treatment_id)
-    if not ok:
+    new_appointment_id = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False, subject=subject, treatment_id=treatment_id)
+    if not new_appointment_id:
         return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
+    checklist_item_id = data.get("checklist_item_id")
+    if isinstance(checklist_item_id, int):
+        _link_checklist_item_to_appointment(checklist_item_id, new_appointment_id, consultant["account_id"], client_contact_id)
     return jsonify({"ok": True}), 201
 
 
