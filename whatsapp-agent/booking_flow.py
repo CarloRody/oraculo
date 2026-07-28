@@ -196,7 +196,7 @@ def _create_appointment_if_free(consultant, client_contact_id, scheduled_at, sub
         conn.close()
 
 
-def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None, requires_confirmation=False, treatment_id=None):
+def book_appointment(consultant, client_contact_id, client_wa_id, client_push_name, scheduled_at, notify_consultant=False, subject=None, requires_confirmation=False, treatment_id=None, notify_client=True):
     """Cria o agendamento (se o horário ainda estiver livre) e avisa o
     cliente. Usado tanto pelo fluxo self-service do cliente (notify_consultant
     =True, ele ainda não sabe do agendamento) quanto pelo portal do próprio
@@ -210,6 +210,12 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
     consultor cria pelo portal, não faz sentido esperar confirmação da
     própria criação, por isso o padrão é False.
 
+    `notify_client=False` pula a confirmação padrão pro cliente — usado só
+    quando o agendamento vem do botão "Agendar" de uma etapa do checklist
+    (ver _create_appointment_for_consultant em server.py): nesse caso quem
+    avisa o paciente é a mensagem configurada na etapa, não essa confirmação
+    genérica, pra não mandar duas mensagens sobre a mesma consulta.
+
     Retorna o id da consulta criada, ou None se o horário já não estava
     livre."""
     import server  # tardio — ver docstring do módulo
@@ -220,18 +226,19 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
     when = scheduled_at.strftime("%d/%m às %H:%M")
     client_phone = _phone(client_wa_id)
     subject_line = f"\nAssunto: {subject}" if subject else ""
-    if requires_confirmation:
-        acct = server.get_account(consultant["account_id"])
-        term = server.get_nomenclature(acct.get("user_id") if acct else None)["consultant"]["singular"].lower()
-        client_msg = (f"Recebi seu pedido de agendamento com {consultant['name']} em {when}!{subject_line}\n"
-                       f"Assim que o {term} confirmar, eu te aviso por aqui.")
-    else:
-        client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
-    try:
-        evolution.send_text(consultant["wa_session_name"], client_phone, client_msg)
-        server.report_whatsapp_sent_usage(consultant["account_id"])
-    except EvolutionError:
-        pass
+    if notify_client:
+        if requires_confirmation:
+            acct = server.get_account(consultant["account_id"])
+            term = server.get_nomenclature(acct.get("user_id") if acct else None)["consultant"]["singular"].lower()
+            client_msg = (f"Recebi seu pedido de agendamento com {consultant['name']} em {when}!{subject_line}\n"
+                           f"Assim que o {term} confirmar, eu te aviso por aqui.")
+        else:
+            client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
+        try:
+            evolution.send_text(consultant["wa_session_name"], client_phone, client_msg)
+            server.report_whatsapp_sent_usage(consultant["account_id"])
+        except EvolutionError:
+            pass
     if notify_consultant:
         if requires_confirmation:
             consultant_msg = (f"Novo agendamento pra confirmar: {client_push_name or client_phone} em {when}.{subject_line}\n"

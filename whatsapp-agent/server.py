@@ -4597,6 +4597,55 @@ def cp_list_checklist_items(account_id):
     return jsonify({"items": get_checklist_items_for_account(account_id, status)})
 
 
+def _send_checklist_done_messages(item_id, result):
+    """Manda a mensagem automática da etapa (auto_message_template) pra quem
+    estiver marcado nos 3 checkboxes — mesmo texto usado tanto quando a
+    secretária marca a pill manualmente (cp_update_checklist_item) quanto
+    quando a etapa conclui sozinha ao ser agendada pelo botão "Agendar" (ver
+    _create_appointment_for_consultant). `result` é o dict devolvido por
+    mark_checklist_item(item_id, "done")."""
+    local_scheduled_at = result["scheduled_at"].astimezone(booking_flow.LOCAL_TZ)
+    ctx = {
+        "paciente": result["client_push_name"] or _phone_from_wa_id(result["client_wa_id"]),
+        "medico": result["consultant_name"],
+        "data": local_scheduled_at.strftime("%d/%m/%Y"),
+        "hora": local_scheduled_at.strftime("%H:%M"),
+        "assunto": result["subject"] or "",
+        "clinica": result["account_label"],
+    }
+    # Etapa sem texto de mensagem configurado (comum em etapa puramente
+    # administrativa) — sem isso, render_message_template quebra
+    # tentando chamar .replace() em None.
+    texto = render_message_template(result["auto_message_template"], ctx) if result["auto_message_template"] else None
+    # Um texto só, renderizado 1x — os 3 checkboxes da etapa só decidem
+    # quem recebe essa mesma mensagem. Cada destinatário tem sua própria
+    # marca de "já enviado" e falha independente dos outros (ex: número
+    # do médico inválido não deve impedir o envio pro paciente).
+    candidates = [
+        ("patient", result["notify_patient"], result["client_wa_id"], result["auto_message_sent_patient_at"]),
+        ("consultant", result["notify_consultant"], result["consultant_wa_id"], result["auto_message_sent_consultant_at"]),
+        ("secretary", result["notify_secretary"], result["secretary_wa_id"], result["auto_message_sent_secretary_at"]),
+    ]
+    for recipient, wants, wa_id, already_sent in candidates:
+        if not wants or already_sent:
+            continue
+        if not wa_id:
+            # Só deveria acontecer pra secretary (patient/consultant
+            # sempre têm wa_id) — cp_set_checklist_template já bloqueia
+            # notify_secretary sem telefone cadastrado; isso aqui é
+            # defesa em profundidade, não trava a conclusão do item.
+            log_event(None, "checklist_auto_message_skipped_no_contact", level="warning",
+                      detail={"item_id": item_id, "recipient": recipient})
+            continue
+        try:
+            evolution.send_text(result["wa_session_name"], _phone_from_wa_id(wa_id), texto)
+            _mark_checklist_auto_message_sent(item_id, recipient)
+            report_whatsapp_sent_usage(result["account_id"])
+        except EvolutionError as e:
+            log_event(None, "checklist_auto_message_failed", level="error",
+                      detail={"item_id": item_id, "recipient": recipient, "error": str(e)})
+
+
 @app.route("/api/client-portal/checklist-items/<int:item_id>", methods=["PATCH"])
 def cp_update_checklist_item(item_id):
     user_id, err = _require_client()
@@ -4612,46 +4661,7 @@ def cp_update_checklist_item(item_id):
     if not result:
         return _not_found("Item não encontrado")
     if new_status == "done":
-        local_scheduled_at = result["scheduled_at"].astimezone(booking_flow.LOCAL_TZ)
-        ctx = {
-            "paciente": result["client_push_name"] or _phone_from_wa_id(result["client_wa_id"]),
-            "medico": result["consultant_name"],
-            "data": local_scheduled_at.strftime("%d/%m/%Y"),
-            "hora": local_scheduled_at.strftime("%H:%M"),
-            "assunto": result["subject"] or "",
-            "clinica": result["account_label"],
-        }
-        # Etapa sem texto de mensagem configurado (comum em etapa puramente
-        # administrativa) — sem isso, render_message_template quebra
-        # tentando chamar .replace() em None.
-        texto = render_message_template(result["auto_message_template"], ctx) if result["auto_message_template"] else None
-        # Um texto só, renderizado 1x — os 3 checkboxes da etapa só decidem
-        # quem recebe essa mesma mensagem. Cada destinatário tem sua própria
-        # marca de "já enviado" e falha independente dos outros (ex: número
-        # do médico inválido não deve impedir o envio pro paciente).
-        candidates = [
-            ("patient", result["notify_patient"], result["client_wa_id"], result["auto_message_sent_patient_at"]),
-            ("consultant", result["notify_consultant"], result["consultant_wa_id"], result["auto_message_sent_consultant_at"]),
-            ("secretary", result["notify_secretary"], result["secretary_wa_id"], result["auto_message_sent_secretary_at"]),
-        ]
-        for recipient, wants, wa_id, already_sent in candidates:
-            if not wants or already_sent:
-                continue
-            if not wa_id:
-                # Só deveria acontecer pra secretary (patient/consultant
-                # sempre têm wa_id) — cp_set_checklist_template já bloqueia
-                # notify_secretary sem telefone cadastrado; isso aqui é
-                # defesa em profundidade, não trava a conclusão do item.
-                log_event(None, "checklist_auto_message_skipped_no_contact", level="warning",
-                          detail={"item_id": item_id, "recipient": recipient})
-                continue
-            try:
-                evolution.send_text(result["wa_session_name"], _phone_from_wa_id(wa_id), texto)
-                _mark_checklist_auto_message_sent(item_id, recipient)
-                report_whatsapp_sent_usage(result["account_id"])
-            except EvolutionError as e:
-                log_event(None, "checklist_auto_message_failed", level="error",
-                          detail={"item_id": item_id, "recipient": recipient, "error": str(e)})
+        _send_checklist_done_messages(item_id, result)
     return jsonify({"ok": True})
 
 
@@ -5122,6 +5132,25 @@ def _resolve_appointment_treatment(consultant, client_contact_id, data):
         conn.close()
 
 
+def _checklist_item_is_linkable(item_id, account_id, contact_id):
+    """Mesma condição usada por _link_checklist_item_to_appointment — mas
+    consultada ANTES de criar o agendamento, pra decidir se a confirmação
+    padrão pro paciente deve ser suprimida (o fluxo do checklist vai avisar
+    em vez dela, assim que a etapa for concluída automaticamente)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT 1 FROM whatsapp_checklist_items i
+               JOIN whatsapp_patient_treatments tr ON tr.id = i.treatment_id
+               WHERE i.id = %s AND i.status = 'pending' AND tr.account_id = %s AND tr.contact_id = %s""",
+            (item_id, account_id, contact_id),
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
 def _link_checklist_item_to_appointment(item_id, appointment_id, account_id, contact_id):
     """Liga a consulta recém-criada à etapa do checklist que originou o
     agendamento (clique em "Agendar" na etapa, ver painel-secretaria.html
@@ -5165,12 +5194,29 @@ def _create_appointment_for_consultant(consultant, data):
     treatment_id, treatment_err = _resolve_appointment_treatment(consultant, client_contact_id, data)
     if treatment_err:
         return jsonify({"ok": False, "message": treatment_err}), 400
-    new_appointment_id = booking_flow.book_appointment(consultant, client_contact_id, wa_id, name, scheduled_at, notify_consultant=False, subject=subject, treatment_id=treatment_id)
+
+    checklist_item_id = data.get("checklist_item_id")
+    # Agendamento vindo do botão "Agendar" de uma etapa do checklist: a
+    # confirmação padrão pro paciente fica suprimida (notify_client=False) —
+    # quem avisa o paciente é a mensagem configurada na etapa, disparada
+    # logo abaixo ao concluí-la automaticamente, pra não mandar duas
+    # mensagens sobre a mesma consulta.
+    suppress_patient_notice = isinstance(checklist_item_id, int) and \
+        _checklist_item_is_linkable(checklist_item_id, consultant["account_id"], client_contact_id)
+
+    new_appointment_id = booking_flow.book_appointment(
+        consultant, client_contact_id, wa_id, name, scheduled_at,
+        notify_consultant=False, subject=subject, treatment_id=treatment_id,
+        notify_client=not suppress_patient_notice,
+    )
     if not new_appointment_id:
         return jsonify({"ok": False, "message": "Esse horário não está mais livre"}), 409
-    checklist_item_id = data.get("checklist_item_id")
-    if isinstance(checklist_item_id, int):
+
+    if suppress_patient_notice:
         _link_checklist_item_to_appointment(checklist_item_id, new_appointment_id, consultant["account_id"], client_contact_id)
+        result = mark_checklist_item(checklist_item_id, "done")
+        if result:
+            _send_checklist_done_messages(checklist_item_id, result)
     return jsonify({"ok": True}), 201
 
 
