@@ -131,8 +131,13 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
     try:
         cur = conn.cursor()
         cur.execute(
+            # Compara o FIM do agendamento com "now", não o início — um bloco
+            # longo (ex: cirurgia de 2h) que já começou mas ainda não acabou
+            # também conta como ocupado, senão os horários livres sugeridos
+            # passam por cima dele (mesmo padrão de _create_appointment_if_free).
             """SELECT scheduled_at, duration_minutes FROM whatsapp_appointments
-               WHERE consultant_id = %s AND status IN ('confirmed', 'pending_consultant') AND scheduled_at >= %s""",
+               WHERE consultant_id = %s AND status IN ('confirmed', 'pending_consultant')
+               AND (scheduled_at + make_interval(mins => duration_minutes)) >= %s""",
             (consultant["id"], now),
         )
         busy = [(r[0], r[0] + datetime.timedelta(minutes=r[1])) for r in cur.fetchall()]

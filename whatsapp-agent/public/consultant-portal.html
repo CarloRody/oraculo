@@ -121,6 +121,39 @@
     .slot-btn:hover, .slot-btn.selected { border-color: #60a5fa; color: #60a5fa; }
     .error-box { background: #2a1418; border: 1px solid #4a1f27; border-radius: 8px; padding: 1rem; color: #f87171; font-size: 0.9rem; }
     details summary { cursor: pointer; color: #94a3b8; font-size: 0.85rem; }
+
+    /* Grade semanal visual da Agenda — eixo de horário + blocos proporcionais */
+    .agenda-grid-scroll { display: flex; overflow-x: auto; overflow-y: auto; max-height: 70vh; border: 1px solid #334155; border-radius: 8px; background: #0f172a; }
+    .agenda-hour-gutter { flex: 0 0 44px; position: sticky; left: 0; z-index: 3; background: #0f172a; border-right: 1px solid #334155; }
+    .agenda-day-col-wrap { flex: 1 1 132px; min-width: 132px; border-right: 1px solid #334155; }
+    .agenda-day-col-wrap:last-child { border-right: none; }
+    .agenda-day-header { height: 28px; padding: 0.3rem; font-size: 0.78rem; font-weight: 600; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    .agenda-day-col {
+        position: relative;
+        box-sizing: border-box;
+        /* mantém sincronizado com AGENDA_PX_PER_HOUR (48px) no JS */
+        background-image: repeating-linear-gradient(to bottom, #1a2744 0, #1a2744 1px, transparent 1px, transparent 48px);
+    }
+    .agenda-hour-label { position: absolute; right: 4px; transform: translateY(-50%); font-size: 0.65rem; color: #64748b; white-space: nowrap; }
+    .appt-block {
+        position: absolute;
+        box-sizing: border-box;
+        overflow: hidden;
+        cursor: pointer;
+        border-radius: 6px;
+        padding: 2px 4px;
+        font-size: 0.68rem;
+        line-height: 1.25;
+        z-index: 2;
+        border: 1px solid rgba(148, 163, 184, 0.25);
+    }
+    .appt-block--no-top { border-top-left-radius: 0; border-top-right-radius: 0; }
+    .appt-block--no-bottom { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+    .appt-block--confirmed { background: rgba(203, 213, 225, 0.14); color: #e2e8f0; }
+    .appt-block--pending { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
+    .agenda-availability-band { position: absolute; left: 0; right: 0; z-index: 1; background: rgba(96, 165, 250, 0.08); pointer-events: none; }
+    .agenda-now-line { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid #ef4444; z-index: 5; pointer-events: none; }
+    .agenda-now-line::before { content: ''; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
 </style>
 </head>
 <body>
@@ -151,7 +184,10 @@ const API = window.location.origin + '/whatsapp/api/consultant-portal/' + TOKEN;
 function esc(s) {
     const d = document.createElement('div');
     d.textContent = s || '';
-    return d.innerHTML;
+    // innerHTML já escapa &/</>, mas não aspas — precisa disso também pra
+    // poder usar esc() dentro de atributos (ex: title="${esc(...)}") sem
+    // risco de a string quebrar pra fora do atributo.
+    return d.innerHTML.replace(/"/g, '&quot;');
 }
 
 function fmtWhen(iso) {
@@ -599,6 +635,168 @@ async function declineAppt(id) {
 let agendaViewMode = 'list';
 let weekViewOffset = 0;
 
+// Grade semanal visual — constantes de escala (ver .agenda-day-col no CSS,
+// o intervalo de 48px do repeating-linear-gradient precisa ficar igual a
+// AGENDA_PX_PER_HOUR) e helpers de bloco longo (portados de
+// painel-secretaria.html, adaptados pra um único médico — ME em vez de um
+// array de consultores).
+const AGENDA_PX_PER_HOUR = 48;
+const AGENDA_MIN_BLOCK_PX = 20;
+const AGENDA_DEFAULT_START_HOUR = 7;
+const AGENDA_DEFAULT_END_HOUR = 20;
+const AGENDA_WEEKDAY_KEYS = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'];
+
+function isoDateLocal(d) {
+    const y = d.getFullYear();
+    const m = String(d.getMonth() + 1).padStart(2, '0');
+    const dd = String(d.getDate()).padStart(2, '0');
+    return `${y}-${m}-${dd}`;
+}
+
+function apptEndAt(a) {
+    return new Date(new Date(a.scheduled_at).getTime() + (a.duration_minutes || 0) * 60000);
+}
+
+function apptIsLongBlock(a) {
+    return a.duration_minutes > (ME.slot_duration_minutes || 0);
+}
+
+function fmtShortDate(dateKey) {
+    return dateKey.split('-').reverse().slice(0, 2).join('/');
+}
+
+function fmtApptDurationSuffix(a) {
+    if (!apptIsLongBlock(a)) return '';
+    const end = apptEndAt(a);
+    const endDateKey = isoDateLocal(end);
+    const endTime = `${String(end.getHours()).padStart(2, '0')}:${String(end.getMinutes()).padStart(2, '0')}`;
+    const startDateKey = a.scheduled_at.slice(0, 10);
+    return endDateKey === startDateKey ? ` até ${endTime}` : ` até ${fmtShortDate(endDateKey)} ${endTime}`;
+}
+
+function computeAgendaHourRange(appts) {
+    let startHour = AGENDA_DEFAULT_START_HOUR, endHour = AGENDA_DEFAULT_END_HOUR;
+    appts.forEach(a => {
+        const s = new Date(a.scheduled_at);
+        const e = apptEndAt(a);
+        startHour = Math.min(startHour, s.getHours());
+        endHour = Math.max(endHour, e.getHours() + (e.getMinutes() > 0 ? 1 : 0));
+    });
+    return { startHour, endHour };
+}
+
+function layoutDayColumnItems(items, dayStart, dayEnd) {
+    const dayStartMs = dayStart.getTime();
+    const dayEndMs = dayEnd.getTime();
+    const withSeg = items.map(a => {
+        const s = Math.max(new Date(a.scheduled_at).getTime(), dayStartMs);
+        const e = Math.min(apptEndAt(a).getTime(), dayEndMs);
+        return { a, segStartMin: (s - dayStartMs) / 60000, segEndMin: (e - dayStartMs) / 60000 };
+    }).sort((x, y) => x.segStartMin - y.segStartMin);
+
+    const clusters = [];
+    let current = [], currentEnd = -Infinity;
+    for (const it of withSeg) {
+        if (current.length && it.segStartMin >= currentEnd) { clusters.push(current); current = []; currentEnd = -Infinity; }
+        current.push(it);
+        currentEnd = Math.max(currentEnd, it.segEndMin);
+    }
+    if (current.length) clusters.push(current);
+
+    clusters.forEach(cluster => {
+        const colEnds = [];
+        cluster.forEach(it => {
+            let col = colEnds.findIndex(end => it.segStartMin >= end);
+            if (col === -1) { col = colEnds.length; colEnds.push(it.segEndMin); }
+            else colEnds[col] = it.segEndMin;
+            it.col = col;
+        });
+        cluster.forEach(it => it.cols = colEnds.length);
+    });
+    return withSeg;
+}
+
+function getAvailabilityRangesForDay(availability, dateObj) {
+    if (!availability) return [];
+    const key = AGENDA_WEEKDAY_KEYS[(dateObj.getDay() + 6) % 7];
+    const isoKey = isoDateLocal(dateObj);
+    return [...(availability[key] || []), ...(availability[isoKey] || [])];
+}
+
+function renderAgendaHourGutter(hourRange) {
+    const totalHeight = (hourRange.endHour - hourRange.startHour) * AGENDA_PX_PER_HOUR;
+    let labels = '';
+    for (let h = hourRange.startHour; h <= hourRange.endHour; h++) {
+        const top = (h - hourRange.startHour) * AGENDA_PX_PER_HOUR;
+        labels += `<div class="agenda-hour-label" style="top:${top}px;">${String(h).padStart(2, '0')}:00</div>`;
+    }
+    return `<div class="agenda-day-header"></div><div style="position:relative; height:${totalHeight}px;">${labels}</div>`;
+}
+
+function renderAgendaDayColumn(i, d, key, dayStart, dayEnd, appts, hourRange, availability, isToday, now, dayNames) {
+    const totalHeight = (hourRange.endHour - hourRange.startHour) * AGENDA_PX_PER_HOUR;
+    // Bloco longo (ex: cirurgia de vários dias) aparece em toda coluna que
+    // ele ocupa, não só no dia de início.
+    const items = appts
+        .filter(a => new Date(a.scheduled_at) < dayEnd && apptEndAt(a) > dayStart)
+        .sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at));
+    const laidOut = layoutDayColumnItems(items, dayStart, dayEnd);
+
+    const bandsHtml = availability.map(([startStr, endStr]) => {
+        const [sh, sm] = startStr.split(':').map(Number);
+        const [eh, em] = endStr.split(':').map(Number);
+        const top = ((sh + sm / 60) - hourRange.startHour) * AGENDA_PX_PER_HOUR;
+        const height = ((eh + em / 60) - (sh + sm / 60)) * AGENDA_PX_PER_HOUR;
+        return `<div class="agenda-availability-band" style="top:${Math.max(0, top)}px; height:${Math.max(0, height)}px;"></div>`;
+    }).join('');
+
+    let nowLineHtml = '';
+    if (isToday) {
+        const nowHour = now.getHours() + now.getMinutes() / 60;
+        if (nowHour >= hourRange.startHour && nowHour <= hourRange.endHour) {
+            const top = (nowHour - hourRange.startHour) * AGENDA_PX_PER_HOUR;
+            nowLineHtml = `<div class="agenda-now-line" style="top:${top}px;"></div>`;
+        }
+    }
+
+    const blocksHtml = laidOut.map(({ a, segStartMin, segEndMin, col, cols }) => {
+        const top = Math.max(0, segStartMin / 60 - hourRange.startHour) * AGENDA_PX_PER_HOUR;
+        const height = Math.max(AGENDA_MIN_BLOCK_PX, (segEndMin - segStartMin) / 60 * AGENDA_PX_PER_HOUR);
+        const left = (col * 100 / cols) + '%';
+        const width = (100 / cols) + '%';
+        const startDateKey = a.scheduled_at.slice(0, 10);
+        const isContinuationStart = startDateKey !== key;
+        const continuesAfter = apptEndAt(a) > dayEnd;
+        const isPending = a.status === 'pending_consultant';
+        const cls = ['appt-block', isPending ? 'appt-block--pending' : 'appt-block--confirmed'];
+        if (isContinuationStart) cls.push('appt-block--no-top');
+        if (continuesAfter) cls.push('appt-block--no-bottom');
+        const timeLabel = isContinuationStart
+            ? `↳ desde ${fmtShortDate(startDateKey)}`
+            : `${a.scheduled_at.slice(11, 16)}${fmtApptDurationSuffix(a)}`;
+        const showSubject = a.subject && height >= 34;
+        const onclick = isPending
+            ? `document.getElementById('pendingCard').scrollIntoView({behavior:'smooth'})`
+            : `openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g, "\\'")}')`;
+        const tooltip = `${a.client_name || a.client_wa_id}${a.subject ? ' · ' + a.subject : ''}`;
+        return `
+            <div class="${cls.join(' ')}" style="top:${top}px; height:${height}px; left:${left}; width:${width};" title="${esc(tooltip)}" onclick="${onclick}">
+                <strong>${timeLabel}</strong> ${isPending ? '⏳ ' : ''}${esc(a.client_name || a.client_wa_id)}
+                ${showSubject ? `<div style="opacity:0.75;">${esc(a.subject)}</div>` : ''}
+            </div>`;
+    }).join('');
+
+    return `
+        <div class="agenda-day-col-wrap" style="${isToday ? 'background:rgba(96,165,250,0.05);' : ''}">
+            <div class="agenda-day-header" style="color:${isToday ? '#60a5fa' : '#94a3b8'};">${dayNames[i]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}</div>
+            <div class="agenda-day-col" style="height:${totalHeight}px;">
+                ${bandsHtml}
+                ${nowLineHtml}
+                ${blocksHtml}
+            </div>
+        </div>`;
+}
+
 function switchAgendaView(mode) {
     agendaViewMode = mode;
     document.getElementById('viewTabList').className = mode === 'list' ? 'btn btn-sm' : 'btn btn-sm btn-secondary';
@@ -623,37 +821,22 @@ function changeWeek(delta) {
 function renderWeekView() {
     const monday = startOfWeek(weekViewOffset);
     const dayNames = ['Seg', 'Ter', 'Qua', 'Qui', 'Sex', 'Sáb', 'Dom'];
-    const todayKey = new Date().toISOString().slice(0, 10);
-
-    const byDate = {};
-    lastUpcoming.forEach(a => {
-        const dateKey = a.scheduled_at.slice(0, 10);
-        (byDate[dateKey] = byDate[dateKey] || []).push(a);
-    });
+    const todayKey = isoDateLocal(new Date());
+    const now = new Date();
+    const hourRange = computeAgendaHourRange(lastUpcoming);
+    // Só existe um médico neste portal — a sombra de disponibilidade
+    // aparece sempre (sem o caso "Todos os médicos" do painel da secretária).
+    const availabilityBase = ME.weekly_availability || null;
 
     const cols = [];
     for (let i = 0; i < 7; i++) {
         const d = new Date(monday.getFullYear(), monday.getMonth(), monday.getDate() + i);
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
-        const items = (byDate[key] || []).sort((a, b) => a.scheduled_at.localeCompare(b.scheduled_at));
+        const key = isoDateLocal(d);
+        const dayStart = d;
+        const dayEnd = new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1);
         const isToday = key === todayKey;
-        cols.push(`
-            <div style="flex:1; min-width:130px; background:#0f172a; border:1px solid ${isToday ? '#60a5fa' : '#334155'}; border-radius:8px; padding:0.5rem;">
-                <div style="font-size:0.78rem; color:${isToday ? '#60a5fa' : '#94a3b8'}; font-weight:600; margin-bottom:0.4rem;">${dayNames[i]} ${String(d.getDate()).padStart(2, '0')}/${String(d.getMonth() + 1).padStart(2, '0')}</div>
-                ${items.length ? items.map(a => {
-                    const isPending = a.status === 'pending_consultant';
-                    const onclick = isPending
-                        ? `document.getElementById('pendingCard').scrollIntoView({behavior:'smooth'})`
-                        : `openReschedule(${a.id}, '${esc(a.client_name || a.client_wa_id).replace(/'/g, "\\'")}')`;
-                    return `
-                    <div style="font-size:0.78rem; color:${isPending ? '#fbbf24' : '#cbd5e1'}; padding:0.3rem 0; border-top:1px solid #1a2744; cursor:pointer;" onclick="${onclick}">
-                        <strong>${a.scheduled_at.slice(11, 16)}</strong> ${isPending ? '⏳ ' : ''}${esc(a.client_name || a.client_wa_id)}
-                        ${a.subject ? `<div style="color:#64748b;">${esc(a.subject)}</div>` : ''}
-                    </div>
-                `;
-                }).join('') : '<div style="font-size:0.76rem; color:#475569; padding:0.3rem 0;">—</div>'}
-            </div>
-        `);
+        const availability = availabilityBase ? getAvailabilityRangesForDay(availabilityBase, d) : [];
+        cols.push(renderAgendaDayColumn(i, d, key, dayStart, dayEnd, lastUpcoming, hourRange, availability, isToday, now, dayNames));
     }
 
     document.getElementById('weekView').innerHTML = `
@@ -662,7 +845,10 @@ function renderWeekView() {
             <span style="font-size:0.8rem; color:#94a3b8;">${weekViewOffset === 0 ? 'Esta semana' : `Daqui ${weekViewOffset} semana(s)`}</span>
             <button class="btn btn-sm btn-secondary" onclick="changeWeek(1)">Semana seguinte ▶</button>
         </div>
-        <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">${cols.join('')}</div>
+        <div class="agenda-grid-scroll">
+            <div class="agenda-hour-gutter">${renderAgendaHourGutter(hourRange)}</div>
+            ${cols.join('')}
+        </div>
     `;
 }
 

@@ -2456,7 +2456,11 @@ def get_appointments(account_id, upcoming_only=True, date_from=None, date_to=Non
         where_parts = ["c.account_id = %s"]
         params = [account_id]
         if date_from:
-            where_parts.append("a2.scheduled_at >= (%s::date)::timestamp AT TIME ZONE 'America/Sao_Paulo'")
+            # Compara o FIM do agendamento com o início da janela, não o
+            # início dele — um bloco longo que começou antes da janela mas
+            # ainda está em andamento continua aparecendo (ex: navegar direto
+            # pra semana seguinte de uma cirurgia que atravessa a virada).
+            where_parts.append("(a2.scheduled_at + make_interval(mins => a2.duration_minutes)) >= (%s::date)::timestamp AT TIME ZONE 'America/Sao_Paulo'")
             params.append(date_from)
         if date_to:
             where_parts.append("a2.scheduled_at < (%s::date)::timestamp AT TIME ZONE 'America/Sao_Paulo'")
