@@ -2601,14 +2601,14 @@ def get_patient_appointments(contact_id):
         conn.close()
 
 
-def search_account_appointments(account_id, q=None, consultant_id=None, limit=200):
+def search_account_appointments(account_id, q=None, consultant_id=None, limit=20):
     """Busca atendimentos da conta inteira por id/nome/CPF do paciente, com
     filtro opcional por médico — primeira busca ILIKE do projeto (todo o
     resto do app filtra client-side sobre listas já carregadas; aqui não dá,
     é a conta inteira, não só a semana). CPF vem de whatsapp_patient_records
     (LEFT JOIN — cadastro é opcional, nem todo paciente tem ficha
-    preenchida). Sem paginação de verdade (só um LIMIT alto) — a busca em si
-    já deve estreitar o resultado o bastante."""
+    preenchida). Limite baixo de propósito (20): sem paginação de verdade,
+    a busca em si é que deve estreitar o resultado."""
     conn = _conn()
     try:
         cur = conn.cursor()
