@@ -1467,33 +1467,35 @@ function buildDocsHtml(docsData) {
 // Box compacto (cadastro, agendamentos, evolução só-leitura, documentos)
 // mostrado durante o atendimento em andamento — a ficha completa com abas
 // (Recibos/Atestados/Checklist inclusos) vive só na aba Pacientes, ver
-// loadFichaPatient().
+// loadFichaPatient(). Regenerado inteiro a cada consulta aberta, então
+// sempre volta pra sub-aba Cadastro por padrão — sem precisar preservar
+// estado entre chamadas como a ficha completa faz.
 function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts) {
     opts = opts || {};
     const apptHtml = buildApptHtml(apptData, opts.excludeApptId);
-    const notes = evoData.notes || [];
     const evoHtml = buildEvoHtml(evoData, contactId, !!opts.editableEvolution);
-    const docs = docsData.documents || [];
     const docsHtml = buildDocsHtml(docsData);
 
     return `
-        <details open style="margin-bottom:0.6rem;">
-            <summary>Cadastro</summary>
-            <div style="margin-top:0.4rem;">${patientRecordFormHtml(record, contactId)}</div>
-        </details>
-        <details open style="margin-bottom:0.6rem;">
-            <summary>Agendamentos (histórico completo e próximos)</summary>
-            <div style="margin-top:0.4rem;">${apptHtml}</div>
-        </details>
-        <details style="margin-bottom:0.6rem;">
-            <summary>Evolução do tratamento (${notes.length})</summary>
-            <div style="margin-top:0.4rem;">${evoHtml}</div>
-        </details>
-        <details>
-            <summary>Documentos (${docs.length})</summary>
-            <div style="margin-top:0.4rem;">${docsHtml}</div>
-        </details>
+        <div class="subtabs">
+            <button class="subtab-btn active" id="consSubTabCadastro" onclick="switchConsultationSubTab('cadastro')">Cadastro</button>
+            <button class="subtab-btn" id="consSubTabAgendamentos" onclick="switchConsultationSubTab('agendamentos')">Agendamentos</button>
+            <button class="subtab-btn" id="consSubTabEvolucao" onclick="switchConsultationSubTab('evolucao')">Evolução</button>
+            <button class="subtab-btn" id="consSubTabDocumentos" onclick="switchConsultationSubTab('documentos')">Documentos</button>
+        </div>
+        <div id="cons-cadastro">${patientRecordFormHtml(record, contactId)}</div>
+        <div id="cons-agendamentos" style="display:none;">${apptHtml}</div>
+        <div id="cons-evolucao" style="display:none;">${evoHtml}</div>
+        <div id="cons-documentos" style="display:none;">${docsHtml}</div>
     `;
+}
+
+function switchConsultationSubTab(name) {
+    const names = ['cadastro', 'agendamentos', 'evolucao', 'documentos'];
+    for (const n of names) {
+        document.getElementById('cons-' + n).style.display = (n === name) ? 'block' : 'none';
+        document.getElementById('consSubTab' + n.charAt(0).toUpperCase() + n.slice(1)).classList.toggle('active', n === name);
+    }
 }
 
 async function loadConsultationPatientBox(appointmentId, contactId) {
