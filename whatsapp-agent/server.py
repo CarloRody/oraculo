@@ -2601,6 +2601,123 @@ def get_patient_appointments(contact_id):
         conn.close()
 
 
+def search_account_appointments(account_id, q=None, consultant_id=None, limit=200):
+    """Busca atendimentos da conta inteira por id/nome/CPF do paciente, com
+    filtro opcional por médico — primeira busca ILIKE do projeto (todo o
+    resto do app filtra client-side sobre listas já carregadas; aqui não dá,
+    é a conta inteira, não só a semana). CPF vem de whatsapp_patient_records
+    (LEFT JOIN — cadastro é opcional, nem todo paciente tem ficha
+    preenchida). Sem paginação de verdade (só um LIMIT alto) — a busca em si
+    já deve estreitar o resultado o bastante."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        where_parts = ["c.account_id = %s"]
+        params = [account_id]
+        if consultant_id:
+            where_parts.append("a.consultant_id = %s")
+            params.append(consultant_id)
+        if q:
+            where_parts.append(
+                "(a.id::text ILIKE %s OR ct.name ILIKE %s OR ct.push_name ILIKE %s OR pr.cpf ILIKE %s)"
+            )
+            like = f"%{q}%"
+            params.extend([like, like, like, like])
+        where_sql = " AND ".join(where_parts)
+        cur.execute(
+            f"""SELECT a.id, a.consultant_id, c.name, a.client_contact_id,
+                       COALESCE(ct.name, ct.push_name), ct.wa_id, pr.cpf,
+                       a.scheduled_at, a.duration_minutes, a.status, a.subject
+                FROM whatsapp_appointments a
+                JOIN whatsapp_consultants c ON c.id = a.consultant_id
+                JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+                LEFT JOIN whatsapp_patient_records pr ON pr.contact_id = ct.id
+                WHERE {where_sql}
+                ORDER BY a.scheduled_at DESC
+                LIMIT %s""",
+            params + [limit],
+        )
+        cols = ["id", "consultant_id", "consultant_name", "client_contact_id", "client_name",
+                "client_wa_id", "cpf", "scheduled_at", "duration_minutes", "status", "subject"]
+        rows = [dict(zip(cols, r)) for r in cur.fetchall()]
+        for r in rows:
+            r["scheduled_at"] = r["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+        return rows
+    finally:
+        conn.close()
+
+
+def get_appointment_detail(appointment_id, account_id):
+    """Ficha completa de UM atendimento pro painel da secretária — dados do
+    agendamento + paciente (incl. CPF) + registro clínico (LEFT JOIN, pode
+    não existir ainda: completar um agendamento não cria um registro de
+    consulta automaticamente, só o médico salvando pelo portal dele faz
+    isso) + biometria. Posse checada pela CONTA (c.account_id), não pelo
+    médico — diferente de get_appointment_consultation, que é do portal do
+    médico."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT a.id, a.consultant_id, c.name, a.client_contact_id,
+                      COALESCE(ct.name, ct.push_name), ct.wa_id, pr.cpf,
+                      a.scheduled_at, a.duration_minutes, a.status, a.subject,
+                      cons.notes, cons.diagnosis, cons.prescription, cons.updated_at
+               FROM whatsapp_appointments a
+               JOIN whatsapp_consultants c ON c.id = a.consultant_id
+               JOIN whatsapp_contacts ct ON ct.id = a.client_contact_id
+               LEFT JOIN whatsapp_patient_records pr ON pr.contact_id = ct.id
+               LEFT JOIN whatsapp_appointment_consultations cons ON cons.appointment_id = a.id
+               WHERE a.id = %s AND c.account_id = %s""",
+            (appointment_id, account_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        cols = ["id", "consultant_id", "consultant_name", "client_contact_id", "client_name",
+                "client_wa_id", "cpf", "scheduled_at", "duration_minutes", "status", "subject",
+                "notes", "diagnosis", "prescription", "consultation_updated_at"]
+        d = dict(zip(cols, row))
+        d["scheduled_at"] = d["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%Y-%m-%dT%H:%M")
+        d["consultation_updated_at"] = d["consultation_updated_at"].isoformat() if d["consultation_updated_at"] else None
+        d["biometrics"] = get_consultation_biometrics(appointment_id)
+        return d
+    finally:
+        conn.close()
+
+
+def update_appointment_clinical_data(appointment_id, account_id, data):
+    """Atualiza motivo + notas/diagnóstico/prescrição/biometria de um
+    atendimento a partir do painel da secretária. Descobre o consultant_id
+    real do agendamento (checando que é da conta certa) e repassa pra
+    upsert_appointment_consultation/upsert_consultation_biometrics — já
+    existentes, usadas hoje pelo portal do médico. Só o "subject" é gravado
+    direto aqui, porque vive em whatsapp_appointments, não nas tabelas que
+    essas duas funções tocam. Substituição completa (mesmo espírito de
+    upsert_patient_record) — o formulário sempre manda o estado inteiro."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT a.consultant_id FROM whatsapp_appointments a
+               JOIN whatsapp_consultants c ON c.id = a.consultant_id
+               WHERE a.id = %s AND c.account_id = %s""",
+            (appointment_id, account_id),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        consultant_id = row[0]
+        subject = (data.get("subject") or "").strip()[:200] or None
+        cur.execute("UPDATE whatsapp_appointments SET subject = %s WHERE id = %s", (subject, appointment_id))
+        conn.commit()
+    finally:
+        conn.close()
+    upsert_appointment_consultation(appointment_id, consultant_id, data)
+    upsert_consultation_biometrics(appointment_id, consultant_id, data.get("biometrics") or {})
+    return True
+
+
 def mark_appointment_completed(appointment_id):
     """Único ponto de entrada pra 'a consulta aconteceu' — sempre um clique
     manual da secretária, nunca automático (não existe job que 'adivinha'
@@ -4447,6 +4564,40 @@ def cp_list_appointments(account_id):
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
     return api_list_appointments(account_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/appointments/search", methods=["GET"])
+def cp_search_appointments(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    q = (request.args.get("q") or "").strip()
+    consultant_id = request.args.get("consultant_id", type=int)
+    return jsonify({"appointments": search_account_appointments(account_id, q=q or None, consultant_id=consultant_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/appointments/<int:appointment_id>", methods=["GET"])
+def cp_get_appointment_detail(account_id, appointment_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    detail = get_appointment_detail(appointment_id, account_id)
+    if not detail:
+        return _not_found("Atendimento não encontrado")
+    return jsonify(detail)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/appointments/<int:appointment_id>/clinical-data", methods=["PATCH"])
+def cp_update_appointment_clinical_data(account_id, appointment_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    if not update_appointment_clinical_data(appointment_id, account_id, request.json or {}):
+        return _not_found("Atendimento não encontrado")
+    return jsonify(get_appointment_detail(appointment_id, account_id))
 
 
 @app.route("/api/client-portal/appointments/<int:appointment_id>/cancel", methods=["POST"])
