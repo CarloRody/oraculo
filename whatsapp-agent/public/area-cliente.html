@@ -166,7 +166,15 @@
         border-bottom: 1px solid var(--border);
     }
     .account-row:last-child { border-bottom: none; }
-    .account-info { display: flex; align-items: center; gap: 0.6rem; }
+    .account-info { display: flex; align-items: center; gap: 0.7rem; }
+    .account-logo {
+        width: 42px; height: 42px; border-radius: 10px; flex-shrink: 0;
+        display: grid; place-items: center; overflow: hidden;
+        font-weight: 700; font-size: 1rem; color: var(--accent);
+        background: var(--surface-3); border: 1px solid var(--border);
+        background-size: contain; background-repeat: no-repeat; background-position: center;
+    }
+    .account-logo.has-img { background-color: #fff; color: transparent; }
     .status-badge {
         display: inline-flex;
         align-items: center;
@@ -757,6 +765,7 @@ async function renderAccounts() {
     el.innerHTML = accounts.map(a => `
         <div class="account-row">
             <div class="account-info">
+                <div class="account-logo" id="acctLogo-${a.id}">${esc((a.label || '?').charAt(0).toUpperCase())}</div>
                 <strong>${esc(a.label)}</strong>
                 <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
             </div>
@@ -768,6 +777,21 @@ async function renderAccounts() {
             </div>
         </div>
     `).join('');
+    accounts.forEach(a => loadAccountLogoInto(a.id, document.getElementById('acctLogo-' + a.id)));
+}
+
+// Busca a logomarca da conta (imagem de personalização kind='logo') e a
+// mostra no quadradinho ao lado da conta. Sem logo, mantém o monograma.
+async function loadAccountLogoInto(accountId, el) {
+    if (!el) return;
+    try {
+        const res = await authFetch(API + `/api/client-portal/accounts/${accountId}/branding/logo/file`);
+        if (!res.ok) return;
+        const blob = await res.blob();
+        el.style.backgroundImage = `url(${URL.createObjectURL(blob)})`;
+        el.classList.add('has-img');
+        el.textContent = '';
+    } catch (e) { /* mantém o monograma */ }
 }
 
 async function disconnectAccount(id) {
@@ -861,6 +885,7 @@ function openBrandingModal(accountId) {
 
 function closeBrandingModal() {
     document.getElementById('brandingModal').classList.remove('active');
+    renderAccounts(); // reflete uma logomarca recém-enviada/removida na lista de contas
 }
 
 async function loadBrandingImages(accountId) {
