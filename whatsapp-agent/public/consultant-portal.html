@@ -214,15 +214,28 @@
     .agenda-availability-band { position: absolute; left: 0; right: 0; z-index: 1; background: var(--vital-tint); pointer-events: none; }
     .agenda-now-line { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--crit); z-index: 5; pointer-events: none; }
     .agenda-now-line::before { content: ''; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--crit); }
+    .account-logo {
+        width: 56px; height: 56px; border-radius: 12px; flex-shrink: 0;
+        display: grid; place-items: center; overflow: hidden;
+        font-weight: 700; font-size: 1.3rem; color: var(--accent);
+        background: var(--surface-3); border: 1px solid var(--border);
+        background-size: contain; background-repeat: no-repeat; background-position: center;
+    }
+    .account-logo.has-img { background-color: #fff; color: transparent; }
 </style>
 </head>
 <body>
 <div class="wrap" id="app">
     <aside class="sidebar">
         <div class="sidebar-brand">
-            <h1>📅 Minha Agenda</h1>
-            <p class="subtitle" id="subtitle">Carregando...</p>
-            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" aria-label="Alternar tema claro e escuro"><span id="themeIcon">☀</span><span id="themeLabel">Tema claro</span></button>
+            <div style="display:flex; align-items:center; gap:0.7rem;">
+                <div class="account-logo" id="clinicLogo" title="Logomarca da clínica" aria-hidden="true">🏥</div>
+                <div style="min-width:0;">
+                    <h1>📅 Minha Agenda</h1>
+                    <p class="subtitle" id="subtitle" style="margin-bottom:0;">Carregando...</p>
+                </div>
+            </div>
+            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" aria-label="Alternar tema claro e escuro" style="margin-top:0.7rem;"><span id="themeIcon">☀</span><span id="themeLabel">Tema claro</span></button>
         </div>
         <div class="tabs" id="topTabs" style="display:none;">
             <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')"><span class="tab-icon">📅</span>Agenda</button>
@@ -315,6 +328,7 @@ async function init() {
         const me = await api('/me');
         ME = me;
         document.getElementById('subtitle').textContent = `${me.name} · ${me.account_label}`;
+        loadClinicLogo(me);
         renderShell(me);
         initNotificationPrefs(me);
         document.getElementById('newTreatmentBlock').style.display = me.booking_mode === 'crm_medico' ? 'block' : 'none';
@@ -1809,6 +1823,21 @@ function createAppointmentManual() {
 }
 
 // ---- Recibos ----
+// Mostra a logomarca da clínica (imagem de personalização kind='logo' da
+// conta do médico) no topo da barra lateral. Sem logo, mantém o ícone.
+async function loadClinicLogo(me) {
+    const el = document.getElementById('clinicLogo');
+    if (!el) return;
+    const label = (me && me.account_label) || '';
+    el.textContent = label ? label.charAt(0).toUpperCase() : '🏥';
+    try {
+        const blob = await apiBlob('/branding/logo/file');
+        el.style.backgroundImage = `url(${URL.createObjectURL(blob)})`;
+        el.classList.add('has-img');
+        el.textContent = '';
+    } catch (e) { /* sem logo enviada — mantém o monograma/ícone */ }
+}
+
 async function apiBlob(path) {
     const res = await fetch(API + path);
     if (!res.ok) {

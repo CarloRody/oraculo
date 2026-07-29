@@ -6134,6 +6134,38 @@ def api_portal_create_receipt(token, contact_id):
     return jsonify({"ok": True, "id": receipt_id}), 201
 
 
+@app.route("/api/consultant-portal/<token>/branding/<kind>/file", methods=["GET"])
+def api_portal_branding_file(token, kind):
+    """Serve uma imagem de personalização da conta do médico (ex.: a
+    logomarca da clínica) pra Minha Agenda — mesmo arquivo servido pela
+    rota do cliente, mas autorizado pelo token do médico em vez da chave
+    do cliente."""
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if kind not in BRANDING_KINDS:
+        return jsonify({"ok": False, "message": "Tipo de imagem inválido."}), 400
+    branding = get_account_branding(consultant["account_id"]).get(kind)
+    if not branding:
+        return _not_found("Imagem não encontrada")
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT storage_path, mime_type, original_name FROM whatsapp_files WHERE id = %s", (branding["file_id"],))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return _not_found("Imagem não encontrada")
+    storage_path, mime_type, original_name = row
+    base = os.path.realpath(MEDIA_STORAGE_DIR)
+    full = os.path.realpath(os.path.join(base, storage_path))
+    if not (full == base or full.startswith(base + os.sep)) or not os.path.isfile(full):
+        return _not_found("Arquivo não encontrado")
+    return send_file(full, mimetype=mime_type or "application/octet-stream", as_attachment=False,
+                      download_name=original_name or f"{kind}.png")
+
+
 @app.route("/api/consultant-portal/<token>/receipts/<int:receipt_id>/cancel", methods=["POST"])
 def api_portal_cancel_receipt(token, receipt_id):
     consultant = get_consultant_by_portal_token(token)
