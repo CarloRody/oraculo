@@ -27,6 +27,7 @@ import psycopg2.extras
 import requests
 from flask import Flask, Response, jsonify, request, send_file, send_from_directory
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 
 import booking_flow
 import flow_engine
@@ -956,6 +957,109 @@ _EXT_BY_MIMETYPE = {
     "image/webp": ".webp",
     "application/pdf": ".pdf",
 }
+
+BRANDING_KINDS = ["logo", "top", "footer", "extra1", "extra2", "extra3"]
+
+
+def get_account_branding(account_id):
+    """{kind: {file_id, original_name, mime_type, size_bytes, uploaded_at} | None} —
+    uma linha por kind, imagem atual (upload novo substitui, não é histórico)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT b.kind, b.file_id, f.original_name, f.mime_type, f.size_bytes, b.uploaded_at
+               FROM whatsapp_account_branding b JOIN whatsapp_files f ON f.id = b.file_id
+               WHERE b.account_id = %s""",
+            (account_id,),
+        )
+        found = {
+            r[0]: {"file_id": r[1], "original_name": r[2], "mime_type": r[3], "size_bytes": r[4], "uploaded_at": r[5].isoformat()}
+            for r in cur.fetchall()
+        }
+        return {kind: found.get(kind) for kind in BRANDING_KINDS}
+    finally:
+        conn.close()
+
+
+def save_account_branding_image(account_id, kind, raw_bytes, mimetype, original_name):
+    """Salva/substitui a imagem de um slot de personalização. Mesmo padrão de
+    armazenamento de _download_patient_media (MEDIA_STORAGE_DIR + whatsapp_files),
+    só que o upload vem direto de um formulário (não da Evolution API) e
+    substitui — em vez de acumular — a imagem anterior do mesmo kind."""
+    if kind not in BRANDING_KINDS:
+        return None, "Tipo de imagem inválido."
+    if len(raw_bytes) > MEDIA_MAX_BYTES:
+        return None, f"Arquivo maior que o limite ({MEDIA_MAX_BYTES} bytes)."
+    if mimetype not in MEDIA_ALLOWED_MIMETYPES or not mimetype.startswith("image/"):
+        return None, f"Tipo de arquivo não permitido: {mimetype}"
+
+    ext = _EXT_BY_MIMETYPE.get(mimetype) or mimetypes.guess_extension(mimetype) or ""
+    rel_dir = os.path.join("branding", str(account_id))
+    rel_path = os.path.join(rel_dir, f"{uuid.uuid4().hex}{ext}")
+    full_dir = os.path.join(MEDIA_STORAGE_DIR, rel_dir)
+    os.makedirs(full_dir, exist_ok=True)
+    with open(os.path.join(MEDIA_STORAGE_DIR, rel_path), "wb") as f:
+        f.write(raw_bytes)
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT f.id, f.storage_path FROM whatsapp_account_branding b
+               JOIN whatsapp_files f ON f.id = b.file_id
+               WHERE b.account_id = %s AND b.kind = %s""",
+            (account_id, kind),
+        )
+        old = cur.fetchone()
+        cur.execute(
+            """INSERT INTO whatsapp_files (account_id, mime_type, file_type, original_name, storage_path, size_bytes, checksum_sha256)
+               VALUES (%s, %s, 'image', %s, %s, %s, %s) RETURNING id""",
+            (account_id, mimetype, secure_filename(original_name or ""), rel_path, len(raw_bytes), hashlib.sha256(raw_bytes).hexdigest()),
+        )
+        new_file_id = cur.fetchone()[0]
+        if old:
+            cur.execute("DELETE FROM whatsapp_files WHERE id = %s", (old[0],))  # cascata apaga a linha antiga daqui
+        cur.execute(
+            "INSERT INTO whatsapp_account_branding (account_id, kind, file_id) VALUES (%s, %s, %s)",
+            (account_id, kind, new_file_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+    if old:
+        _delete_media_file_if_safe(old[1])
+    return new_file_id, None
+
+
+def delete_account_branding_image(account_id, kind):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT f.id, f.storage_path FROM whatsapp_account_branding b
+               JOIN whatsapp_files f ON f.id = b.file_id
+               WHERE b.account_id = %s AND b.kind = %s""",
+            (account_id, kind),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        cur.execute("DELETE FROM whatsapp_files WHERE id = %s", (row[0],))
+        conn.commit()
+    finally:
+        conn.close()
+    _delete_media_file_if_safe(row[1])
+    return True
+
+
+def _delete_media_file_if_safe(storage_path):
+    """Mesma guarda contra path traversal de _send_patient_document_file,
+    aplicada na hora de apagar em vez de servir."""
+    base = os.path.realpath(MEDIA_STORAGE_DIR)
+    full = os.path.realpath(os.path.join(base, storage_path))
+    if (full == base or full.startswith(base + os.sep)) and os.path.isfile(full):
+        os.remove(full)
 
 
 def _download_patient_media(account, doc_id, contact_id, message_key, media):
@@ -4578,6 +4682,72 @@ def cp_disconnect_account(account_id):
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
     return api_disconnect_account(account_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/branding", methods=["GET"])
+def cp_get_account_branding(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return jsonify({"branding": get_account_branding(account_id)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/branding/<kind>", methods=["POST"])
+def cp_upload_account_branding(account_id, kind):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    if kind not in BRANDING_KINDS:
+        return jsonify({"ok": False, "message": "Tipo de imagem inválido."}), 400
+    file = request.files.get("file")
+    if not file or not file.filename:
+        return jsonify({"ok": False, "message": "Nenhum arquivo enviado."}), 400
+    raw = file.read()
+    file_id, error = save_account_branding_image(account_id, kind, raw, file.mimetype, file.filename)
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "file_id": file_id})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/branding/<kind>/file", methods=["GET"])
+def cp_get_account_branding_file(account_id, kind):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    branding = get_account_branding(account_id).get(kind)
+    if not branding:
+        return _not_found("Imagem não encontrada")
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT storage_path, mime_type, original_name FROM whatsapp_files WHERE id = %s", (branding["file_id"],))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return _not_found("Imagem não encontrada")
+    storage_path, mime_type, original_name = row
+    base = os.path.realpath(MEDIA_STORAGE_DIR)
+    full = os.path.realpath(os.path.join(base, storage_path))
+    if not (full == base or full.startswith(base + os.sep)) or not os.path.isfile(full):
+        return _not_found("Arquivo não encontrado")
+    return send_file(full, mimetype=mime_type or "application/octet-stream", as_attachment=False,
+                      download_name=original_name or f"{kind}.png")
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/branding/<kind>", methods=["DELETE"])
+def cp_delete_account_branding(account_id, kind):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    if kind not in BRANDING_KINDS:
+        return jsonify({"ok": False, "message": "Tipo de imagem inválido."}), 400
+    delete_account_branding_image(account_id, kind)
+    return jsonify({"ok": True})
 
 
 # ---- Conversas: acesso completo, escopado às próprias contas ----

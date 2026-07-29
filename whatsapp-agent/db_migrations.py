@@ -957,6 +957,23 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_certificates_contact ON whatsapp_certificates(contact_id, issued_at DESC);
     CREATE INDEX IF NOT EXISTS idx_certificates_consultant ON whatsapp_certificates(consultant_id, issued_at DESC);
     """,
+
+    # 41 — imagens de personalização por conta (logomarca, topo, rodapé, 3
+    # extras). Reaproveita whatsapp_files como registro físico do arquivo
+    # (mesmo padrão de whatsapp_patient_documents); um upload novo no mesmo
+    # kind substitui o anterior (o backend apaga o whatsapp_files antigo,
+    # que arrasta a linha antiga daqui via ON DELETE CASCADE).
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_account_branding (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        kind VARCHAR(20) NOT NULL CHECK (kind IN ('logo', 'top', 'footer', 'extra1', 'extra2', 'extra3')),
+        file_id INTEGER NOT NULL REFERENCES whatsapp_files(id) ON DELETE CASCADE,
+        uploaded_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (account_id, kind)
+    );
+    CREATE INDEX IF NOT EXISTS idx_account_branding_account ON whatsapp_account_branding(account_id);
+    """,
 ]
 
 

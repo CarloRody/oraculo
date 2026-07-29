@@ -495,6 +495,19 @@
     </div>
 </div>
 
+<!-- Modal Personalização visual (logomarca e imagens da conta) -->
+<div class="modal-overlay" id="brandingModal">
+    <div class="modal" style="max-width:640px; text-align:left;">
+        <h3 id="brandingModalTitle">Personalização visual</h3>
+        <input type="hidden" id="brandingAccountId">
+        <p style="color:#64748b; font-size:0.85rem; margin-top:0;">Essas imagens ficam salvas na sua conta pra uso futuro nos painéis e nos relatórios em PDF.</p>
+        <div id="brandingSlots"></div>
+        <div class="modal-actions">
+            <button class="btn btn-secondary" onclick="closeBrandingModal()">Fechar</button>
+        </div>
+    </div>
+</div>
+
 <div class="modal-overlay" id="startChatModal">
     <div class="modal" style="max-width:320px;">
         <h3>Nova conversa</h3>
@@ -662,8 +675,11 @@ function statusLabel(status) {
     }[status] || status;
 }
 
+let cachedAccounts = [];
+
 async function renderAccounts() {
     const accounts = await fetchAccounts();
+    cachedAccounts = accounts;
     const el = document.getElementById('accountsList');
     if (!accounts.length) {
         el.innerHTML = '<p class="empty">Nenhuma conexão vinculada à sua conta ainda — fale com o administrador do Oráculo.</p>';
@@ -676,6 +692,7 @@ async function renderAccounts() {
                 <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
             </div>
             <div class="account-actions">
+                <button class="btn btn-sm btn-secondary" onclick="openBrandingModal(${a.id})">🎨 Personalização</button>
                 ${a.status === 'connected'
                     ? `<button class="btn btn-sm btn-secondary" onclick="disconnectAccount(${a.id})">Desconectar</button>`
                     : `<button class="btn btn-sm" onclick="connectAccount(${a.id})">Conectar</button>`}
@@ -737,6 +754,102 @@ function closeQrModal() {
     document.getElementById('qrModal').classList.remove('active');
     stopQrPolling();
     renderAccounts();
+}
+
+// ---- Personalização visual (logomarca e imagens da conta) ----
+const BRANDING_KIND_LABELS = {
+    logo: 'Logomarca',
+    top: 'Imagem de topo',
+    footer: 'Imagem de rodapé',
+    extra1: 'Imagem extra 1',
+    extra2: 'Imagem extra 2',
+    extra3: 'Imagem extra 3',
+};
+
+function brandingSlotsHtml() {
+    return Object.entries(BRANDING_KIND_LABELS).map(([kind, label]) => `
+        <div class="form-group" style="border-top:1px solid #334155; padding-top:0.8rem;">
+            <label>${label}</label>
+            <div style="display:flex; gap:0.8rem; align-items:center; flex-wrap:wrap;">
+                <img id="branding-preview-${kind}" style="display:none; width:90px; height:90px; object-fit:contain; background:#fff; border-radius:6px; padding:4px;">
+                <p id="branding-empty-${kind}" class="empty" style="margin:0;">Nenhuma imagem enviada.</p>
+                <input type="file" accept="image/*" id="branding-file-${kind}" style="flex:1; min-width:160px;">
+                <button class="btn btn-sm" onclick="uploadBrandingImage('${kind}')">Enviar</button>
+                <button class="btn btn-sm btn-danger" id="branding-remove-${kind}" style="display:none;" onclick="removeBrandingImage('${kind}')">Remover</button>
+            </div>
+        </div>
+    `).join('');
+}
+
+function openBrandingModal(accountId) {
+    const account = cachedAccounts.find(a => a.id === accountId);
+    document.getElementById('brandingModalTitle').textContent = `Personalização visual — ${account ? account.label : ''}`;
+    document.getElementById('brandingAccountId').value = accountId;
+    document.getElementById('brandingSlots').innerHTML = brandingSlotsHtml();
+    document.getElementById('brandingModal').classList.add('active');
+    loadBrandingImages(accountId);
+}
+
+function closeBrandingModal() {
+    document.getElementById('brandingModal').classList.remove('active');
+}
+
+async function loadBrandingImages(accountId) {
+    const res = await authFetch(API + `/api/client-portal/accounts/${accountId}/branding`);
+    const data = await res.json();
+    if (!res.ok) return;
+    for (const kind of Object.keys(BRANDING_KIND_LABELS)) {
+        await refreshBrandingSlot(accountId, kind, data.branding[kind]);
+    }
+}
+
+async function refreshBrandingSlot(accountId, kind, info) {
+    const img = document.getElementById(`branding-preview-${kind}`);
+    const empty = document.getElementById(`branding-empty-${kind}`);
+    const removeBtn = document.getElementById(`branding-remove-${kind}`);
+    if (!info) {
+        img.style.display = 'none';
+        empty.style.display = 'block';
+        removeBtn.style.display = 'none';
+        return;
+    }
+    const res = await authFetch(API + `/api/client-portal/accounts/${accountId}/branding/${kind}/file`);
+    if (!res.ok) {
+        img.style.display = 'none';
+        empty.style.display = 'block';
+        removeBtn.style.display = 'none';
+        return;
+    }
+    const blob = await res.blob();
+    img.src = URL.createObjectURL(blob);
+    img.style.display = 'block';
+    empty.style.display = 'none';
+    removeBtn.style.display = 'inline-block';
+}
+
+async function uploadBrandingImage(kind) {
+    const accountId = document.getElementById('brandingAccountId').value;
+    const input = document.getElementById(`branding-file-${kind}`);
+    const file = input.files[0];
+    if (!file) return alert('Selecione um arquivo primeiro.');
+    const formData = new FormData();
+    formData.append('file', file);
+    const res = await authFetch(API + `/api/client-portal/accounts/${accountId}/branding/${kind}`, {
+        method: 'POST', body: formData,
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao enviar imagem.');
+    input.value = '';
+    await loadBrandingImages(Number(accountId));
+}
+
+async function removeBrandingImage(kind) {
+    if (!confirm('Remover esta imagem?')) return;
+    const accountId = document.getElementById('brandingAccountId').value;
+    const res = await authFetch(API + `/api/client-portal/accounts/${accountId}/branding/${kind}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao remover imagem.');
+    await loadBrandingImages(Number(accountId));
 }
 
 // ---- Conversas ----
