@@ -5,36 +5,60 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Minha Agenda | Oráculo</title>
 <style>
+    /* ===== Pulso — sistema de identidade clínica (tokens) ===== */
+    :root {
+        --bg:#071619; --surface:#0E2529; --surface-2:#122D31; --surface-3:#16363A;
+        --text:#E7F1EF; --text-muted:#8AA6A2; --border:#1E3A3D; --border-strong:#2A4B4E;
+        --accent:#2CC5B8; --accent-strong:#59D8CB; --vital:#34E0BE; --ember:#F4845F;
+        --on-accent:#052420;
+        --accent-tint:rgba(44,197,184,.12); --vital-tint:rgba(52,224,190,.13);
+        --ok:#3BC98D; --warn:#E0A83A; --crit:#F0736B;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        --mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, Consolas, monospace;
+    }
+    :root[data-theme="light"] {
+        --bg:#EAF0EE; --surface:#FFFFFF; --surface-2:#F4F8F7; --surface-3:#E9F1EF;
+        --text:#0C2226; --text-muted:#5A726F; --border:#D7E4E1; --border-strong:#C3D6D2;
+        --accent:#0E7C7B; --accent-strong:#0B5F5E; --vital:#16B8A0; --ember:#E4724E;
+        --on-accent:#FFFFFF;
+        --accent-tint:rgba(14,124,123,.10); --vital-tint:rgba(22,184,160,.12);
+        --ok:#15926B; --warn:#C08421; --crit:#D2564F;
+    }
+
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body {
-        font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-        background: #0a1628;
-        color: #e0e0e0;
+        font-family: var(--sans);
+        background: var(--bg);
+        color: var(--text);
         min-height: 100vh;
         padding: 1.25rem;
+        transition: background .35s ease, color .35s ease;
     }
     .wrap { max-width: 560px; margin: 0 auto; }
     h1 {
-        background: linear-gradient(135deg, #60a5fa, #a78bfa);
+        background: linear-gradient(105deg, var(--accent), var(--vital));
         -webkit-background-clip: text;
+        background-clip: text;
         -webkit-text-fill-color: transparent;
         font-size: 1.6rem;
+        letter-spacing: -0.02em;
     }
-    .subtitle { color: #64748b; margin-bottom: 1.25rem; font-size: 0.88rem; }
+    .subtitle { color: var(--text-muted); margin-bottom: 1.25rem; font-size: 0.88rem; }
     .card {
-        background: #1e293b;
-        border: 1px solid #334155;
-        border-radius: 12px;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: 14px;
         padding: 1.1rem;
         margin-bottom: 1.1rem;
     }
-    .card h2 { font-size: 1rem; color: #f8fafc; margin-bottom: 0.8rem; }
-    .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid #334155; flex-wrap: wrap; margin-bottom: 1.1rem; }
+    .card h2 { font-size: 1rem; color: var(--text); margin-bottom: 0.8rem; letter-spacing: -0.01em; }
+    .tabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; margin-bottom: 1.1rem; }
     .tab-btn {
-        background: none; border: none; color: #94a3b8; font-size: 0.9rem;
+        background: none; border: none; color: var(--text-muted); font-size: 0.9rem;
         padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent;
+        transition: color .15s, background .15s;
     }
-    .tab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+    .tab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
     .tab-icon { display: none; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
@@ -42,12 +66,21 @@
        .tabs/.tab-btn, pra não herdar a conversão pra sidebar vertical do
        media query abaixo (essa é só pra #topTabs). Sempre abas horizontais
        normais, igual ao painel da secretária. */
-    .subtabs { display: flex; gap: 0.5rem; border-bottom: 1px solid #334155; flex-wrap: wrap; margin-bottom: 1.1rem; }
+    .subtabs { display: flex; gap: 0.5rem; border-bottom: 1px solid var(--border); flex-wrap: wrap; margin-bottom: 1.1rem; }
     .subtab-btn {
-        background: none; border: none; color: #94a3b8; font-size: 0.9rem;
+        background: none; border: none; color: var(--text-muted); font-size: 0.9rem;
         padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent;
+        transition: color .15s;
     }
-    .subtab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
+    .subtab-btn.active { color: var(--accent); border-bottom-color: var(--accent); }
+
+    .theme-toggle {
+        background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-muted);
+        border-radius: 8px; padding: 0.4rem 0.7rem; font-family: var(--mono); font-size: 0.7rem;
+        letter-spacing: .06em; cursor: pointer; display: inline-flex; align-items: center;
+        gap: 0.45rem; margin-top: 0.6rem; transition: border-color .2s, color .2s;
+    }
+    .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
 
     /* ---- Em telas largas (médico abrindo no desktop/notebook), a barra de
        abas vira uma sidebar fixa, igual aos demais painéis. No celular
@@ -59,8 +92,8 @@
         .sidebar {
             width: 260px;
             flex-shrink: 0;
-            background: #0d1526;
-            border-right: 1px solid #1a2744;
+            background: var(--surface);
+            border-right: 1px solid var(--border);
             display: flex;
             flex-direction: column;
             position: sticky;
@@ -69,7 +102,7 @@
             height: 100vh;
             overflow-y: auto;
         }
-        .sidebar-brand { padding: 1.5rem 1.25rem 1rem; border-bottom: 1px solid #1a2744; }
+        .sidebar-brand { padding: 1.5rem 1.25rem 1rem; border-bottom: 1px solid var(--border); }
         .sidebar-brand h1 { font-size: 1.25rem; }
         .sidebar-brand .subtitle { font-size: 0.78rem; margin-bottom: 0; }
         .tabs { flex-direction: column; border-bottom: none; margin-bottom: 0; flex: 1; padding: 0.6rem 0; gap: 0; }
@@ -79,84 +112,89 @@
             border-left: 3px solid transparent; border-bottom: none;
             padding: 0.7rem 1.25rem;
         }
-        .tab-btn:hover { background: #141f38; color: #cbd5e1; }
-        .tab-btn.active { background: #16233d; border-left-color: #60a5fa; border-bottom-color: transparent; }
+        .tab-btn:hover { background: var(--surface-2); color: var(--text); }
+        .tab-btn.active { background: var(--accent-tint); color: var(--accent); border-left-color: var(--accent); border-bottom-color: transparent; font-weight: 600; }
         .tab-icon { display: inline-block; font-size: 1.05rem; width: 1.3rem; text-align: center; flex-shrink: 0; }
         .main-content { flex: 1; min-width: 0; padding: 1.5rem 2rem; }
     }
-    .empty { color: #64748b; font-size: 0.85rem; padding: 0.5rem 0; }
+    .empty { color: var(--text-muted); font-size: 0.85rem; padding: 0.5rem 0; }
     .appt-id-badge {
         display: inline-block;
-        font-family: monospace;
+        font-family: var(--mono);
         font-weight: 700;
         font-size: 0.78rem;
-        color: #38bdf8;
-        background: rgba(56, 189, 248, 0.12);
-        border: 1px solid rgba(56, 189, 248, 0.35);
+        color: var(--accent);
+        background: var(--accent-tint);
+        border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
         border-radius: 5px;
         padding: 0.1rem 0.4rem;
         margin-right: 0.35rem;
     }
     .appt-row {
         display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
-        padding: 0.7rem 0; border-bottom: 1px solid #1a2744;
+        padding: 0.7rem 0; border-bottom: 1px solid var(--border);
     }
     .appt-row:last-child { border-bottom: none; }
-    .appt-info .name { font-weight: 600; color: #f8fafc; font-size: 0.92rem; }
-    .appt-info .when { color: #94a3b8; font-size: 0.8rem; margin-top: 0.1rem; }
+    .appt-info .name { font-weight: 600; color: var(--text); font-size: 0.92rem; }
+    .appt-info .when { color: var(--text-muted); font-size: 0.8rem; margin-top: 0.1rem; }
     .appt-actions { display: flex; gap: 0.4rem; flex-shrink: 0; }
     .status-badge {
-        display: inline-block; padding: 0.15rem 0.55rem; border-radius: 10px;
-        font-size: 0.72rem; font-weight: 600; margin-left: 0.4rem;
+        display: inline-flex; align-items: center; gap: 0.4rem;
+        padding: 0.2rem 0.55rem; border-radius: 999px;
+        font-family: var(--mono); font-size: 0.66rem; letter-spacing: .04em; font-weight: 600; margin-left: 0.4rem;
     }
-    .status-confirmed { background: #1f4a2d; color: #4ade80; }
-    .status-cancelled { background: #4a1f27; color: #f87171; }
-    .status-completed { background: #1a2744; color: #94a3b8; }
-    .status-no_show { background: #4a3a1f; color: #fbbf24; }
-    .status-pending_consultant { background: #4a3a1f; color: #fbbf24; }
+    .status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status-confirmed { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+    .status-cancelled { background: color-mix(in srgb, var(--crit) 14%, transparent); color: var(--crit); }
+    .status-completed { background: var(--surface-3); color: var(--text-muted); }
+    .status-no_show { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+    .status-pending_consultant { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
     .btn {
-        background: linear-gradient(135deg, #3b82f6, #8b5cf6);
-        border: none; border-radius: 6px; color: #fff;
-        padding: 0.45rem 0.9rem; font-size: 0.82rem; cursor: pointer;
+        background: var(--accent);
+        border: 1px solid transparent; border-radius: 8px; color: var(--on-accent);
+        padding: 0.45rem 0.9rem; font-size: 0.82rem; font-weight: 600; cursor: pointer;
+        transition: transform .15s ease, box-shadow .15s ease;
     }
-    .btn:hover { opacity: 0.9; }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 6px 16px var(--accent-tint); }
     .btn:disabled { opacity: 0.4; cursor: not-allowed; }
-    .btn:disabled:hover { opacity: 0.4; }
+    .btn:disabled:hover { opacity: 0.4; transform: none; box-shadow: none; }
     .btn-sm { padding: 0.3rem 0.6rem; font-size: 0.76rem; }
-    .btn-danger { background: #ef4444; }
-    .btn-secondary { background: #334155; }
+    .btn-danger { background: var(--crit); color: #fff; }
+    .btn-secondary { background: var(--surface-3); color: var(--text); border-color: var(--border-strong); }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); box-shadow: none; }
     .btn-block { width: 100%; margin-top: 0.5rem; }
     .form-group { margin-bottom: 0.8rem; }
-    .form-group label { display: block; font-size: 0.82rem; color: #94a3b8; margin-bottom: 0.3rem; }
+    .form-group label { display: block; font-family: var(--mono); font-size: 0.68rem; color: var(--text-muted); margin-bottom: 0.35rem; text-transform: uppercase; letter-spacing: .1em; }
     .form-input {
-        width: 100%; background: #0f172a; border: 1px solid #334155; border-radius: 6px;
-        padding: 0.55rem 0.7rem; color: #e0e0e0; font-size: 0.88rem;
+        width: 100%; background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px;
+        padding: 0.55rem 0.7rem; color: var(--text); font-size: 0.88rem; font-family: var(--sans);
     }
+    .form-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
     .day-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.35rem; }
-    .day-row label { width: 60px; font-size: 0.82rem; color: #cbd5e1; display: flex; align-items: center; gap: 0.3rem; margin: 0; }
+    .day-row label { width: 60px; font-size: 0.82rem; color: var(--text); display: flex; align-items: center; gap: 0.3rem; margin: 0; text-transform: none; letter-spacing: normal; font-family: var(--sans); }
     .day-row input[type=time] { width: auto; flex: 1; }
     .slot-list { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
     .slot-btn {
-        background: #0f172a; border: 1px solid #334155; border-radius: 6px;
-        color: #cbd5e1; padding: 0.4rem 0.6rem; font-size: 0.8rem; cursor: pointer;
+        background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 6px;
+        color: var(--text); padding: 0.4rem 0.6rem; font-size: 0.8rem; cursor: pointer;
     }
-    .slot-btn:hover, .slot-btn.selected { border-color: #60a5fa; color: #60a5fa; }
-    .error-box { background: #2a1418; border: 1px solid #4a1f27; border-radius: 8px; padding: 1rem; color: #f87171; font-size: 0.9rem; }
-    details summary { cursor: pointer; color: #94a3b8; font-size: 0.85rem; }
+    .slot-btn:hover, .slot-btn.selected { border-color: var(--accent); color: var(--accent); }
+    .error-box { background: color-mix(in srgb, var(--crit) 12%, transparent); border: 1px solid color-mix(in srgb, var(--crit) 40%, transparent); border-radius: 10px; padding: 1rem; color: var(--crit); font-size: 0.9rem; }
+    details summary { cursor: pointer; color: var(--text-muted); font-size: 0.85rem; }
 
     /* Grade semanal visual da Agenda — eixo de horário + blocos proporcionais */
-    .agenda-grid-scroll { display: flex; overflow-x: auto; overflow-y: auto; max-height: 70vh; border: 1px solid #334155; border-radius: 8px; background: #0f172a; }
-    .agenda-hour-gutter { flex: 0 0 44px; position: sticky; left: 0; z-index: 3; background: #0f172a; border-right: 1px solid #334155; }
-    .agenda-day-col-wrap { flex: 1 1 132px; min-width: 132px; border-right: 1px solid #334155; }
+    .agenda-grid-scroll { display: flex; overflow-x: auto; overflow-y: auto; max-height: 70vh; border: 1px solid var(--border); border-radius: 8px; background: var(--surface-2); }
+    .agenda-hour-gutter { flex: 0 0 44px; position: sticky; left: 0; z-index: 3; background: var(--surface-2); border-right: 1px solid var(--border); }
+    .agenda-day-col-wrap { flex: 1 1 132px; min-width: 132px; border-right: 1px solid var(--border); }
     .agenda-day-col-wrap:last-child { border-right: none; }
     .agenda-day-header { height: 28px; padding: 0.3rem; font-size: 0.78rem; font-weight: 600; box-sizing: border-box; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .agenda-day-col {
         position: relative;
         box-sizing: border-box;
         /* mantém sincronizado com AGENDA_PX_PER_HOUR (48px) no JS */
-        background-image: repeating-linear-gradient(to bottom, #1a2744 0, #1a2744 1px, transparent 1px, transparent 48px);
+        background-image: repeating-linear-gradient(to bottom, var(--border) 0, var(--border) 1px, transparent 1px, transparent 48px);
     }
-    .agenda-hour-label { position: absolute; right: 4px; transform: translateY(-50%); font-size: 0.65rem; color: #64748b; white-space: nowrap; }
+    .agenda-hour-label { position: absolute; right: 4px; transform: translateY(-50%); font-size: 0.65rem; color: var(--text-muted); white-space: nowrap; }
     .appt-block {
         position: absolute;
         box-sizing: border-box;
@@ -167,15 +205,15 @@
         font-size: 0.68rem;
         line-height: 1.25;
         z-index: 2;
-        border: 1px solid rgba(148, 163, 184, 0.25);
+        border: 1px solid color-mix(in srgb, var(--text-muted) 30%, transparent);
     }
     .appt-block--no-top { border-top-left-radius: 0; border-top-right-radius: 0; }
     .appt-block--no-bottom { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
-    .appt-block--confirmed { background: rgba(203, 213, 225, 0.14); color: #e2e8f0; }
-    .appt-block--pending { background: rgba(251, 191, 36, 0.18); color: #fbbf24; }
-    .agenda-availability-band { position: absolute; left: 0; right: 0; z-index: 1; background: rgba(96, 165, 250, 0.08); pointer-events: none; }
-    .agenda-now-line { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid #ef4444; z-index: 5; pointer-events: none; }
-    .agenda-now-line::before { content: ''; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: #ef4444; }
+    .appt-block--confirmed { background: var(--accent-tint); color: var(--accent); }
+    .appt-block--pending { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+    .agenda-availability-band { position: absolute; left: 0; right: 0; z-index: 1; background: var(--vital-tint); pointer-events: none; }
+    .agenda-now-line { position: absolute; left: 0; right: 0; height: 0; border-top: 2px solid var(--crit); z-index: 5; pointer-events: none; }
+    .agenda-now-line::before { content: ''; position: absolute; left: -4px; top: -4px; width: 8px; height: 8px; border-radius: 50%; background: var(--crit); }
 </style>
 </head>
 <body>
@@ -184,6 +222,7 @@
         <div class="sidebar-brand">
             <h1>📅 Minha Agenda</h1>
             <p class="subtitle" id="subtitle">Carregando...</p>
+            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" aria-label="Alternar tema claro e escuro"><span id="themeIcon">☀</span><span id="themeLabel">Tema claro</span></button>
         </div>
         <div class="tabs" id="topTabs" style="display:none;">
             <button class="tab-btn active" id="topTabAgenda" onclick="switchTab('agenda')"><span class="tab-icon">📅</span>Agenda</button>
@@ -202,6 +241,27 @@
 const params = new URLSearchParams(window.location.search);
 const TOKEN = params.get('token');
 const API = window.location.origin + '/whatsapp/api/consultant-portal/' + TOKEN;
+
+// ---- Tema Pulso: escuro por padrão, claro opcional (lembrado no navegador) ----
+(function initTheme() {
+    const saved = localStorage.getItem('pulso-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+})();
+function syncThemeToggle() {
+    const dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    const icon = document.getElementById('themeIcon');
+    const label = document.getElementById('themeLabel');
+    if (icon) icon.textContent = dark ? '☀' : '☾';
+    if (label) label.textContent = dark ? 'Tema claro' : 'Tema escuro';
+}
+function toggleTheme() {
+    const dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    const next = dark ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('pulso-theme', next);
+    syncThemeToggle();
+}
+document.addEventListener('DOMContentLoaded', syncThemeToggle);
 
 function esc(s) {
     const d = document.createElement('div');
