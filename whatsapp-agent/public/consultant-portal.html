@@ -38,6 +38,16 @@
     .tab-icon { display: none; }
     .tab-content { display: none; }
     .tab-content.active { display: block; }
+    /* Sub-abas da ficha do paciente (aba Pacientes) — classes próprias, não
+       .tabs/.tab-btn, pra não herdar a conversão pra sidebar vertical do
+       media query abaixo (essa é só pra #topTabs). Sempre abas horizontais
+       normais, igual ao painel da secretária. */
+    .subtabs { display: flex; gap: 0.5rem; border-bottom: 1px solid #334155; flex-wrap: wrap; margin-bottom: 1.1rem; }
+    .subtab-btn {
+        background: none; border: none; color: #94a3b8; font-size: 0.9rem;
+        padding: 0.5rem 1rem; cursor: pointer; border-bottom: 2px solid transparent;
+    }
+    .subtab-btn.active { color: #60a5fa; border-bottom-color: #60a5fa; }
 
     /* ---- Em telas largas (médico abrindo no desktop/notebook), a barra de
        abas vira uma sidebar fixa, igual aos demais painéis. No celular
@@ -420,14 +430,14 @@ function renderShell(me) {
             </div>
 
             <div id="fichaArea" style="display:none;">
-                <div class="tabs" style="margin-bottom:1.5rem;">
-                    <button class="tab-btn active" id="fichaSubTabCadastro" onclick="switchFichaSubTab('cadastro')">Cadastro</button>
-                    <button class="tab-btn" id="fichaSubTabAgendamentos" onclick="switchFichaSubTab('agendamentos')">Agendamentos</button>
-                    <button class="tab-btn" id="fichaSubTabChecklist" onclick="switchFichaSubTab('checklist')">Checklist</button>
-                    <button class="tab-btn" id="fichaSubTabEvolucao" onclick="switchFichaSubTab('evolucao')">Evolução</button>
-                    <button class="tab-btn" id="fichaSubTabDocumentos" onclick="switchFichaSubTab('documentos')">Documentos</button>
-                    <button class="tab-btn" id="fichaSubTabRecibos" onclick="switchFichaSubTab('recibos')">Recibos</button>
-                    <button class="tab-btn" id="fichaSubTabAtestados" onclick="switchFichaSubTab('atestados')">Atestados</button>
+                <div class="subtabs">
+                    <button class="subtab-btn active" id="fichaSubTabCadastro" onclick="switchFichaSubTab('cadastro')">Cadastro</button>
+                    <button class="subtab-btn" id="fichaSubTabAgendamentos" onclick="switchFichaSubTab('agendamentos')">Agendamentos</button>
+                    <button class="subtab-btn" id="fichaSubTabChecklist" onclick="switchFichaSubTab('checklist')">Checklist</button>
+                    <button class="subtab-btn" id="fichaSubTabEvolucao" onclick="switchFichaSubTab('evolucao')">Evolução</button>
+                    <button class="subtab-btn" id="fichaSubTabDocumentos" onclick="switchFichaSubTab('documentos')">Documentos</button>
+                    <button class="subtab-btn" id="fichaSubTabRecibos" onclick="switchFichaSubTab('recibos')">Recibos</button>
+                    <button class="subtab-btn" id="fichaSubTabAtestados" onclick="switchFichaSubTab('atestados')">Atestados</button>
                 </div>
 
                 <div id="ficha-cadastro" class="card">
