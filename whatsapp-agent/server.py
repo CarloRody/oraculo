@@ -2226,6 +2226,8 @@ CONSULTANT_COLUMNS = [
     "weekly_availability", "reminder_hours_before", "status", "confirmed_at", "created_at",
     "portal_token", "self_availability_enabled",
     "cpf", "crm", "address", "alt_phone", "specialties",
+    "weekly_summary_enabled", "weekly_summary_weekday", "weekly_summary_hour",
+    "daily_summary_enabled", "daily_summary_hour",
 ]
 
 
@@ -3232,10 +3234,12 @@ def _mark_reminder_sent(appointment_id):
 
 
 def _due_weekly_consultants():
-    """Consultores ativos que devem receber o resumo semanal: cada CONTA
-    (clínica) configura seu próprio dia/hora (whatsapp_accounts.
-    weekly_summary_weekday/hour, default segunda 07h — mesmo valor pra todos
-    os médicos daquela conta). 'most_recent_occurrence' é a última vez que
+    """Consultores que optaram por receber o resumo semanal
+    (weekly_summary_enabled — opt-in, desligado por padrão). Cada médico
+    pode usar seu próprio dia/hora (weekly_summary_weekday/hour, ambos
+    nullable) ou cair no padrão da conta (whatsapp_accounts.
+    weekly_summary_weekday/hour) se não tiver personalizado nenhum dos
+    dois — daí o COALESCE. 'most_recent_occurrence' é a última vez que
     esse dia/hora aconteceu (hoje, se já passou, senão na semana anterior);
     fica devido se ainda não foi mandado nada desde essa ocorrência —  mesmo
     raciocínio de idempotência de _due_reminders, só que por semana em vez de
@@ -3252,10 +3256,11 @@ def _due_weekly_consultants():
                CROSS JOIN LATERAL (
                    SELECT date_trunc('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
                           - make_interval(days => ((EXTRACT(DOW FROM (NOW() AT TIME ZONE 'America/Sao_Paulo'))::int
-                                                     - acc.weekly_summary_weekday + 7) % 7))
-                          + make_interval(hours => acc.weekly_summary_hour) AS most_recent_occurrence
+                                                     - COALESCE(con.weekly_summary_weekday, acc.weekly_summary_weekday) + 7) % 7))
+                          + make_interval(hours => COALESCE(con.weekly_summary_hour, acc.weekly_summary_hour)) AS most_recent_occurrence
                ) occ
                WHERE con.status = 'active'
+                 AND con.weekly_summary_enabled = TRUE
                  AND (NOW() AT TIME ZONE 'America/Sao_Paulo') >= occ.most_recent_occurrence
                  AND (con.last_weekly_summary_sent_at IS NULL
                       OR (con.last_weekly_summary_sent_at AT TIME ZONE 'America/Sao_Paulo') < occ.most_recent_occurrence)"""
@@ -3279,13 +3284,57 @@ def _mark_weekly_summary_sent(consultant_id):
         conn.close()
 
 
+def _due_daily_consultants():
+    """Mesma lógica de idempotência de _due_weekly_consultants, mas diário
+    e opt-in (daily_summary_enabled, desligado por padrão): a ocorrência de
+    referência é sempre 'hoje na hora configurada' (sem cálculo de dia da
+    semana, e sem fallback pra conta — cada médico tem sua própria hora,
+    default 07h)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT con.id, con.name, acc.wa_session_name, acc.label, ct.wa_id, con.account_id
+               FROM whatsapp_consultants con
+               JOIN whatsapp_accounts acc ON acc.id = con.account_id
+               JOIN whatsapp_contacts ct ON ct.id = con.contact_id
+               CROSS JOIN LATERAL (
+                   SELECT date_trunc('day', NOW() AT TIME ZONE 'America/Sao_Paulo')
+                          + make_interval(hours => con.daily_summary_hour) AS most_recent_occurrence
+               ) occ
+               WHERE con.status = 'active'
+                 AND con.daily_summary_enabled = TRUE
+                 AND (NOW() AT TIME ZONE 'America/Sao_Paulo') >= occ.most_recent_occurrence
+                 AND (con.last_daily_summary_sent_at IS NULL
+                      OR (con.last_daily_summary_sent_at AT TIME ZONE 'America/Sao_Paulo') < occ.most_recent_occurrence)"""
+        )
+        cols = ["id", "name", "wa_session_name", "account_label", "wa_id", "account_id"]
+        return [dict(zip(cols, r)) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _mark_daily_summary_sent(consultant_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_consultants SET last_daily_summary_sent_at = NOW() WHERE id = %s",
+            (consultant_id,),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
 def _reminder_loop():
     """Único processo em background do whatsapp-agent — não existia nenhum
     antes desta feature (tudo mais é disparado sob demanda por webhook).
     Polling simples (sem dependência nova tipo APScheduler): a cada 5min,
     manda lembrete pro cliente e pro consultor de agendamentos cujo horário
-    de aviso chegou, e (bloco separado, próprio try/except pra um não
-    derrubar o outro) o resumo semanal de agenda pro médico."""
+    de aviso chegou, e (blocos separados, cada um com seu próprio
+    try/except pra um não derrubar o outro) o resumo semanal e o resumo
+    diário de agenda pro médico — os dois opcionais, por médico."""
     while True:
         try:
             for appt in _due_reminders():
@@ -3333,6 +3382,30 @@ def _reminder_loop():
                 _mark_weekly_summary_sent(consultant["id"])
         except Exception as e:
             log_event(None, "weekly_summary_loop_error", level="error", detail={"error": str(e)})
+
+        try:
+            for consultant in _due_daily_consultants():
+                _, upcoming, _ = get_consultant_appointments(consultant["id"])
+                today_key = datetime.datetime.now(booking_flow.LOCAL_TZ).strftime("%Y-%m-%d")
+                today_appts = [a for a in upcoming if a["scheduled_at"][:10] == today_key]
+                if today_appts:
+                    linhas = "\n".join(
+                        f"- {a['scheduled_at'][11:16]} · {a['client_name'] or a['client_wa_id']}"
+                        for a in today_appts[:20]
+                    )
+                    texto = f"Resumo do seu dia ({consultant['account_label']}):\n{linhas}"
+                    try:
+                        evolution.send_text(consultant["wa_session_name"], _phone_from_wa_id(consultant["wa_id"]), texto)
+                        report_whatsapp_sent_usage(consultant["account_id"])
+                    except EvolutionError as e:
+                        log_event(None, "daily_summary_send_failed", level="error",
+                                  detail={"consultant_id": consultant["id"], "error": str(e)})
+                # Dia vazio: não manda mensagem, mas marca como tratado (senão
+                # o loop ficaria reconsultando o mesmo médico a cada 5min pelo
+                # resto do dia à toa).
+                _mark_daily_summary_sent(consultant["id"])
+        except Exception as e:
+            log_event(None, "daily_summary_loop_error", level="error", detail={"error": str(e)})
 
         time.sleep(300)
 
@@ -5074,6 +5147,11 @@ def api_portal_me(token):
         "address": consultant["address"],
         "alt_phone": consultant["alt_phone"],
         "specialties": consultant["specialties"],
+        "weekly_summary_enabled": consultant["weekly_summary_enabled"],
+        "weekly_summary_weekday": consultant["weekly_summary_weekday"],
+        "weekly_summary_hour": consultant["weekly_summary_hour"],
+        "daily_summary_enabled": consultant["daily_summary_enabled"],
+        "daily_summary_hour": consultant["daily_summary_hour"],
         "booking_mode": plan_booking_mode(_account_owner(consultant["account_id"])),
     })
 
@@ -5714,10 +5792,28 @@ def api_portal_update_profile(token):
     if not consultant:
         return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
     data = request.json or {}
-    allowed = ("cpf", "crm", "address", "alt_phone", "specialties")
+    allowed = ("cpf", "crm", "address", "alt_phone", "specialties",
+               "weekly_summary_enabled", "weekly_summary_weekday", "weekly_summary_hour",
+               "daily_summary_enabled", "daily_summary_hour")
     fields = {k: v for k, v in data.items() if k in allowed}
     if not fields:
         return jsonify({"ok": False, "message": "Nada para atualizar"}), 400
+    if "weekly_summary_enabled" in fields and not isinstance(fields["weekly_summary_enabled"], bool):
+        return jsonify({"ok": False, "message": "Preferência de resumo semanal inválida"}), 400
+    if "daily_summary_enabled" in fields and not isinstance(fields["daily_summary_enabled"], bool):
+        return jsonify({"ok": False, "message": "Preferência de resumo diário inválida"}), 400
+    if "weekly_summary_weekday" in fields:
+        v = fields["weekly_summary_weekday"]
+        if v is not None and (not isinstance(v, int) or not (0 <= v <= 6)):
+            return jsonify({"ok": False, "message": "Dia da semana inválido"}), 400
+    if "weekly_summary_hour" in fields:
+        v = fields["weekly_summary_hour"]
+        if v is not None and (not isinstance(v, int) or not (0 <= v <= 23)):
+            return jsonify({"ok": False, "message": "Hora do resumo semanal inválida"}), 400
+    if "daily_summary_hour" in fields:
+        v = fields["daily_summary_hour"]
+        if not isinstance(v, int) or not (0 <= v <= 23):
+            return jsonify({"ok": False, "message": "Hora do resumo diário inválida"}), 400
     update_consultant(consultant["id"], fields)
     return jsonify({"ok": True})
 

@@ -234,6 +234,7 @@ async function init() {
         ME = me;
         document.getElementById('subtitle').textContent = `${me.name} · ${me.account_label}`;
         renderShell(me);
+        initNotificationPrefs(me);
         document.getElementById('newTreatmentBlock').style.display = me.booking_mode === 'crm_medico' ? 'block' : 'none';
         await loadAppointments();
         loadContacts();
@@ -455,6 +456,50 @@ function renderShell(me) {
                 <button class="btn btn-block" onclick="saveMyProfile()">Salvar meus dados</button>
             </div>
             ${availabilityCard}
+            <div class="card">
+                <h2>Notificações</h2>
+                <div class="form-group">
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-weight:normal;">
+                        <input type="checkbox" id="notifyWeeklyEnabled" onchange="onNotifyWeeklyChange()">
+                        <span>Receber resumo semanal da agenda</span>
+                    </label>
+                    <span style="font-size:0.78rem; color:#64748b;">Uma mensagem por WhatsApp toda semana com as consultas confirmadas dos próximos 7 dias.</span>
+                </div>
+                <div id="notifyWeeklyFields" style="display:none; gap:0.5rem; flex-wrap:wrap;">
+                    <div class="form-group" style="flex:1 1 170px; min-width:0;">
+                        <label>Dia da semana</label>
+                        <select class="form-input" id="notifyWeeklyWeekday">
+                            <option value="">Padrão da clínica</option>
+                            <option value="0">Domingo</option>
+                            <option value="1">Segunda-feira</option>
+                            <option value="2">Terça-feira</option>
+                            <option value="3">Quarta-feira</option>
+                            <option value="4">Quinta-feira</option>
+                            <option value="5">Sexta-feira</option>
+                            <option value="6">Sábado</option>
+                        </select>
+                    </div>
+                    <div class="form-group" style="flex:1 1 120px; min-width:0;">
+                        <label>Hora</label>
+                        <select class="form-input" id="notifyWeeklyHour">
+                            <option value="">Padrão da clínica</option>
+                            ${hourOptionsHtml()}
+                        </select>
+                    </div>
+                </div>
+                <div class="form-group" style="margin-top:1rem;">
+                    <label style="display:flex; align-items:center; gap:0.5rem; cursor:pointer; font-weight:normal;">
+                        <input type="checkbox" id="notifyDailyEnabled" onchange="onNotifyDailyChange()">
+                        <span>Receber resumo diário da agenda</span>
+                    </label>
+                    <span style="font-size:0.78rem; color:#64748b;">Uma mensagem por WhatsApp nos dias em que você tiver consulta confirmada — em dias sem consulta, não manda nada.</span>
+                </div>
+                <div id="notifyDailyFields" class="form-group" style="display:none; max-width:160px;">
+                    <label>Hora</label>
+                    <select class="form-input" id="notifyDailyHour">${hourOptionsHtml()}</select>
+                </div>
+                <button class="btn btn-block" onclick="saveNotificationPrefs()">Salvar notificações</button>
+            </div>
         </div>
     `;
     if (me.self_availability_enabled !== false) {
@@ -556,6 +601,45 @@ async function saveMyProfile() {
         Object.assign(ME, payload);
         updateReceiptsCpfWarning();
         alert('Seus dados foram salvos!');
+    } catch (e) { alert(e.message); }
+}
+
+function hourOptionsHtml() {
+    return Array.from({ length: 24 }, (_, h) => `<option value="${h}">${String(h).padStart(2, '0')}:00</option>`).join('');
+}
+
+function initNotificationPrefs(me) {
+    document.getElementById('notifyWeeklyEnabled').checked = !!me.weekly_summary_enabled;
+    document.getElementById('notifyWeeklyWeekday').value = me.weekly_summary_weekday != null ? me.weekly_summary_weekday : '';
+    document.getElementById('notifyWeeklyHour').value = me.weekly_summary_hour != null ? me.weekly_summary_hour : '';
+    document.getElementById('notifyDailyEnabled').checked = !!me.daily_summary_enabled;
+    document.getElementById('notifyDailyHour').value = me.daily_summary_hour != null ? me.daily_summary_hour : 7;
+    onNotifyWeeklyChange();
+    onNotifyDailyChange();
+}
+
+function onNotifyWeeklyChange() {
+    document.getElementById('notifyWeeklyFields').style.display = document.getElementById('notifyWeeklyEnabled').checked ? 'flex' : 'none';
+}
+
+function onNotifyDailyChange() {
+    document.getElementById('notifyDailyFields').style.display = document.getElementById('notifyDailyEnabled').checked ? '' : 'none';
+}
+
+async function saveNotificationPrefs() {
+    const weekday = document.getElementById('notifyWeeklyWeekday').value;
+    const hour = document.getElementById('notifyWeeklyHour').value;
+    const payload = {
+        weekly_summary_enabled: document.getElementById('notifyWeeklyEnabled').checked,
+        weekly_summary_weekday: weekday === '' ? null : Number(weekday),
+        weekly_summary_hour: hour === '' ? null : Number(hour),
+        daily_summary_enabled: document.getElementById('notifyDailyEnabled').checked,
+        daily_summary_hour: Number(document.getElementById('notifyDailyHour').value),
+    };
+    try {
+        await api('/profile', { method: 'PATCH', body: JSON.stringify(payload) });
+        Object.assign(ME, payload);
+        alert('Preferências de notificação salvas!');
     } catch (e) { alert(e.message); }
 }
 

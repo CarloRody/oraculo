@@ -890,6 +890,22 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_checklist_items
         ADD COLUMN IF NOT EXISTS scheduled_appointment_id INTEGER REFERENCES whatsapp_appointments(id) ON DELETE SET NULL;
     """,
+
+    # 38 — resumo semanal vira opcional por médico (opt-in, desligado por
+    # padrão — mudança deliberada de comportamento) em vez de automático pra
+    # todo mundo; e novo resumo diário, também opt-in, só com hora (sem dia da
+    # semana) e que só manda mensagem em dias com consulta confirmada.
+    """
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS weekly_summary_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS weekly_summary_weekday SMALLINT
+        CHECK (weekly_summary_weekday IS NULL OR weekly_summary_weekday BETWEEN 0 AND 6);
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS weekly_summary_hour SMALLINT
+        CHECK (weekly_summary_hour IS NULL OR weekly_summary_hour BETWEEN 0 AND 23);
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS daily_summary_enabled BOOLEAN NOT NULL DEFAULT FALSE;
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS daily_summary_hour SMALLINT NOT NULL DEFAULT 7
+        CHECK (daily_summary_hour BETWEEN 0 AND 23);
+    ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS last_daily_summary_sent_at TIMESTAMPTZ;
+    """,
 ]
 
 
