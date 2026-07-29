@@ -1063,15 +1063,16 @@ async function loadFichaPatient() {
     if (!contactId) { box.innerHTML = ''; return; }
     box.innerHTML = '<p class="empty">Carregando...</p>';
     try {
-        const [record, apptData, evoData, docsData, receiptsData, checklistData] = await Promise.all([
+        const [record, apptData, evoData, docsData, receiptsData, checklistData, certData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
             api(`/contacts/${contactId}/appointments`),
             api(`/contacts/${contactId}/evolution-notes`),
             api(`/contacts/${contactId}/documents`),
             api(`/receipts?contact_id=${contactId}`),
             api(`/contacts/${contactId}/checklist-items`),
+            api(`/certificates?contact_id=${contactId}`),
         ]);
-        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true }, receiptsData, checklistData);
+        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true }, receiptsData, checklistData, certData);
     } catch (e) {
         box.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
     }
@@ -1330,7 +1331,7 @@ function fmtDateOnly(iso) {
     return `${d}/${m}/${y}`;
 }
 
-function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts, receiptsData, checklistData) {
+function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts, receiptsData, checklistData, certificatesData) {
     opts = opts || {};
     const excludeApptId = opts.excludeApptId;
 
@@ -1404,6 +1405,17 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
         </details>
     ` : '';
 
+    const certificates = (certificatesData && certificatesData.certificates) || [];
+    const atestadosHtml = opts.editableEvolution ? `
+        <details style="margin-bottom:0.6rem;">
+            <summary>Atestados (${certificates.length})</summary>
+            <div style="margin-top:0.4rem;">
+                <button class="btn btn-sm" onclick="emitCertificateForContact(${contactId})">+ Novo atestado</button>
+                <div style="margin-top:0.6rem;">${atestadosListHtml(certificates)}</div>
+            </div>
+        </details>
+    ` : '';
+
     return `
         <details open style="margin-bottom:0.6rem;">
             <summary>Cadastro</summary>
@@ -1426,6 +1438,7 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
             <div style="margin-top:0.4rem;">${docsHtml}</div>
         </details>
         ${receiptsHtml}
+        ${atestadosHtml}
     `;
 }
 
@@ -1755,6 +1768,13 @@ function emitReceiptForContact(contactId) {
     toggleNewReciboForm(true);
     document.getElementById('reciboPatient').value = contactId;
     onReciboPatientChange();
+}
+
+function emitCertificateForContact(contactId) {
+    switchTab('atestados');
+    toggleNewAtestadoForm(true);
+    document.getElementById('atestadoPatient').value = contactId;
+    onAtestadoPatientChange();
 }
 
 async function createRecibo() {
