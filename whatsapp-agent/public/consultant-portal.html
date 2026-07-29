@@ -75,6 +75,18 @@
         .main-content { flex: 1; min-width: 0; padding: 1.5rem 2rem; }
     }
     .empty { color: #64748b; font-size: 0.85rem; padding: 0.5rem 0; }
+    .appt-id-badge {
+        display: inline-block;
+        font-family: monospace;
+        font-weight: 700;
+        font-size: 0.78rem;
+        color: #38bdf8;
+        background: rgba(56, 189, 248, 0.12);
+        border: 1px solid rgba(56, 189, 248, 0.35);
+        border-radius: 5px;
+        padding: 0.1rem 0.4rem;
+        margin-right: 0.35rem;
+    }
     .appt-row {
         display: flex; align-items: center; justify-content: space-between; gap: 0.6rem;
         padding: 0.7rem 0; border-bottom: 1px solid #1a2744;
@@ -346,6 +358,16 @@ function renderShell(me) {
                     <summary>Histórico recente</summary>
                     <div id="historyList" style="margin-top:0.6rem;"><p class="empty">Carregando...</p></div>
                 </details>
+            </div>
+            <div class="card" id="appointmentDetailCard" style="display:none;">
+                <h2><span class="appt-id-badge" id="apptDetailIdBadge"></span> Atendimento completo</h2>
+                <p class="empty" id="apptDetailInfo" style="padding-top:0;"></p>
+                <div class="form-group"><label>Notas</label><textarea class="form-input" id="apptDetailNotes" rows="3"></textarea></div>
+                <div class="form-group"><label>Diagnóstico</label><textarea class="form-input" id="apptDetailDiagnosis" rows="2"></textarea></div>
+                <div class="form-group"><label>Prescrição</label><textarea class="form-input" id="apptDetailPrescription" rows="2"></textarea></div>
+                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;" id="apptDetailBiometricsFields"></div>
+                <button class="btn btn-block" onclick="saveAppointmentDetail()">Salvar alterações</button>
+                <button class="btn btn-secondary btn-block" onclick="closeAppointmentDetail()">Fechar</button>
             </div>
             <div class="card" id="rescheduleCard" style="display:none;">
                 <h2>Remarcar agendamento</h2>
@@ -644,10 +666,12 @@ async function saveNotificationPrefs() {
 }
 
 let lastUpcoming = [];
+let lastHistory = [];
 
 async function loadAppointments() {
     const data = await api('/appointments');
     lastUpcoming = [...data.pending, ...data.upcoming];
+    lastHistory = data.history;
 
     const pendingCard = document.getElementById('pendingCard');
     const pendingEl = document.getElementById('pendingList');
@@ -690,9 +714,12 @@ async function loadAppointments() {
     hist.innerHTML = !data.history.length ? '<p class="empty">Sem histórico ainda.</p>' : data.history.map(a => `
         <div class="appt-row">
             <div class="appt-info">
-                <div class="name">${esc(a.client_name || a.client_wa_id)} <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span></div>
+                <div class="name"><span class="appt-id-badge">#${a.id}</span> ${esc(a.client_name || a.client_wa_id)} <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span></div>
                 <div class="when">${fmtWhen(a.scheduled_at)}</div>
                 ${a.subject ? `<div class="when">${esc(a.subject)}</div>` : ''}
+            </div>
+            <div class="appt-actions">
+                <button class="btn btn-sm btn-secondary" onclick="viewAppointmentDetail(${a.id})">Ver completo</button>
             </div>
         </div>
     `).join('');
@@ -1418,6 +1445,70 @@ async function saveConsultation() {
         closeConsultation();
         loadAppointments();
         alert('Atendimento registrado e consulta concluída!');
+    } catch (e) { alert(e.message); }
+}
+
+let apptDetailId = null;
+
+function apptDetailBiometricsFormHtml(biometrics) {
+    biometrics = biometrics || {};
+    return Object.entries(BIOMETRIC_LABELS).map(([type, meta]) => `
+        <div style="flex:1 1 130px;">
+            <label>${meta.label} (${meta.unit})</label>
+            <input type="number" step="0.1" class="form-input" data-biometric="${type}" value="${biometrics[type] != null ? biometrics[type] : ''}">
+        </div>
+    `).join('');
+}
+
+// "Ver completo" no histórico — diferente de openConsultation (que sempre
+// completa o agendamento ao salvar): aqui é só revisar/corrigir notas de
+// uma consulta que já aconteceu, reaproveitando a mesma rota PATCH
+// consultation (mark_appointment_completed é um no-op seguro pra
+// agendamento que não está mais 'confirmed'/'pending_consultant').
+async function viewAppointmentDetail(id) {
+    const a = lastHistory.find(x => x.id === id) || lastUpcoming.find(x => x.id === id);
+    if (!a) return;
+    apptDetailId = id;
+    document.getElementById('apptDetailIdBadge').textContent = `#${a.id}`;
+    document.getElementById('apptDetailInfo').innerHTML =
+        `${esc(a.client_name || a.client_wa_id)} · ${fmtWhen(a.scheduled_at)}${fmtApptDurationSuffix(a)} · ${statusLabel(a.status)}` +
+        (a.subject ? `<br>${esc(a.subject)}` : '');
+    document.getElementById('apptDetailNotes').value = '';
+    document.getElementById('apptDetailDiagnosis').value = '';
+    document.getElementById('apptDetailPrescription').value = '';
+    document.getElementById('apptDetailBiometricsFields').innerHTML = apptDetailBiometricsFormHtml({});
+    document.getElementById('appointmentDetailCard').style.display = 'block';
+    document.getElementById('appointmentDetailCard').scrollIntoView({ behavior: 'smooth' });
+    try {
+        const data = await api(`/appointments/${id}/consultation`);
+        document.getElementById('apptDetailNotes').value = data.notes || '';
+        document.getElementById('apptDetailDiagnosis').value = data.diagnosis || '';
+        document.getElementById('apptDetailPrescription').value = data.prescription || '';
+        document.getElementById('apptDetailBiometricsFields').innerHTML = apptDetailBiometricsFormHtml(data.biometrics || {});
+    } catch (e) { /* nada salvo ainda pra esse atendimento */ }
+}
+
+function closeAppointmentDetail() {
+    apptDetailId = null;
+    document.getElementById('appointmentDetailCard').style.display = 'none';
+}
+
+async function saveAppointmentDetail() {
+    if (!apptDetailId) return;
+    const notes = document.getElementById('apptDetailNotes').value.trim();
+    const diagnosis = document.getElementById('apptDetailDiagnosis').value.trim();
+    const prescription = document.getElementById('apptDetailPrescription').value.trim();
+    const biometrics = {};
+    document.querySelectorAll('#apptDetailBiometricsFields [data-biometric]').forEach(elx => {
+        const raw = elx.value;
+        biometrics[elx.dataset.biometric] = raw === '' ? null : parseFloat(raw);
+    });
+    try {
+        await api(`/appointments/${apptDetailId}/consultation`, {
+            method: 'PATCH', body: JSON.stringify({ notes, diagnosis, prescription, biometrics }),
+        });
+        alert('Atendimento atualizado!');
+        closeAppointmentDetail();
     } catch (e) { alert(e.message); }
 }
 
