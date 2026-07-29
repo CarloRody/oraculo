@@ -394,27 +394,42 @@ function renderShell(me) {
             <div class="card" id="consultationCard" style="display:none;">
                 <h2>Atendimento</h2>
                 <p class="empty" id="consultationInfo" style="padding-top:0;"></p>
-                <div id="consultationPatientBox"></div>
-                <div class="form-group"><label>Detalhes da consulta</label><textarea class="form-input" id="consultationNotes" rows="3"></textarea></div>
-                <div class="form-group"><label>Diagnóstico</label><textarea class="form-input" id="consultationDiagnosis" rows="2"></textarea></div>
-                <div class="form-group"><label>Prescrição</label><textarea class="form-input" id="consultationPrescription" rows="2"></textarea></div>
-                <h3 style="font-size:0.9rem; margin:0.75rem 0 0.4rem;">Sinais vitais</h3>
-                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                    <div style="flex:1 1 100px;"><label>Peso (kg)</label><input type="number" step="0.1" class="form-input" id="bioWeight" oninput="updateBioImc()"></div>
-                    <div style="flex:1 1 100px;"><label>Altura (cm)</label><input type="number" step="1" class="form-input" id="bioHeight" oninput="updateBioImc()"></div>
-                    <div style="flex:1 1 100px;"><label>IMC</label><input class="form-input" id="bioImc" readonly></div>
+
+                <div class="subtabs">
+                    <button class="subtab-btn active" id="consSubTabAtendimento" onclick="switchConsultationSubTab('atendimento')">Atendimento</button>
+                    <button class="subtab-btn" id="consSubTabCadastro" onclick="switchConsultationSubTab('cadastro')">Cadastro</button>
+                    <button class="subtab-btn" id="consSubTabAgendamentos" onclick="switchConsultationSubTab('agendamentos')">Agendamentos</button>
+                    <button class="subtab-btn" id="consSubTabEvolucao" onclick="switchConsultationSubTab('evolucao')">Evolução</button>
+                    <button class="subtab-btn" id="consSubTabDocumentos" onclick="switchConsultationSubTab('documentos')">Documentos</button>
                 </div>
-                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                    <div style="flex:1 1 100px;"><label>PA sistólica</label><input type="number" step="1" class="form-input" id="bioBpSystolic"></div>
-                    <div style="flex:1 1 100px;"><label>PA diastólica</label><input type="number" step="1" class="form-input" id="bioBpDiastolic"></div>
-                    <div style="flex:1 1 100px;"><label>Freq. cardíaca (bpm)</label><input type="number" step="1" class="form-input" id="bioHeartRate"></div>
+
+                <div id="cons-atendimento">
+                    <div class="form-group"><label>Detalhes da consulta</label><textarea class="form-input" id="consultationNotes" rows="3"></textarea></div>
+                    <div class="form-group"><label>Diagnóstico</label><textarea class="form-input" id="consultationDiagnosis" rows="2"></textarea></div>
+                    <div class="form-group"><label>Prescrição</label><textarea class="form-input" id="consultationPrescription" rows="2"></textarea></div>
+                    <h3 style="font-size:0.9rem; margin:0.75rem 0 0.4rem;">Sinais vitais</h3>
+                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <div style="flex:1 1 100px;"><label>Peso (kg)</label><input type="number" step="0.1" class="form-input" id="bioWeight" oninput="updateBioImc()"></div>
+                        <div style="flex:1 1 100px;"><label>Altura (cm)</label><input type="number" step="1" class="form-input" id="bioHeight" oninput="updateBioImc()"></div>
+                        <div style="flex:1 1 100px;"><label>IMC</label><input class="form-input" id="bioImc" readonly></div>
+                    </div>
+                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <div style="flex:1 1 100px;"><label>PA sistólica</label><input type="number" step="1" class="form-input" id="bioBpSystolic"></div>
+                        <div style="flex:1 1 100px;"><label>PA diastólica</label><input type="number" step="1" class="form-input" id="bioBpDiastolic"></div>
+                        <div style="flex:1 1 100px;"><label>Freq. cardíaca (bpm)</label><input type="number" step="1" class="form-input" id="bioHeartRate"></div>
+                    </div>
+                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <div style="flex:1 1 100px;"><label>Glicemia (mg/dL)</label><input type="number" step="1" class="form-input" id="bioGlucose"></div>
+                        <div style="flex:1 1 100px;"><label>Temperatura (°C)</label><input type="number" step="0.1" class="form-input" id="bioTemperature"></div>
+                    </div>
+                    <button class="btn btn-block" onclick="saveConsultation()">Salvar e concluir atendimento</button>
+                    <button class="btn btn-secondary btn-block" onclick="closeConsultation()">Cancelar</button>
                 </div>
-                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                    <div style="flex:1 1 100px;"><label>Glicemia (mg/dL)</label><input type="number" step="1" class="form-input" id="bioGlucose"></div>
-                    <div style="flex:1 1 100px;"><label>Temperatura (°C)</label><input type="number" step="0.1" class="form-input" id="bioTemperature"></div>
-                </div>
-                <button class="btn btn-block" onclick="saveConsultation()">Salvar e concluir atendimento</button>
-                <button class="btn btn-secondary btn-block" onclick="closeConsultation()">Cancelar</button>
+
+                <div id="cons-cadastro" style="display:none;"><p class="empty">Carregando...</p></div>
+                <div id="cons-agendamentos" style="display:none;"><p class="empty">Carregando...</p></div>
+                <div id="cons-evolucao" style="display:none;"><p class="empty">Carregando...</p></div>
+                <div id="cons-documentos" style="display:none;"><p class="empty">Carregando...</p></div>
             </div>
         </div>
         <div id="pacientes-tab" class="tab-content">
@@ -1081,8 +1096,8 @@ function fmtDateTime(iso) {
 
 // ---- Ficha do paciente: mesmo conteúdo completo (cadastro, agendamentos,
 // evolução, documentos) usado durante o atendimento (ver
-// loadConsultationPatientBox/renderPatientFullBox mais abaixo), só que aqui
-// a evolução também aceita adicionar nota nova. ----
+// loadConsultationPatientBox mais abaixo), só que aqui a evolução também
+// aceita adicionar nota nova. ----
 let knownPatients = [];
 
 async function loadFichaPatients() {
@@ -1464,34 +1479,13 @@ function buildDocsHtml(docsData) {
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
 }
 
-// Box compacto (cadastro, agendamentos, evolução só-leitura, documentos)
-// mostrado durante o atendimento em andamento — a ficha completa com abas
-// (Recibos/Atestados/Checklist inclusos) vive só na aba Pacientes, ver
-// loadFichaPatient(). Regenerado inteiro a cada consulta aberta, então
-// sempre volta pra sub-aba Cadastro por padrão — sem precisar preservar
-// estado entre chamadas como a ficha completa faz.
-function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts) {
-    opts = opts || {};
-    const apptHtml = buildApptHtml(apptData, opts.excludeApptId);
-    const evoHtml = buildEvoHtml(evoData, contactId, !!opts.editableEvolution);
-    const docsHtml = buildDocsHtml(docsData);
-
-    return `
-        <div class="subtabs">
-            <button class="subtab-btn active" id="consSubTabCadastro" onclick="switchConsultationSubTab('cadastro')">Cadastro</button>
-            <button class="subtab-btn" id="consSubTabAgendamentos" onclick="switchConsultationSubTab('agendamentos')">Agendamentos</button>
-            <button class="subtab-btn" id="consSubTabEvolucao" onclick="switchConsultationSubTab('evolucao')">Evolução</button>
-            <button class="subtab-btn" id="consSubTabDocumentos" onclick="switchConsultationSubTab('documentos')">Documentos</button>
-        </div>
-        <div id="cons-cadastro">${patientRecordFormHtml(record, contactId)}</div>
-        <div id="cons-agendamentos" style="display:none;">${apptHtml}</div>
-        <div id="cons-evolucao" style="display:none;">${evoHtml}</div>
-        <div id="cons-documentos" style="display:none;">${docsHtml}</div>
-    `;
-}
-
+// Sub-abas do card de Atendimento (Cadastro/Agendamentos/Evolução/
+// Documentos, além da própria aba Atendimento com o formulário da
+// consulta) — painéis já existem estáticos no HTML, ver
+// loadConsultationPatientBox mais abaixo, que só preenche o conteúdo de
+// cada um a cada consulta aberta.
 function switchConsultationSubTab(name) {
-    const names = ['cadastro', 'agendamentos', 'evolucao', 'documentos'];
+    const names = ['atendimento', 'cadastro', 'agendamentos', 'evolucao', 'documentos'];
     for (const n of names) {
         document.getElementById('cons-' + n).style.display = (n === name) ? 'block' : 'none';
         document.getElementById('consSubTab' + n.charAt(0).toUpperCase() + n.slice(1)).classList.toggle('active', n === name);
@@ -1499,8 +1493,8 @@ function switchConsultationSubTab(name) {
 }
 
 async function loadConsultationPatientBox(appointmentId, contactId) {
-    const box = document.getElementById('consultationPatientBox');
-    box.innerHTML = '<p class="empty">Carregando dados do paciente...</p>';
+    ['cons-cadastro', 'cons-agendamentos', 'cons-evolucao', 'cons-documentos']
+        .forEach(id => document.getElementById(id).innerHTML = '<p class="empty">Carregando...</p>');
     try {
         const [record, apptData, evoData, docsData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
@@ -1510,10 +1504,11 @@ async function loadConsultationPatientBox(appointmentId, contactId) {
         ]);
         // Exclui a própria consulta que está sendo atendida agora (ainda sem
         // dados salvos) das listas — evita uma linha vazia/confusa no topo.
-        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, contactId, { excludeApptId: appointmentId, editableEvolution: false });
-    } catch (e) {
-        box.innerHTML = '';
-    }
+        document.getElementById('cons-cadastro').innerHTML = patientRecordFormHtml(record, contactId);
+        document.getElementById('cons-agendamentos').innerHTML = buildApptHtml(apptData, appointmentId);
+        document.getElementById('cons-evolucao').innerHTML = buildEvoHtml(evoData, contactId, false);
+        document.getElementById('cons-documentos').innerHTML = buildDocsHtml(docsData);
+    } catch (e) { /* aba Atendimento continua utilizável mesmo se isso falhar */ }
 }
 
 async function openConsultation(id, contactId, clientName, scheduledAt) {
@@ -1522,6 +1517,7 @@ async function openConsultation(id, contactId, clientName, scheduledAt) {
     document.getElementById('atendimentoEmptyState').style.display = 'none';
     document.getElementById('consultationInfo').textContent = `Paciente: ${clientName} · ${fmtWhen(scheduledAt)}`;
     document.getElementById('consultationCard').style.display = 'block';
+    switchConsultationSubTab('atendimento');
     document.getElementById('consultationNotes').value = '';
     document.getElementById('consultationDiagnosis').value = '';
     document.getElementById('consultationPrescription').value = '';
@@ -1544,7 +1540,6 @@ async function openConsultation(id, contactId, clientName, scheduledAt) {
 function closeConsultation() {
     consultationApptId = null;
     document.getElementById('consultationCard').style.display = 'none';
-    document.getElementById('consultationPatientBox').innerHTML = '';
     document.getElementById('atendimentoEmptyState').style.display = 'block';
     switchTab('agenda');
 }
