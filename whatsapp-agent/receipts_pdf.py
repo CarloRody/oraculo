@@ -161,6 +161,67 @@ def generate_receipt_pdf(receipt: dict, professional_term: str = "Médico") -> b
     return buf.getvalue()
 
 
+def generate_certificate_pdf(certificate: dict, professional_term: str = "Médico") -> bytes:
+    """certificate: uma linha de whatsapp_certificates (dict). CID só entra
+    no corpo do texto se cid_authorized_by_patient for true (sigilo médico
+    — o código pode estar preenchido no cadastro sem estar autorizado a
+    imprimir)."""
+    buf = BytesIO()
+    doc = SimpleDocTemplate(
+        buf, pagesize=A4,
+        leftMargin=2.5 * cm, rightMargin=2.5 * cm,
+        topMargin=2.5 * cm, bottomMargin=2 * cm,
+    )
+    styles = _styles()
+    story = [Paragraph(f"ATESTADO MÉDICO Nº {certificate['id']}", styles["ReciboTitulo"]), Spacer(1, 0.8 * cm)]
+
+    start, end = certificate["leave_start_date"], certificate["leave_end_date"]
+    days = (end - start).days + 1
+    periodo_txt = (
+        f"no dia {_fmt_date(start)}" if start == end
+        else f"no período de {_fmt_date(start)} a {_fmt_date(end)} ({days} dia{'s' if days != 1 else ''})"
+    )
+
+    corpo = (
+        f"Atesto, para os devidos fins, que o(a) paciente <b>{_esc(certificate['patient_name'])}</b>, "
+        f"portador(a) do CPF nº {_esc(certificate['patient_cpf'])}, esteve sob meus cuidados médicos, "
+        f"necessitando de afastamento de suas atividades {periodo_txt}."
+    )
+    story.append(Paragraph(corpo, styles["ReciboCorpo"]))
+    if certificate.get("reason"):
+        story.append(Paragraph(_esc(certificate["reason"]), styles["ReciboCorpo"]))
+    if certificate.get("cid_authorized_by_patient") and certificate.get("cid_code"):
+        cid_txt = f"CID: {_esc(certificate['cid_code'])}"
+        if certificate.get("cid_description"):
+            cid_txt += f" — {_esc(certificate['cid_description'])}"
+        story.append(Paragraph(cid_txt, styles["ReciboCorpo"]))
+
+    story.append(Spacer(1, 1.2 * cm))
+    story.append(Paragraph(_provider_block_html(certificate, professional_term), styles["Normal"]))
+    story.append(Spacer(1, 1.6 * cm))
+
+    issued_dt = certificate["issued_at"]
+    issued_date = issued_dt.date() if hasattr(issued_dt, "date") else issued_dt
+    story.append(Paragraph(_fmt_date_extenso(issued_date) + ".", styles["Normal"]))
+    story.append(Spacer(1, 1.4 * cm))
+
+    story.append(Paragraph("_____________________________________", styles["ReciboAssinatura"]))
+    story.append(Paragraph(
+        f"{_esc(certificate['consultant_name'])}<br/>{_esc(professional_term)} — CRM {_esc(certificate['consultant_crm'])}",
+        styles["ReciboAssinatura"],
+    ))
+
+    issued_ts_fmt = issued_dt.strftime("%d/%m/%Y %H:%M") if hasattr(issued_dt, "strftime") else str(issued_dt)
+    story.append(Paragraph(
+        f"Documento emitido eletronicamente pelo sistema Oráculo em {issued_ts_fmt}. "
+        f"Atestado nº {certificate['id']}.",
+        styles["ReciboRodape"],
+    ))
+
+    doc.build(story)
+    return buf.getvalue()
+
+
 def generate_annual_statement_pdf(consultant_snapshot: dict, patient_snapshot: dict,
                                    receipts: list, year: int,
                                    professional_term: str = "Médico") -> bytes:

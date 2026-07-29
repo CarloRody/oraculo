@@ -180,6 +180,7 @@
             <button class="tab-btn" id="topTabAtendimento" onclick="switchTab('atendimento')"><span class="tab-icon">🩺</span>Atendimento</button>
             <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')"><span class="tab-icon">🗂️</span>Pacientes</button>
             <button class="tab-btn" id="topTabRecibos" onclick="switchTab('recibos')"><span class="tab-icon">🧾</span>Recibos</button>
+            <button class="tab-btn" id="topTabAtestados" onclick="switchTab('atestados')"><span class="tab-icon">📄</span>Atestados</button>
             <button class="tab-btn" id="topTabConfig" onclick="switchTab('config')"><span class="tab-icon">⚙️</span>Configurações</button>
         </div>
     </aside>
@@ -253,6 +254,8 @@ async function init() {
         loadFichaPatients();
         updateReceiptsCpfWarning();
         loadRecibosList();
+        updateAtestadosCpfWarning();
+        loadAtestadosList();
     } catch (e) {
         document.getElementById('subtitle').textContent = '';
         document.getElementById('content').innerHTML = `<div class="error-box">${esc(e.message)}. Peça um novo link mandando "minha agenda" pelo WhatsApp.</div>`;
@@ -465,6 +468,53 @@ function renderShell(me) {
                 <button class="btn btn-sm btn-secondary" onclick="sendAnnualStatement()">Enviar por WhatsApp</button>
             </div>
         </div>
+        <div id="atestados-tab" class="tab-content">
+            <div class="card">
+                <h2>Atestados</h2>
+                <p class="empty" id="atestadosCpfWarning" style="display:none; color:#fbbf24; padding-top:0;"></p>
+                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end;">
+                    <div style="flex:1 1 160px;">
+                        <label>Paciente</label>
+                        <select class="form-input" id="atestadosFilterPatient" onchange="loadAtestadosList()"><option value="">Todos</option></select>
+                    </div>
+                    <button class="btn btn-sm" id="newAtestadoToggleBtn" onclick="toggleNewAtestadoForm()">+ Novo atestado</button>
+                </div>
+                <div id="newAtestadoForm" style="display:none; margin-top:1rem; border-top:1px solid #334155; padding-top:1rem;">
+                    <div class="form-group">
+                        <label>Paciente</label>
+                        <select class="form-input" id="atestadoPatient" onchange="onAtestadoPatientChange()"><option value="">Selecione...</option></select>
+                    </div>
+                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <div style="flex:1 1 200px;">
+                            <label>Tratamento (opcional)</label>
+                            <select class="form-input" id="atestadoTreatment"><option value="">Nenhum</option></select>
+                        </div>
+                        <div style="flex:1 1 200px;">
+                            <label>Agendamento (opcional)</label>
+                            <select class="form-input" id="atestadoAppointment" onchange="onAtestadoAppointmentChange()"><option value="">Nenhum (avulso)</option></select>
+                        </div>
+                    </div>
+                    <div class="form-group"><label>Motivo do atestado</label><textarea class="form-input" id="atestadoReason" rows="2" placeholder="Ex: Repouso médico"></textarea></div>
+                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <div style="flex:1 1 140px;"><label>Afastamento — início</label><input type="date" class="form-input" id="atestadoStartDate"></div>
+                        <div style="flex:1 1 140px;"><label>Afastamento — fim</label><input type="date" class="form-input" id="atestadoEndDate"></div>
+                    </div>
+                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                        <div style="flex:1 1 100px;"><label>CID (opcional)</label><input class="form-input" id="atestadoCidCode" placeholder="Ex: J11"></div>
+                        <div style="flex:2 1 200px;"><label>Descrição do CID (opcional)</label><input class="form-input" id="atestadoCidDescription" placeholder="Ex: Influenza"></div>
+                    </div>
+                    <div class="form-group">
+                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:normal;">
+                            <input type="checkbox" id="atestadoCidAuthorized">
+                            <span>Paciente autoriza informar o CID no atestado impresso</span>
+                        </label>
+                    </div>
+                    <button class="btn btn-block" onclick="createAtestado()">Emitir atestado</button>
+                    <button class="btn btn-secondary btn-block" onclick="toggleNewAtestadoForm(false)">Cancelar</button>
+                </div>
+                <div id="atestadosList" style="margin-top:1rem;"><p class="empty">Carregando...</p></div>
+            </div>
+        </div>
         <div id="config-tab" class="tab-content">
             <div class="card">
                 <h2>Meus dados</h2>
@@ -622,6 +672,7 @@ async function saveMyProfile() {
         await api('/profile', { method: 'PATCH', body: JSON.stringify(payload) });
         Object.assign(ME, payload);
         updateReceiptsCpfWarning();
+        updateAtestadosCpfWarning();
         alert('Seus dados foram salvos!');
     } catch (e) { alert(e.message); }
 }
@@ -1661,6 +1712,9 @@ function populateRecibosSelects() {
         knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
     document.getElementById('recibosFilterPatient').innerHTML = '<option value="">Todos</option>' +
         knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
+    document.getElementById('atestadoPatient').innerHTML = options;
+    document.getElementById('atestadosFilterPatient').innerHTML = '<option value="">Todos</option>' +
+        knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
 }
 
 function toggleNewReciboForm(show) {
@@ -1805,6 +1859,159 @@ async function sendAnnualStatement() {
     try {
         await api(`/contacts/${contactId}/annual-statement/send-whatsapp`, { method: 'POST', body: JSON.stringify({ year: Number(year) }) });
         alert('Declaração enviada!');
+    } catch (e) { alert(e.message); }
+}
+
+// ---- Atestados ----
+function updateAtestadosCpfWarning() {
+    const box = document.getElementById('atestadosCpfWarning');
+    if (!box) return;
+    const missing = !ME.cpf || !ME.crm;
+    box.style.display = missing ? 'block' : 'none';
+    box.textContent = missing ? 'Complete seu CPF e CRM na aba Configurações antes de emitir atestados.' : '';
+    document.getElementById('newAtestadoToggleBtn').disabled = missing;
+}
+
+function toggleNewAtestadoForm(show) {
+    const box = document.getElementById('newAtestadoForm');
+    const visible = show !== undefined ? show : box.style.display === 'none';
+    box.style.display = visible ? 'block' : 'none';
+    if (visible) {
+        document.getElementById('atestadoPatient').value = '';
+        document.getElementById('atestadoTreatment').innerHTML = '<option value="">Nenhum</option>';
+        document.getElementById('atestadoAppointment').innerHTML = '<option value="">Nenhum (avulso)</option>';
+        document.getElementById('atestadoReason').value = '';
+        document.getElementById('atestadoStartDate').value = '';
+        document.getElementById('atestadoEndDate').value = '';
+        document.getElementById('atestadoCidCode').value = '';
+        document.getElementById('atestadoCidDescription').value = '';
+        document.getElementById('atestadoCidAuthorized').checked = false;
+    }
+}
+
+async function onAtestadoPatientChange() {
+    const contactId = document.getElementById('atestadoPatient').value;
+    const apptSel = document.getElementById('atestadoAppointment');
+    const treatSel = document.getElementById('atestadoTreatment');
+    apptSel.innerHTML = '<option value="">Nenhum (avulso)</option>';
+    treatSel.innerHTML = '<option value="">Nenhum</option>';
+    if (!contactId) return;
+    try {
+        const apptData = await api(`/contacts/${contactId}/appointments`);
+        const completed = (apptData.history || []).filter(a => a.status === 'completed');
+        apptSel.innerHTML += completed.map(a => `<option value="${a.id}" data-date="${(a.scheduled_at || '').split('T')[0]}" data-subject="${esc(a.subject || '')}">${fmtWhen(a.scheduled_at)}${a.subject ? ' — ' + esc(a.subject) : ''}</option>`).join('');
+    } catch (e) { /* select fica só com "avulso" */ }
+    try {
+        const treatData = await api(`/contacts/${contactId}/treatments`);
+        treatSel.innerHTML += (treatData.treatments || []).map(t => `<option value="${t.id}">${esc(t.name || 'Tratamento')}${t.status !== 'active' ? ' (concluído)' : ''}</option>`).join('');
+    } catch (e) { /* select fica só com "nenhum" */ }
+}
+
+function onAtestadoAppointmentChange() {
+    const sel = document.getElementById('atestadoAppointment');
+    const opt = sel.selectedOptions[0];
+    if (!opt || !opt.value) return;
+    document.getElementById('atestadoStartDate').value = opt.dataset.date || '';
+    document.getElementById('atestadoEndDate').value = opt.dataset.date || '';
+    if (!document.getElementById('atestadoReason').value.trim()) {
+        document.getElementById('atestadoReason').value = opt.dataset.subject || '';
+    }
+}
+
+async function createAtestado() {
+    const contactId = document.getElementById('atestadoPatient').value;
+    const treatmentId = document.getElementById('atestadoTreatment').value;
+    const appointmentId = document.getElementById('atestadoAppointment').value;
+    const reason = document.getElementById('atestadoReason').value.trim();
+    const startDate = document.getElementById('atestadoStartDate').value;
+    const endDate = document.getElementById('atestadoEndDate').value;
+    const cidCode = document.getElementById('atestadoCidCode').value.trim();
+    const cidDescription = document.getElementById('atestadoCidDescription').value.trim();
+    const cidAuthorized = document.getElementById('atestadoCidAuthorized').checked;
+    if (!contactId) return alert('Selecione o paciente.');
+    if (!reason) return alert('Descreva o motivo do atestado.');
+    if (!startDate || !endDate) return alert('Informe o período de afastamento (início e fim).');
+    if (endDate < startDate) return alert('A data de fim não pode ser antes da data de início.');
+    try {
+        await api(`/contacts/${contactId}/certificates`, {
+            method: 'POST',
+            body: JSON.stringify({
+                treatment_id: treatmentId ? Number(treatmentId) : null,
+                appointment_id: appointmentId ? Number(appointmentId) : null,
+                reason, leave_start_date: startDate, leave_end_date: endDate,
+                cid_code: cidCode, cid_description: cidDescription, cid_authorized_by_patient: cidAuthorized,
+            }),
+        });
+        toggleNewAtestadoForm(false);
+        loadAtestadosList();
+        if (document.getElementById('fichaPatientSelect').value === contactId) loadFichaPatient();
+    } catch (e) { alert(e.message); }
+}
+
+function fmtAtestadoPeriodo(c) {
+    const start = fmtDateOnly(c.leave_start_date);
+    const end = fmtDateOnly(c.leave_end_date);
+    return start === end ? start : `${start} a ${end}`;
+}
+
+function atestadosListHtml(certificates) {
+    if (!certificates.length) return '<p class="empty" style="padding:0.3rem 0;">Nenhum atestado emitido ainda.</p>';
+    return certificates.map(c => `
+        <div style="padding:0.5rem 0; border-bottom:1px solid #1a2744;">
+            <div style="font-size:0.85rem;"><strong>Atestado Nº ${c.id}</strong> ${c.status === 'cancelled' ? '<span style="color:#f87171;">(cancelado)</span>' : ''}</div>
+            <div style="font-size:0.78rem; color:#94a3b8;">${esc(c.patient_name)} · ${fmtAtestadoPeriodo(c)} · ${esc(c.reason)}${c.cid_code && c.cid_authorized_by_patient ? ` · CID ${esc(c.cid_code)}` : ''}</div>
+            ${c.status === 'active' ? `
+                <div style="display:flex; gap:0.4rem; margin-top:0.3rem;">
+                    <button class="btn btn-sm btn-secondary" onclick="downloadAtestado(${c.id})">Baixar PDF</button>
+                    <button class="btn btn-sm btn-secondary" onclick="sendAtestado(${c.id})">Enviar WhatsApp</button>
+                    <button class="btn btn-sm btn-danger" onclick="cancelAtestado(${c.id})">Cancelar</button>
+                </div>
+            ` : ''}
+        </div>
+    `).join('');
+}
+
+async function loadAtestadosList() {
+    const contactId = document.getElementById('atestadosFilterPatient').value;
+    const params = new URLSearchParams();
+    if (contactId) params.set('contact_id', contactId);
+    const el = document.getElementById('atestadosList');
+    el.innerHTML = '<p class="empty">Carregando...</p>';
+    try {
+        const data = await api(`/certificates?${params.toString()}`);
+        el.innerHTML = atestadosListHtml(data.certificates || []);
+    } catch (e) {
+        el.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
+    }
+}
+
+async function downloadAtestado(id) {
+    try {
+        const blob = await apiBlob(`/certificates/${id}/pdf`);
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `atestado-${id}.pdf`;
+        a.click();
+        URL.revokeObjectURL(url);
+    } catch (e) { alert(e.message); }
+}
+
+async function sendAtestado(id) {
+    if (!confirm('Enviar este atestado em PDF pelo WhatsApp do paciente?')) return;
+    try {
+        await api(`/certificates/${id}/send-whatsapp`, { method: 'POST' });
+        alert('Atestado enviado!');
+    } catch (e) { alert(e.message); }
+}
+
+async function cancelAtestado(id) {
+    const reason = prompt('Motivo do cancelamento (opcional):') || '';
+    if (!confirm('Cancelar este atestado? Ele deixa de poder ser baixado/enviado, mas continua no histórico.')) return;
+    try {
+        await api(`/certificates/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+        loadAtestadosList();
+        if (document.getElementById('fichaPatientSelect').value) loadFichaPatient();
     } catch (e) { alert(e.message); }
 }
 

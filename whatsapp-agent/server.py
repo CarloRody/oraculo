@@ -2049,6 +2049,201 @@ def _receipt_owner(receipt_id):
         conn.close()
 
 
+CERTIFICATE_COLUMNS = [
+    "id", "account_id", "contact_id", "consultant_id", "appointment_id", "treatment_id",
+    "patient_name", "patient_cpf",
+    "consultant_name", "consultant_cpf", "consultant_crm", "consultant_address",
+    "reason", "leave_start_date", "leave_end_date",
+    "cid_code", "cid_description", "cid_authorized_by_patient",
+    "status", "cancelled_at", "cancelled_reason",
+    "issued_by", "issued_at",
+]
+
+
+def get_certificates(account_id, contact_id=None, consultant_id=None):
+    """Mesmo padrão de get_receipts, sem filtro de ano (não se aplica a
+    atestados)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        where = ["account_id = %s"]
+        params = [account_id]
+        if contact_id:
+            where.append("contact_id = %s")
+            params.append(contact_id)
+        if consultant_id:
+            where.append("consultant_id = %s")
+            params.append(consultant_id)
+        cols = ", ".join(CERTIFICATE_COLUMNS)
+        cur.execute(
+            f"SELECT {cols} FROM whatsapp_certificates WHERE {' AND '.join(where)} ORDER BY issued_at DESC",
+            params,
+        )
+        rows = []
+        for r in cur.fetchall():
+            d = dict(zip(CERTIFICATE_COLUMNS, r))
+            d["leave_start_date"] = d["leave_start_date"].isoformat() if d["leave_start_date"] else None
+            d["leave_end_date"] = d["leave_end_date"].isoformat() if d["leave_end_date"] else None
+            d["issued_at"] = d["issued_at"].isoformat() if d["issued_at"] else None
+            d["cancelled_at"] = d["cancelled_at"].isoformat() if d["cancelled_at"] else None
+            rows.append(d)
+        return rows
+    finally:
+        conn.close()
+
+
+def get_certificate(certificate_id):
+    """Uma linha completa, tipos nativos do banco — usada pelas rotas de
+    download/envio, que passam a linha direto pro gerador de PDF."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(CERTIFICATE_COLUMNS)
+        cur.execute(f"SELECT {cols} FROM whatsapp_certificates WHERE id = %s", (certificate_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        return dict(zip(CERTIFICATE_COLUMNS, row))
+    finally:
+        conn.close()
+
+
+def create_certificate(account_id, contact_id, consultant_id, reason, leave_start_date, leave_end_date,
+                        cid_code, cid_description, cid_authorized_by_patient, issued_by,
+                        appointment_id=None, treatment_id=None):
+    """Mesmo espírito de create_receipt: monta o snapshot (dados atuais do
+    paciente/médico) na hora do INSERT e valida CPF do paciente + CPF/CRM
+    do médico antes de gravar. appointment_id/treatment_id inválidos ou de
+    outro paciente/conta viram NULL silenciosamente (mesmo padrão do
+    appointment_id em create_receipt) — cobre tanto atestado durante uma
+    consulta quanto avulso, dentro ou fora de um tratamento."""
+    reason = (reason or "").strip()
+    if not reason:
+        return None, "Motivo do atestado é obrigatório."
+    if not leave_start_date or not leave_end_date:
+        return None, "Informe o período de afastamento (início e fim)."
+    if leave_end_date < leave_start_date:
+        return None, "Data de fim não pode ser antes da data de início."
+
+    patient = get_patient_record(contact_id)
+    if not patient:
+        return None, "Paciente não encontrado."
+    if not patient.get("cpf"):
+        return None, "Cadastre o CPF do paciente antes de emitir atestados."
+
+    consultant = get_consultant(consultant_id)
+    if not consultant or consultant.get("account_id") != account_id:
+        term = _consultant_term(account_id)
+        return None, f"{term} não encontrado."
+    if not consultant.get("cpf") or not consultant.get("crm"):
+        term = _consultant_term(account_id)
+        return None, f"Cadastre CPF e CRM do {term} antes de emitir atestados."
+
+    cid_code = (cid_code or "").strip()[:10] or None
+    cid_description = (cid_description or "").strip()[:150] or None
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        if appointment_id:
+            cur.execute(
+                "SELECT 1 FROM whatsapp_appointments WHERE id = %s AND client_contact_id = %s AND consultant_id = %s",
+                (appointment_id, contact_id, consultant_id),
+            )
+            if not cur.fetchone():
+                appointment_id = None
+        if treatment_id:
+            cur.execute(
+                "SELECT 1 FROM whatsapp_patient_treatments WHERE id = %s AND contact_id = %s AND account_id = %s",
+                (treatment_id, contact_id, account_id),
+            )
+            if not cur.fetchone():
+                treatment_id = None
+        cur.execute(
+            """INSERT INTO whatsapp_certificates
+               (account_id, contact_id, consultant_id, appointment_id, treatment_id,
+                patient_name, patient_cpf,
+                consultant_name, consultant_cpf, consultant_crm, consultant_address,
+                reason, leave_start_date, leave_end_date,
+                cid_code, cid_description, cid_authorized_by_patient, issued_by)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               RETURNING id""",
+            (account_id, contact_id, consultant_id, appointment_id, treatment_id,
+             patient["name"], patient["cpf"],
+             consultant["name"], consultant["cpf"], consultant["crm"], consultant.get("address"),
+             reason, leave_start_date, leave_end_date,
+             cid_code, cid_description, bool(cid_authorized_by_patient), issued_by),
+        )
+        certificate_id = cur.fetchone()[0]
+        conn.commit()
+        return certificate_id, None
+    finally:
+        conn.close()
+
+
+def cancel_certificate(certificate_id, reason=None):
+    """Nunca DELETE — só marca cancelado, preservando a trilha de auditoria
+    do documento legal. Idempotente: já cancelado não muda de novo."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_certificates SET status = 'cancelled', cancelled_at = NOW(), cancelled_reason = %s
+               WHERE id = %s AND status = 'active'""",
+            ((reason or "").strip()[:300] or None, certificate_id),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
+def send_certificate_to_contact(certificate_id):
+    """Gera o PDF do atestado em memória e manda pro paciente via WhatsApp
+    — cópia estrutural de send_receipt_to_contact."""
+    certificate = get_certificate(certificate_id)
+    if not certificate or certificate["status"] != "active":
+        return "not_found"
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT wa_id FROM whatsapp_contacts WHERE id = %s", (certificate["contact_id"],))
+        row = cur.fetchone()
+    finally:
+        conn.close()
+    if not row:
+        return "contact_not_found"
+    target_wa_id = row[0]
+
+    account = get_account(certificate["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_certificate_pdf(certificate, professional_term=term)
+    media_base64 = base64.b64encode(pdf_bytes).decode("ascii")
+
+    try:
+        evolution.send_media(
+            account["wa_session_name"], _phone_from_wa_id(target_wa_id), media_base64,
+            "application/pdf", f"atestado-{certificate_id}.pdf", mediatype="document",
+        )
+    except EvolutionError as e:
+        log_event(certificate["account_id"], "certificate_send_failed", level="error",
+                  detail={"certificate_id": certificate_id, "error": str(e)})
+        return "send_failed"
+    report_whatsapp_sent_usage(certificate["account_id"])
+    return "ok"
+
+
+def _certificate_owner(certificate_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_certificates WHERE id = %s", (certificate_id,))
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
 def list_chats(account_id):
     conn = _conn()
     try:
@@ -5191,6 +5386,90 @@ def cp_send_receipt(receipt_id):
     return jsonify({"ok": True})
 
 
+@app.route("/api/client-portal/contacts/<int:contact_id>/certificates", methods=["GET"])
+def cp_list_patient_certificates(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account_id = _contact_account_id(contact_id)
+    return jsonify({"certificates": get_certificates(account_id, contact_id=contact_id)})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/certificates", methods=["POST"])
+def cp_create_certificate(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account_id = _contact_account_id(contact_id)
+    data = request.json or {}
+    consultant_id = data.get("consultant_id")
+    if not consultant_id or _consultant_owner(consultant_id) != user_id:
+        return _consultant_not_found(user_id)
+    certificate_id, error = create_certificate(
+        account_id, contact_id, consultant_id,
+        data.get("reason"), data.get("leave_start_date"), data.get("leave_end_date"),
+        data.get("cid_code"), data.get("cid_description"), data.get("cid_authorized_by_patient"),
+        "secretary", appointment_id=data.get("appointment_id"), treatment_id=data.get("treatment_id"),
+    )
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "id": certificate_id}), 201
+
+
+@app.route("/api/client-portal/certificates/<int:certificate_id>/cancel", methods=["POST"])
+def cp_cancel_certificate(certificate_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _certificate_owner(certificate_id) != user_id:
+        return _not_found("Atestado não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    if not cancel_certificate(certificate_id, reason=data.get("reason")):
+        return jsonify({"ok": False, "message": "Atestado já está cancelado"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/certificates/<int:certificate_id>/pdf", methods=["GET"])
+def cp_certificate_pdf(certificate_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _certificate_owner(certificate_id) != user_id:
+        return _not_found("Atestado não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    certificate = get_certificate(certificate_id)
+    if certificate["status"] != "active":
+        return jsonify({"ok": False, "message": "Atestado cancelado não pode mais ser baixado"}), 400
+    term = get_nomenclature(user_id)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_certificate_pdf(certificate, professional_term=term)
+    return Response(pdf_bytes, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="atestado-{certificate_id}.pdf"',
+    })
+
+
+@app.route("/api/client-portal/certificates/<int:certificate_id>/send-whatsapp", methods=["POST"])
+def cp_send_certificate(certificate_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _certificate_owner(certificate_id) != user_id:
+        return _not_found("Atestado não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    result = send_certificate_to_contact(certificate_id)
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Atestado não encontrado ou cancelado"}), 404
+    if result != "ok":
+        return jsonify({"ok": False, "message": "Falha ao enviar o atestado pelo WhatsApp"}), 502
+    return jsonify({"ok": True})
+
+
 @app.route("/api/client-portal/contacts/<int:contact_id>/annual-statement", methods=["GET"])
 def cp_annual_statement_pdf(contact_id):
     user_id, err = _require_client()
@@ -5728,6 +6007,87 @@ def api_portal_send_receipt(token, receipt_id):
         return jsonify({"ok": False, "message": "Recibo não encontrado ou cancelado"}), 404
     if result != "ok":
         return jsonify({"ok": False, "message": "Falha ao enviar o recibo pelo WhatsApp"}), 502
+    return jsonify({"ok": True})
+
+
+def _consultant_owns_certificate(consultant_id, certificate_id):
+    certificate = get_certificate(certificate_id)
+    return certificate is not None and certificate["consultant_id"] == consultant_id
+
+
+@app.route("/api/consultant-portal/<token>/certificates", methods=["GET"])
+def api_portal_list_certificates(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    contact_id = request.args.get("contact_id", type=int)
+    return jsonify({"certificates": get_certificates(
+        consultant["account_id"], contact_id=contact_id, consultant_id=consultant["id"],
+    )})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/certificates", methods=["POST"])
+def api_portal_create_certificate(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    data = request.json or {}
+    certificate_id, error = create_certificate(
+        consultant["account_id"], contact_id, consultant["id"],
+        data.get("reason"), data.get("leave_start_date"), data.get("leave_end_date"),
+        data.get("cid_code"), data.get("cid_description"), data.get("cid_authorized_by_patient"),
+        "consultant", appointment_id=data.get("appointment_id"), treatment_id=data.get("treatment_id"),
+    )
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "id": certificate_id}), 201
+
+
+@app.route("/api/consultant-portal/<token>/certificates/<int:certificate_id>/cancel", methods=["POST"])
+def api_portal_cancel_certificate(token, certificate_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_owns_certificate(consultant["id"], certificate_id):
+        return jsonify({"ok": False, "message": "Atestado não encontrado"}), 404
+    data = request.json or {}
+    if not cancel_certificate(certificate_id, reason=data.get("reason")):
+        return jsonify({"ok": False, "message": "Atestado já está cancelado"}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/consultant-portal/<token>/certificates/<int:certificate_id>/pdf", methods=["GET"])
+def api_portal_certificate_pdf(token, certificate_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_owns_certificate(consultant["id"], certificate_id):
+        return jsonify({"ok": False, "message": "Atestado não encontrado"}), 404
+    certificate = get_certificate(certificate_id)
+    if certificate["status"] != "active":
+        return jsonify({"ok": False, "message": "Atestado cancelado não pode mais ser baixado"}), 400
+    account = get_account(consultant["account_id"])
+    term = get_nomenclature(account.get("user_id") if account else None)["consultant"]["singular"]
+    pdf_bytes = receipts_pdf.generate_certificate_pdf(certificate, professional_term=term)
+    return Response(pdf_bytes, mimetype="application/pdf", headers={
+        "Content-Disposition": f'attachment; filename="atestado-{certificate_id}.pdf"',
+    })
+
+
+@app.route("/api/consultant-portal/<token>/certificates/<int:certificate_id>/send-whatsapp", methods=["POST"])
+def api_portal_send_certificate(token, certificate_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_owns_certificate(consultant["id"], certificate_id):
+        return jsonify({"ok": False, "message": "Atestado não encontrado"}), 404
+    result = send_certificate_to_contact(certificate_id)
+    if result == "not_found":
+        return jsonify({"ok": False, "message": "Atestado não encontrado ou cancelado"}), 404
+    if result != "ok":
+        return jsonify({"ok": False, "message": "Falha ao enviar o atestado pelo WhatsApp"}), 502
     return jsonify({"ok": True})
 
 

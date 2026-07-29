@@ -912,6 +912,51 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_patient_records ADD COLUMN IF NOT EXISTS email VARCHAR(255);
     """,
+
+    # 40 — atestados médicos: documento legal em snapshot (mesmo espírito de
+    # whatsapp_receipts, migração #33), vinculável opcionalmente a uma
+    # consulta (appointment_id) e/ou a um tratamento em andamento
+    # (treatment_id) — cobre tanto atestado emitido durante uma consulta
+    # quanto avulso, entre consultas, mas ainda dentro de um tratamento.
+    # CID só aparece no PDF se cid_authorized_by_patient = true (Resolução
+    # do CFM sobre sigilo do diagnóstico em atestados).
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_certificates (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        consultant_id INTEGER NOT NULL REFERENCES whatsapp_consultants(id) ON DELETE CASCADE,
+        appointment_id INTEGER REFERENCES whatsapp_appointments(id) ON DELETE SET NULL,
+        treatment_id INTEGER REFERENCES whatsapp_patient_treatments(id) ON DELETE SET NULL,
+
+        patient_name VARCHAR(150) NOT NULL,
+        patient_cpf VARCHAR(14) NOT NULL,
+
+        consultant_name VARCHAR(150) NOT NULL,
+        consultant_cpf VARCHAR(14) NOT NULL,
+        consultant_crm VARCHAR(20) NOT NULL,
+        consultant_address TEXT,
+
+        reason TEXT NOT NULL,
+        leave_start_date DATE NOT NULL,
+        leave_end_date DATE NOT NULL,
+        CHECK (leave_end_date >= leave_start_date),
+
+        cid_code VARCHAR(10),
+        cid_description VARCHAR(150),
+        cid_authorized_by_patient BOOLEAN NOT NULL DEFAULT FALSE,
+
+        status VARCHAR(20) NOT NULL DEFAULT 'active' CHECK (status IN ('active', 'cancelled')),
+        cancelled_at TIMESTAMPTZ,
+        cancelled_reason TEXT,
+
+        issued_by VARCHAR(20) NOT NULL CHECK (issued_by IN ('secretary', 'consultant')),
+        issued_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_certificates_account ON whatsapp_certificates(account_id, issued_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_certificates_contact ON whatsapp_certificates(contact_id, issued_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_certificates_consultant ON whatsapp_certificates(consultant_id, issued_at DESC);
+    """,
 ]
 
 
