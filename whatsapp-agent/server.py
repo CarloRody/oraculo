@@ -4279,6 +4279,15 @@ def cp_list_contacts(account_id):
     return jsonify({"contacts": get_account_contacts(account_id)})
 
 
+@app.route("/api/client-portal/accounts/<int:account_id>/patients", methods=["GET"])
+def cp_list_patients(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    return jsonify({"patients": get_account_patients(account_id)})
+
+
 @app.route("/api/client-portal/accounts/<int:account_id>/patients", methods=["POST"])
 def cp_create_patient(account_id):
     user_id, err = _require_client()
@@ -5091,6 +5100,31 @@ def get_account_contacts(account_id):
                WHERE account_id = %s AND status = 'active' AND wa_id LIKE '%%@s.whatsapp.net'
                ORDER BY COALESCE(name, push_name) NULLS LAST""",
             (account_id,),
+        )
+        return [{"id": r[0], "phone": r[1].split("@")[0], "name": r[2]} for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_account_patients(account_id):
+    """Todo contato que já teve QUALQUER agendamento com algum médico dessa
+    conta — mesma regra de get_consultant_patients, sem restringir a um
+    médico específico. Usado pelo seletor de paciente da ficha no painel da
+    secretária (fichaPatientSelect); diferente de get_account_contacts (todo
+    contato que já mandou mensagem, paciente ou não)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT ct.id, ct.wa_id, COALESCE(ct.name, ct.push_name)
+               FROM whatsapp_contacts ct
+               WHERE ct.account_id = %s AND EXISTS (
+                   SELECT 1 FROM whatsapp_appointments a
+                   JOIN whatsapp_consultants c ON c.id = a.consultant_id
+                   WHERE c.account_id = %s AND a.client_contact_id = ct.id
+               )
+               ORDER BY COALESCE(ct.name, ct.push_name) NULLS LAST""",
+            (account_id, account_id),
         )
         return [{"id": r[0], "phone": r[1].split("@")[0], "name": r[2]} for r in cur.fetchall()]
     finally:
