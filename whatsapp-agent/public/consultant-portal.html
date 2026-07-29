@@ -1155,6 +1155,7 @@ function patientRecordFormHtml(record, contactId) {
                     <input type="date" class="form-input" data-field="birth_date" value="${record.birth_date || ''}" oninput="updateRecordAge(this)">
                     <div class="record-age" style="font-size:0.75rem; color:#64748b; margin-top:0.2rem;">${record.birth_date ? calcAge(record.birth_date) + ' anos' : ''}</div>
                 </div>
+                <div style="flex:1 1 200px;"><label>E-mail</label><input type="email" class="form-input" data-field="email" placeholder="paciente@exemplo.com" value="${esc(record.email || '')}"></div>
             </div>
             <div class="form-group"><label>Endereço</label><textarea class="form-input" data-field="address" rows="2">${esc(record.address || '')}</textarea></div>
             <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">

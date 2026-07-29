@@ -906,6 +906,12 @@ MIGRATIONS = [
         CHECK (daily_summary_hour BETWEEN 0 AND 23);
     ALTER TABLE whatsapp_consultants ADD COLUMN IF NOT EXISTS last_daily_summary_sent_at TIMESTAMPTZ;
     """,
+
+    # 39 — e-mail no cadastro do paciente (mesmo espírito do CPF na migração
+    # #26: campo de texto livre, sem validação de formato no banco).
+    """
+    ALTER TABLE whatsapp_patient_records ADD COLUMN IF NOT EXISTS email VARCHAR(255);
+    """,
 ]
 
 

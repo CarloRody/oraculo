@@ -1420,7 +1420,7 @@ def get_patient_record(contact_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT ct.id, ct.name, ct.push_name, ct.wa_id,
-                      r.cpf, r.birth_date, r.address, r.emergency_contact_name, r.emergency_contact_phone,
+                      r.cpf, r.email, r.birth_date, r.address, r.emergency_contact_name, r.emergency_contact_phone,
                       r.allergies, r.medications_in_use, r.biological_sex, r.blood_type, r.updated_at
                FROM whatsapp_contacts ct
                LEFT JOIN whatsapp_patient_records r ON r.contact_id = ct.id
@@ -1430,7 +1430,7 @@ def get_patient_record(contact_id):
         row = cur.fetchone()
         if not row:
             return None
-        cols = ["contact_id", "name", "push_name", "wa_id", "cpf", "birth_date", "address",
+        cols = ["contact_id", "name", "push_name", "wa_id", "cpf", "email", "birth_date", "address",
                 "emergency_contact_name", "emergency_contact_phone", "allergies", "medications_in_use",
                 "biological_sex", "blood_type", "updated_at"]
         d = dict(zip(cols, row))
@@ -1448,6 +1448,7 @@ def upsert_patient_record(contact_id, data):
     transação só (mesma conexão, um commit)."""
     name = (data.get("name") or "").strip()[:150] or None
     cpf = (data.get("cpf") or "").strip()[:14] or None
+    email = (data.get("email") or "").strip()[:255] or None
     birth_date = data.get("birth_date") or None
     address = (data.get("address") or "").strip() or None
     emergency_contact_name = (data.get("emergency_contact_name") or "").strip()[:150] or None
@@ -1468,11 +1469,12 @@ def upsert_patient_record(contact_id, data):
         cur.execute("UPDATE whatsapp_contacts SET name = %s WHERE id = %s", (name, contact_id))
         cur.execute(
             """INSERT INTO whatsapp_patient_records
-               (contact_id, account_id, cpf, birth_date, address, emergency_contact_name,
+               (contact_id, account_id, cpf, email, birth_date, address, emergency_contact_name,
                 emergency_contact_phone, allergies, medications_in_use, biological_sex, blood_type)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                ON CONFLICT (contact_id) DO UPDATE SET
                    cpf = EXCLUDED.cpf,
+                   email = EXCLUDED.email,
                    birth_date = EXCLUDED.birth_date,
                    address = EXCLUDED.address,
                    emergency_contact_name = EXCLUDED.emergency_contact_name,
@@ -1482,7 +1484,7 @@ def upsert_patient_record(contact_id, data):
                    biological_sex = EXCLUDED.biological_sex,
                    blood_type = EXCLUDED.blood_type,
                    updated_at = NOW()""",
-            (contact_id, account_id, cpf, birth_date, address, emergency_contact_name,
+            (contact_id, account_id, cpf, email, birth_date, address, emergency_contact_name,
              emergency_contact_phone, allergies, medications_in_use, biological_sex, blood_type),
         )
         conn.commit()
