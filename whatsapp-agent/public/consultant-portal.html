@@ -180,7 +180,6 @@
             <button class="tab-btn" id="topTabAtendimento" onclick="switchTab('atendimento')"><span class="tab-icon">🩺</span>Atendimento</button>
             <button class="tab-btn" id="topTabPacientes" onclick="switchTab('pacientes')"><span class="tab-icon">🗂️</span>Pacientes</button>
             <button class="tab-btn" id="topTabRecibos" onclick="switchTab('recibos')"><span class="tab-icon">🧾</span>Recibos</button>
-            <button class="tab-btn" id="topTabAtestados" onclick="switchTab('atestados')"><span class="tab-icon">📄</span>Atestados</button>
             <button class="tab-btn" id="topTabConfig" onclick="switchTab('config')"><span class="tab-icon">⚙️</span>Configurações</button>
         </div>
     </aside>
@@ -255,7 +254,6 @@ async function init() {
         updateReceiptsCpfWarning();
         loadRecibosList();
         updateAtestadosCpfWarning();
-        loadAtestadosList();
     } catch (e) {
         document.getElementById('subtitle').textContent = '';
         document.getElementById('content').innerHTML = `<div class="error-box">${esc(e.message)}. Peça um novo link mandando "minha agenda" pelo WhatsApp.</div>`;
@@ -412,14 +410,91 @@ function renderShell(me) {
         <div id="pacientes-tab" class="tab-content">
             <div class="card">
                 <h2>Ficha do paciente</h2>
-                <p class="empty" style="padding-top:0;">Cadastro, agendamentos (histórico e próximos), evolução do tratamento e documentos — pacientes que você já atendeu.</p>
+                <p class="empty" style="padding-top:0;">Pacientes que você já atendeu.</p>
                 <div class="form-group">
                     <label>Paciente</label>
                     <select class="form-input" id="fichaPatientSelect" onchange="loadFichaPatient()">
                         <option value="">Selecione...</option>
                     </select>
                 </div>
-                <div id="fichaFullBox"></div>
+            </div>
+
+            <div id="fichaArea" style="display:none;">
+                <div class="tabs" style="margin-bottom:1.5rem;">
+                    <button class="tab-btn active" id="fichaSubTabCadastro" onclick="switchFichaSubTab('cadastro')">Cadastro</button>
+                    <button class="tab-btn" id="fichaSubTabAgendamentos" onclick="switchFichaSubTab('agendamentos')">Agendamentos</button>
+                    <button class="tab-btn" id="fichaSubTabChecklist" onclick="switchFichaSubTab('checklist')">Checklist</button>
+                    <button class="tab-btn" id="fichaSubTabEvolucao" onclick="switchFichaSubTab('evolucao')">Evolução</button>
+                    <button class="tab-btn" id="fichaSubTabDocumentos" onclick="switchFichaSubTab('documentos')">Documentos</button>
+                    <button class="tab-btn" id="fichaSubTabRecibos" onclick="switchFichaSubTab('recibos')">Recibos</button>
+                    <button class="tab-btn" id="fichaSubTabAtestados" onclick="switchFichaSubTab('atestados')">Atestados</button>
+                </div>
+
+                <div id="ficha-cadastro" class="card">
+                    <h2>Cadastro</h2>
+                    <div id="fichaCadastroBox"><p class="empty">Carregando...</p></div>
+                </div>
+
+                <div id="ficha-agendamentos" class="card" style="display:none;">
+                    <h2>Agendamentos</h2>
+                    <div id="fichaAgendamentosBox"><p class="empty">Carregando...</p></div>
+                </div>
+
+                <div id="ficha-checklist" class="card" style="display:none;">
+                    <h2>Checklist do(s) tratamento(s)</h2>
+                    <div id="fichaChecklistBox"><p class="empty">Carregando...</p></div>
+                </div>
+
+                <div id="ficha-evolucao" class="card" style="display:none;">
+                    <h2>Evolução do tratamento</h2>
+                    <div id="fichaEvolucaoBox"><p class="empty">Carregando...</p></div>
+                </div>
+
+                <div id="ficha-documentos" class="card" style="display:none;">
+                    <h2>Documentos</h2>
+                    <div id="fichaDocumentosBox"><p class="empty">Carregando...</p></div>
+                </div>
+
+                <div id="ficha-recibos" class="card" style="display:none;">
+                    <h2>Recibos</h2>
+                    <div id="fichaRecibosBox"><p class="empty">Carregando...</p></div>
+                </div>
+
+                <div id="ficha-atestados" class="card" style="display:none;">
+                    <h2>Atestados</h2>
+                    <p class="empty" id="atestadosCpfWarning" style="display:none; color:#fbbf24;"></p>
+                    <button class="btn btn-sm" id="newAtestadoToggleBtn" onclick="toggleNewAtestadoForm()">+ Novo atestado</button>
+                    <div id="newAtestadoForm" style="display:none; margin-top:1rem; border-top:1px solid #334155; padding-top:1rem;">
+                        <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                            <div style="flex:1 1 200px;">
+                                <label>Tratamento (opcional)</label>
+                                <select class="form-input" id="atestadoTreatment"><option value="">Nenhum</option></select>
+                            </div>
+                            <div style="flex:1 1 200px;">
+                                <label>Agendamento (opcional)</label>
+                                <select class="form-input" id="atestadoAppointment" onchange="onAtestadoAppointmentChange()"><option value="">Nenhum (avulso)</option></select>
+                            </div>
+                        </div>
+                        <div class="form-group"><label>Motivo do atestado</label><textarea class="form-input" id="atestadoReason" rows="2" placeholder="Ex: Repouso médico"></textarea></div>
+                        <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                            <div style="flex:1 1 140px;"><label>Afastamento — início</label><input type="date" class="form-input" id="atestadoStartDate"></div>
+                            <div style="flex:1 1 140px;"><label>Afastamento — fim</label><input type="date" class="form-input" id="atestadoEndDate"></div>
+                        </div>
+                        <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                            <div style="flex:1 1 100px;"><label>CID (opcional)</label><input class="form-input" id="atestadoCidCode" placeholder="Ex: J11"></div>
+                            <div style="flex:2 1 200px;"><label>Descrição do CID (opcional)</label><input class="form-input" id="atestadoCidDescription" placeholder="Ex: Influenza"></div>
+                        </div>
+                        <div class="form-group">
+                            <label style="display:flex; align-items:center; gap:0.5rem; font-weight:normal;">
+                                <input type="checkbox" id="atestadoCidAuthorized">
+                                <span>Paciente autoriza informar o CID no atestado impresso</span>
+                            </label>
+                        </div>
+                        <button class="btn btn-sm" onclick="createAtestado()">Emitir atestado</button>
+                        <button class="btn btn-sm btn-secondary" onclick="toggleNewAtestadoForm(false)">Cancelar</button>
+                    </div>
+                    <div id="fichaAtestadosBox" style="margin-top:1rem;"><p class="empty">Carregando...</p></div>
+                </div>
             </div>
         </div>
         <div id="recibos-tab" class="tab-content">
@@ -466,53 +541,6 @@ function renderShell(me) {
                 <div class="form-group" style="max-width:140px;"><label>Ano</label><input type="number" class="form-input" id="statementYear"></div>
                 <button class="btn btn-sm" onclick="downloadAnnualStatement()">Baixar PDF</button>
                 <button class="btn btn-sm btn-secondary" onclick="sendAnnualStatement()">Enviar por WhatsApp</button>
-            </div>
-        </div>
-        <div id="atestados-tab" class="tab-content">
-            <div class="card">
-                <h2>Atestados</h2>
-                <p class="empty" id="atestadosCpfWarning" style="display:none; color:#fbbf24; padding-top:0;"></p>
-                <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap; align-items:flex-end;">
-                    <div style="flex:1 1 160px;">
-                        <label>Paciente</label>
-                        <select class="form-input" id="atestadosFilterPatient" onchange="loadAtestadosList()"><option value="">Todos</option></select>
-                    </div>
-                    <button class="btn btn-sm" id="newAtestadoToggleBtn" onclick="toggleNewAtestadoForm()">+ Novo atestado</button>
-                </div>
-                <div id="newAtestadoForm" style="display:none; margin-top:1rem; border-top:1px solid #334155; padding-top:1rem;">
-                    <div class="form-group">
-                        <label>Paciente</label>
-                        <select class="form-input" id="atestadoPatient" onchange="onAtestadoPatientChange()"><option value="">Selecione...</option></select>
-                    </div>
-                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                        <div style="flex:1 1 200px;">
-                            <label>Tratamento (opcional)</label>
-                            <select class="form-input" id="atestadoTreatment"><option value="">Nenhum</option></select>
-                        </div>
-                        <div style="flex:1 1 200px;">
-                            <label>Agendamento (opcional)</label>
-                            <select class="form-input" id="atestadoAppointment" onchange="onAtestadoAppointmentChange()"><option value="">Nenhum (avulso)</option></select>
-                        </div>
-                    </div>
-                    <div class="form-group"><label>Motivo do atestado</label><textarea class="form-input" id="atestadoReason" rows="2" placeholder="Ex: Repouso médico"></textarea></div>
-                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                        <div style="flex:1 1 140px;"><label>Afastamento — início</label><input type="date" class="form-input" id="atestadoStartDate"></div>
-                        <div style="flex:1 1 140px;"><label>Afastamento — fim</label><input type="date" class="form-input" id="atestadoEndDate"></div>
-                    </div>
-                    <div class="form-group" style="display:flex; gap:0.5rem; flex-wrap:wrap;">
-                        <div style="flex:1 1 100px;"><label>CID (opcional)</label><input class="form-input" id="atestadoCidCode" placeholder="Ex: J11"></div>
-                        <div style="flex:2 1 200px;"><label>Descrição do CID (opcional)</label><input class="form-input" id="atestadoCidDescription" placeholder="Ex: Influenza"></div>
-                    </div>
-                    <div class="form-group">
-                        <label style="display:flex; align-items:center; gap:0.5rem; font-weight:normal;">
-                            <input type="checkbox" id="atestadoCidAuthorized">
-                            <span>Paciente autoriza informar o CID no atestado impresso</span>
-                        </label>
-                    </div>
-                    <button class="btn btn-block" onclick="createAtestado()">Emitir atestado</button>
-                    <button class="btn btn-secondary btn-block" onclick="toggleNewAtestadoForm(false)">Cancelar</button>
-                </div>
-                <div id="atestadosList" style="margin-top:1rem;"><p class="empty">Carregando...</p></div>
             </div>
         </div>
         <div id="config-tab" class="tab-content">
@@ -1057,11 +1085,26 @@ async function loadFichaPatients() {
     } catch (e) { /* seletor fica vazio, resto da tela funciona normal */ }
 }
 
-async function loadFichaPatient() {
+let currentFichaSubTab = 'cadastro';
+
+function switchFichaSubTab(name) {
+    currentFichaSubTab = name;
+    const names = ['cadastro', 'agendamentos', 'checklist', 'evolucao', 'documentos', 'recibos', 'atestados'];
+    for (const n of names) {
+        document.getElementById('ficha-' + n).style.display = (n === name) ? 'block' : 'none';
+        document.getElementById('fichaSubTab' + n.charAt(0).toUpperCase() + n.slice(1)).classList.toggle('active', n === name);
+    }
+}
+
+async function loadFichaPatient(resetTab) {
+    if (resetTab === undefined) resetTab = true;
     const contactId = document.getElementById('fichaPatientSelect').value;
-    const box = document.getElementById('fichaFullBox');
-    if (!contactId) { box.innerHTML = ''; return; }
-    box.innerHTML = '<p class="empty">Carregando...</p>';
+    const area = document.getElementById('fichaArea');
+    if (!contactId) { area.style.display = 'none'; return; }
+    if (resetTab) currentFichaSubTab = 'cadastro';
+    area.style.display = 'block';
+    ['fichaCadastroBox', 'fichaAgendamentosBox', 'fichaChecklistBox', 'fichaEvolucaoBox', 'fichaDocumentosBox', 'fichaRecibosBox', 'fichaAtestadosBox']
+        .forEach(id => document.getElementById(id).innerHTML = '<p class="empty">Carregando...</p>');
     try {
         const [record, apptData, evoData, docsData, receiptsData, checklistData, certData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
@@ -1072,9 +1115,34 @@ async function loadFichaPatient() {
             api(`/contacts/${contactId}/checklist-items`),
             api(`/certificates?contact_id=${contactId}`),
         ]);
-        box.innerHTML = renderPatientFullBox(record, apptData, evoData, docsData, Number(contactId), { editableEvolution: true }, receiptsData, checklistData, certData);
+        document.getElementById('fichaCadastroBox').innerHTML = patientRecordFormHtml(record, Number(contactId));
+        document.getElementById('fichaAgendamentosBox').innerHTML = buildApptHtml(apptData, null);
+        document.getElementById('fichaEvolucaoBox').innerHTML = buildEvoHtml(evoData, Number(contactId), true);
+        document.getElementById('fichaDocumentosBox').innerHTML = buildDocsHtml(docsData);
+
+        const treatments = (checklistData && checklistData.treatments) || [];
+        document.getElementById('fichaChecklistBox').innerHTML = treatments.length
+            ? treatments.map(t => `
+                <div style="margin-bottom:0.5rem;">
+                    <div style="font-size:0.8rem; color:#94a3b8; font-weight:600; margin-bottom:0.2rem;">${esc(t.treatment_name || 'Tratamento')}</div>
+                    ${t.items.map(it => `
+                        <div style="padding:0.3rem 0; font-size:0.82rem; display:flex; align-items:center; gap:0.4rem;">
+                            <span>${it.status === 'done' ? '✓' : it.status === 'skipped' ? '—' : '○'}</span>
+                            <span style="${it.status === 'done' ? 'color:#64748b; text-decoration:line-through;' : ''}">${esc(it.label)}</span>
+                        </div>`).join('')}
+                </div>`).join('')
+            : '<p class="empty" style="padding:0.3rem 0;">Sem tratamento em andamento (ou clínica sem checklist configurado).</p>';
+
+        document.getElementById('fichaRecibosBox').innerHTML = `
+            <button class="btn btn-sm" onclick="emitReceiptForContact(${contactId})">+ Emitir recibo</button>
+            <div style="margin-top:0.6rem;">${receiptsListHtml((receiptsData && receiptsData.receipts) || [])}</div>
+        `;
+        document.getElementById('fichaAtestadosBox').innerHTML = atestadosListHtml((certData && certData.certificates) || []);
+
+        switchFichaSubTab(currentFichaSubTab);
     } catch (e) {
-        box.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
+        area.style.display = 'none';
+        alert(e.message);
     }
 }
 
@@ -1331,10 +1399,10 @@ function fmtDateOnly(iso) {
     return `${d}/${m}/${y}`;
 }
 
-function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts, receiptsData, checklistData, certificatesData) {
-    opts = opts || {};
-    const excludeApptId = opts.excludeApptId;
-
+// Agrupamento pendente/próximos/histórico com tendência de sinais vitais —
+// compartilhado entre o box compacto do atendimento e a ficha completa da
+// aba Pacientes.
+function buildApptHtml(apptData, excludeApptId) {
     const pending = (apptData.pending || []).filter(a => a.id !== excludeApptId);
     const upcoming = (apptData.upcoming || []).filter(a => a.id !== excludeApptId);
     const history = (apptData.history || []).filter(a => a.id !== excludeApptId);
@@ -1347,7 +1415,10 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
     // (↑/↓) de cada sinal vital.
     if (history.length) apptHtml += `<h5 style="font-size:0.78rem; color:#64748b; margin:0.5rem 0 0.2rem;">Histórico</h5>` + history.map((a, i) => apptRowFull(a, history[i + 1])).join('');
     if (!apptHtml) apptHtml = '<p class="empty" style="padding:0.3rem 0;">Nenhum outro agendamento.</p>';
+    return apptHtml;
+}
 
+function buildEvoHtml(evoData, contactId, editable) {
     const notes = evoData.notes || [];
     const evoListHtml = notes.length
         ? notes.map(n => `
@@ -1356,16 +1427,18 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
                 <div style="font-size:0.82rem; white-space:pre-wrap;">${esc(n.note)}</div>
             </div>`).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhuma nota de evolução ainda.</p>';
-    const evoHtml = opts.editableEvolution
+    return editable
         ? `
             <textarea class="form-input" id="fichaNewNote" rows="3" placeholder="Registrar evolução..."></textarea>
             <button class="btn btn-sm" style="margin-top:0.5rem;" onclick="addFichaEvolutionNote(${contactId})">Adicionar nota</button>
             <div style="margin-top:0.6rem;">${evoListHtml}</div>
         `
         : evoListHtml;
+}
 
+function buildDocsHtml(docsData) {
     const docs = docsData.documents || [];
-    const docsHtml = docs.length
+    return docs.length
         ? docs.map(d => {
             const fileUrl = API + `/patient-documents/${d.id}/file`;
             return `
@@ -1379,42 +1452,19 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
             </div>`;
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
+}
 
-    const treatments = (checklistData && checklistData.treatments) || [];
-    const totalPending = treatments.reduce((n, t) => n + t.items.filter(it => it.status !== 'done').length, 0);
-    const checklistHtml = treatments.length
-        ? treatments.map(t => `
-            <div style="margin-bottom:0.5rem;">
-                <div style="font-size:0.8rem; color:#94a3b8; font-weight:600; margin-bottom:0.2rem;">${esc(t.treatment_name || 'Tratamento')}</div>
-                ${t.items.map(it => `
-                    <div style="padding:0.3rem 0; font-size:0.82rem; display:flex; align-items:center; gap:0.4rem;">
-                        <span>${it.status === 'done' ? '✓' : it.status === 'skipped' ? '—' : '○'}</span>
-                        <span style="${it.status === 'done' ? 'color:#64748b; text-decoration:line-through;' : ''}">${esc(it.label)}</span>
-                    </div>`).join('')}
-            </div>`).join('')
-        : '<p class="empty" style="padding:0.3rem 0;">Sem tratamento em andamento (ou clínica sem checklist configurado).</p>';
-
-    const receipts = (receiptsData && receiptsData.receipts) || [];
-    const receiptsHtml = opts.editableEvolution ? `
-        <details style="margin-bottom:0.6rem;">
-            <summary>Recibos (${receipts.length})</summary>
-            <div style="margin-top:0.4rem;">
-                <button class="btn btn-sm" onclick="emitReceiptForContact(${contactId})">+ Emitir recibo</button>
-                <div style="margin-top:0.6rem;">${receiptsListHtml(receipts)}</div>
-            </div>
-        </details>
-    ` : '';
-
-    const certificates = (certificatesData && certificatesData.certificates) || [];
-    const atestadosHtml = opts.editableEvolution ? `
-        <details style="margin-bottom:0.6rem;">
-            <summary>Atestados (${certificates.length})</summary>
-            <div style="margin-top:0.4rem;">
-                <button class="btn btn-sm" onclick="emitCertificateForContact(${contactId})">+ Novo atestado</button>
-                <div style="margin-top:0.6rem;">${atestadosListHtml(certificates)}</div>
-            </div>
-        </details>
-    ` : '';
+// Box compacto (cadastro, agendamentos, evolução só-leitura, documentos)
+// mostrado durante o atendimento em andamento — a ficha completa com abas
+// (Recibos/Atestados/Checklist inclusos) vive só na aba Pacientes, ver
+// loadFichaPatient().
+function renderPatientFullBox(record, apptData, evoData, docsData, contactId, opts) {
+    opts = opts || {};
+    const apptHtml = buildApptHtml(apptData, opts.excludeApptId);
+    const notes = evoData.notes || [];
+    const evoHtml = buildEvoHtml(evoData, contactId, !!opts.editableEvolution);
+    const docs = docsData.documents || [];
+    const docsHtml = buildDocsHtml(docsData);
 
     return `
         <details open style="margin-bottom:0.6rem;">
@@ -1426,10 +1476,6 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
             <div style="margin-top:0.4rem;">${apptHtml}</div>
         </details>
         <details style="margin-bottom:0.6rem;">
-            <summary>Checklist do(s) tratamento(s) (${totalPending} pendente${totalPending === 1 ? '' : 's'})</summary>
-            <div style="margin-top:0.4rem;">${checklistHtml}</div>
-        </details>
-        <details style="margin-bottom:0.6rem;">
             <summary>Evolução do tratamento (${notes.length})</summary>
             <div style="margin-top:0.4rem;">${evoHtml}</div>
         </details>
@@ -1437,8 +1483,6 @@ function renderPatientFullBox(record, apptData, evoData, docsData, contactId, op
             <summary>Documentos (${docs.length})</summary>
             <div style="margin-top:0.4rem;">${docsHtml}</div>
         </details>
-        ${receiptsHtml}
-        ${atestadosHtml}
     `;
 }
 
@@ -1725,9 +1769,6 @@ function populateRecibosSelects() {
         knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
     document.getElementById('recibosFilterPatient').innerHTML = '<option value="">Todos</option>' +
         knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
-    document.getElementById('atestadoPatient').innerHTML = options;
-    document.getElementById('atestadosFilterPatient').innerHTML = '<option value="">Todos</option>' +
-        knownPatients.map(p => `<option value="${p.contact_id}">${esc(p.name || p.wa_id)}</option>`).join('');
 }
 
 function toggleNewReciboForm(show) {
@@ -1768,13 +1809,6 @@ function emitReceiptForContact(contactId) {
     toggleNewReciboForm(true);
     document.getElementById('reciboPatient').value = contactId;
     onReciboPatientChange();
-}
-
-function emitCertificateForContact(contactId) {
-    switchTab('atestados');
-    toggleNewAtestadoForm(true);
-    document.getElementById('atestadoPatient').value = contactId;
-    onAtestadoPatientChange();
 }
 
 async function createRecibo() {
@@ -1897,7 +1931,6 @@ function toggleNewAtestadoForm(show) {
     const visible = show !== undefined ? show : box.style.display === 'none';
     box.style.display = visible ? 'block' : 'none';
     if (visible) {
-        document.getElementById('atestadoPatient').value = '';
         document.getElementById('atestadoTreatment').innerHTML = '<option value="">Nenhum</option>';
         document.getElementById('atestadoAppointment').innerHTML = '<option value="">Nenhum (avulso)</option>';
         document.getElementById('atestadoReason').value = '';
@@ -1906,11 +1939,14 @@ function toggleNewAtestadoForm(show) {
         document.getElementById('atestadoCidCode').value = '';
         document.getElementById('atestadoCidDescription').value = '';
         document.getElementById('atestadoCidAuthorized').checked = false;
+        loadAtestadoFormOptionsForFicha();
     }
 }
 
-async function onAtestadoPatientChange() {
-    const contactId = document.getElementById('atestadoPatient').value;
+// Paciente é sempre o da ficha aberta (sem select próprio no formulário,
+// diferente da versão antiga que vivia numa aba de nível superior).
+async function loadAtestadoFormOptionsForFicha() {
+    const contactId = document.getElementById('fichaPatientSelect').value;
     const apptSel = document.getElementById('atestadoAppointment');
     const treatSel = document.getElementById('atestadoTreatment');
     apptSel.innerHTML = '<option value="">Nenhum (avulso)</option>';
@@ -1939,7 +1975,7 @@ function onAtestadoAppointmentChange() {
 }
 
 async function createAtestado() {
-    const contactId = document.getElementById('atestadoPatient').value;
+    const contactId = document.getElementById('fichaPatientSelect').value;
     const treatmentId = document.getElementById('atestadoTreatment').value;
     const appointmentId = document.getElementById('atestadoAppointment').value;
     const reason = document.getElementById('atestadoReason').value.trim();
@@ -1948,7 +1984,6 @@ async function createAtestado() {
     const cidCode = document.getElementById('atestadoCidCode').value.trim();
     const cidDescription = document.getElementById('atestadoCidDescription').value.trim();
     const cidAuthorized = document.getElementById('atestadoCidAuthorized').checked;
-    if (!contactId) return alert('Selecione o paciente.');
     if (!reason) return alert('Descreva o motivo do atestado.');
     if (!startDate || !endDate) return alert('Informe o período de afastamento (início e fim).');
     if (endDate < startDate) return alert('A data de fim não pode ser antes da data de início.');
@@ -1963,8 +1998,7 @@ async function createAtestado() {
             }),
         });
         toggleNewAtestadoForm(false);
-        loadAtestadosList();
-        if (document.getElementById('fichaPatientSelect').value === contactId) loadFichaPatient();
+        loadFichaPatient(false);
     } catch (e) { alert(e.message); }
 }
 
@@ -1989,20 +2023,6 @@ function atestadosListHtml(certificates) {
             ` : ''}
         </div>
     `).join('');
-}
-
-async function loadAtestadosList() {
-    const contactId = document.getElementById('atestadosFilterPatient').value;
-    const params = new URLSearchParams();
-    if (contactId) params.set('contact_id', contactId);
-    const el = document.getElementById('atestadosList');
-    el.innerHTML = '<p class="empty">Carregando...</p>';
-    try {
-        const data = await api(`/certificates?${params.toString()}`);
-        el.innerHTML = atestadosListHtml(data.certificates || []);
-    } catch (e) {
-        el.innerHTML = `<p class="empty">${esc(e.message)}</p>`;
-    }
 }
 
 async function downloadAtestado(id) {
@@ -2030,8 +2050,7 @@ async function cancelAtestado(id) {
     if (!confirm('Cancelar este atestado? Ele deixa de poder ser baixado/enviado, mas continua no histórico.')) return;
     try {
         await api(`/certificates/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
-        loadAtestadosList();
-        if (document.getElementById('fichaPatientSelect').value) loadFichaPatient();
+        loadFichaPatient(false);
     } catch (e) { alert(e.message); }
 }
 
