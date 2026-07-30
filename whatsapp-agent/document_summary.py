@@ -124,10 +124,17 @@ def _recent_avg_tokens_per_second(n=RECENT_SAMPLE_COUNT):
 
 
 def _count_processing():
+    """Soma as duas filas (resumo de documento individual + resumo
+    cronológico) — as duas competem pelo mesmo paralelismo/velocidade do
+    mesmo modelo, então o teto tem que valer pro total, não por fila."""
     conn = _conn()
     try:
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM whatsapp_patient_documents WHERE ai_summary_status = 'processing'")
+        cur.execute(
+            """SELECT
+                   (SELECT COUNT(*) FROM whatsapp_patient_documents WHERE ai_summary_status = 'processing') +
+                   (SELECT COUNT(*) FROM whatsapp_patient_chronological_summaries WHERE status = 'processing')"""
+        )
         return cur.fetchone()[0]
     finally:
         conn.close()
@@ -206,6 +213,132 @@ def retry_document(doc_id):
         return cur.rowcount > 0
     finally:
         conn.close()
+
+
+def _claim_next_pending_chronological(limit):
+    """Mesmo padrão de _claim_next_pending (FOR UPDATE SKIP LOCKED), só que
+    na fila de resumo cronológico por paciente. Devolve (contact_id,
+    account_id) — account_id junto evita uma consulta extra em
+    _process_one_chronological."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """WITH claimed AS (
+                   SELECT contact_id FROM whatsapp_patient_chronological_summaries
+                   WHERE status = 'pending'
+                   ORDER BY requested_at ASC LIMIT %s FOR UPDATE SKIP LOCKED
+               )
+               UPDATE whatsapp_patient_chronological_summaries d SET status = 'processing'
+               FROM claimed WHERE d.contact_id = claimed.contact_id
+               RETURNING d.contact_id, d.account_id""",
+            (limit,),
+        )
+        rows = cur.fetchall()
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
+
+
+def request_chronological_summary(contact_id, account_id):
+    """Pedido do médico (portal do consultor) — UPSERT pra 'pending'. Se já
+    existe um resumo anterior, ele continua visível (get_chronological_summary
+    devolve a linha inteira, summary incluso) até o novo terminar — só o
+    status muda pra 'pending'/'processing' nesse meio tempo."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_patient_chronological_summaries (contact_id, account_id, status, error, requested_at)
+               VALUES (%s, %s, 'pending', NULL, NOW())
+               ON CONFLICT (contact_id) DO UPDATE
+                   SET status = 'pending', error = NULL, requested_at = NOW()""",
+            (contact_id, account_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_chronological_summary(contact_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT status, summary, error, document_count, requested_at, completed_at
+               FROM whatsapp_patient_chronological_summaries WHERE contact_id = %s""",
+            (contact_id,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        return {
+            "status": row[0], "summary": row[1], "error": row[2], "document_count": row[3],
+            "requested_at": row[4].isoformat() if row[4] else None,
+            "completed_at": row[5].isoformat() if row[5] else None,
+        }
+    finally:
+        conn.close()
+
+
+def mark_chronological_done(contact_id, text, prompt_tokens, completion_tokens, elapsed_seconds, document_count):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_patient_chronological_summaries
+               SET status = 'done', summary = %s, tokens_prompt = %s, tokens_completion = %s,
+                   elapsed_ms = %s, document_count = %s, error = NULL, completed_at = NOW()
+               WHERE contact_id = %s""",
+            (text, prompt_tokens, completion_tokens, int(elapsed_seconds * 1000), document_count, contact_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def mark_chronological_failed(contact_id, error):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_patient_chronological_summaries
+               SET status = 'failed', error = %s, completed_at = NOW()
+               WHERE contact_id = %s""",
+            (str(error)[:2000], contact_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def _build_chronological_prompt(done_docs):
+    lines = [document_ai.DEFAULT_CHRONOLOGICAL_PROMPT_HEADER]
+    for d in done_docs:
+        date_label = d["captured_at"][:10] if d["captured_at"] else "data desconhecida"
+        lines.append(f"[{date_label}] ({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
+    return "\n".join(lines)
+
+
+def _process_one_chronological(contact_id, account_id):
+    import server  # tardio — ver docstring do módulo
+
+    try:
+        docs = server.get_patient_documents_for_contact(contact_id)
+        done_docs = [d for d in docs if d.get("ai_summary_status") == "done" and d.get("ai_summary")]
+        if not done_docs:
+            raise RuntimeError("Nenhum documento com resumo pronto ainda pra esse paciente")
+        done_docs.sort(key=lambda d: d["captured_at"] or "")
+
+        prompt = _build_chronological_prompt(done_docs)
+        text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological(prompt)
+        mark_chronological_done(contact_id, text, prompt_tokens, completion_tokens, elapsed, len(done_docs))
+        server.report_document_ai_usage(account_id, prompt_tokens, completion_tokens)
+    except Exception as e:
+        mark_chronological_failed(contact_id, str(e))
+        server.log_event(None, "chronological_summary_failed", level="error",
+                          detail={"contact_id": contact_id, "error": str(e)})
 
 
 # ---------------------------------------------------------------------------
@@ -300,6 +433,10 @@ def _process_one_document(doc_id):
 # ---------------------------------------------------------------------------
 
 def _dispatch_pending_documents():
+    """Despacha as duas filas (documento individual e resumo cronológico)
+    sob o mesmo teto de paralelismo/velocidade — documento individual tem
+    prioridade (chega em tempo real via WhatsApp), resumo cronológico (sob
+    demanda do médico, pode esperar um pouco) usa o que sobrar."""
     settings = get_ai_summary_settings()
     if settings["paused"]:
         return
@@ -311,8 +448,15 @@ def _dispatch_pending_documents():
         recent = _recent_avg_tokens_per_second()
         if recent is not None and recent < target:
             return  # modelo abaixo da velocidade desejada — espera a próxima rodada
-    for doc_id in _claim_next_pending(slots):
+
+    claimed_docs = _claim_next_pending(slots)
+    for doc_id in claimed_docs:
         threading.Thread(target=_process_one_document, args=(doc_id,), daemon=True).start()
+
+    remaining = slots - len(claimed_docs)
+    if remaining > 0:
+        for contact_id, account_id in _claim_next_pending_chronological(remaining):
+            threading.Thread(target=_process_one_chronological, args=(contact_id, account_id), daemon=True).start()
 
 
 def document_summary_loop():

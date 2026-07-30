@@ -1018,6 +1018,29 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_patient_documents ADD COLUMN IF NOT EXISTS ai_summary_prompt_tokens INTEGER;
     """,
+
+    # 45 — resumo cronológico sob demanda: o médico pede, no portal dele, um
+    # resumo único cruzando todos os documentos já resumidos de um paciente
+    # (útil quando um laudo chega fatiado em várias mensagens/páginas
+    # separadas). 1 linha por paciente (contact_id é PK) — pedir de novo faz
+    # UPSERT, mantendo o resumo anterior visível como "desatualizado" até o
+    # novo terminar. Mesma fila com throttle de whatsapp_ai_summary_settings,
+    # não é uma chamada síncrona.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_patient_chronological_summaries (
+        contact_id INTEGER PRIMARY KEY REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'processing', 'done', 'failed')),
+        summary TEXT,
+        error TEXT,
+        document_count INTEGER,
+        tokens_prompt INTEGER,
+        tokens_completion INTEGER,
+        elapsed_ms INTEGER,
+        requested_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ
+    );
+    """,
 ]
 
 

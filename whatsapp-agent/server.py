@@ -6106,6 +6106,27 @@ def api_portal_patient_documents(token, contact_id):
     return jsonify({"documents": get_patient_documents_for_contact(contact_id)})
 
 
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/chronological-summary", methods=["POST"])
+def api_portal_request_chronological_summary(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    document_summary.request_chronological_summary(contact_id, consultant["account_id"])
+    return jsonify({"ok": True}), 202
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/chronological-summary", methods=["GET"])
+def api_portal_get_chronological_summary(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    return jsonify(document_summary.get_chronological_summary(contact_id) or {"status": None})
+
+
 @app.route("/api/consultant-portal/<token>/patient-documents/<int:doc_id>/file", methods=["GET"])
 def api_portal_patient_document_file(token, doc_id):
     consultant = get_consultant_by_portal_token(token)

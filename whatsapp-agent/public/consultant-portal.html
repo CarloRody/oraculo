@@ -1199,17 +1199,19 @@ async function loadFichaPatient(resetTab) {
     if (resetTab === undefined) resetTab = true;
     const contactId = document.getElementById('fichaPatientSelect').value;
     const area = document.getElementById('fichaArea');
+    stopChronoPoll();
     if (!contactId) { area.style.display = 'none'; return; }
     if (resetTab) currentFichaSubTab = 'cadastro';
     area.style.display = 'block';
     ['fichaCadastroBox', 'fichaAgendamentosBox', 'fichaChecklistBox', 'fichaEvolucaoBox', 'fichaDocumentosBox', 'fichaRecibosBox', 'fichaAtestadosBox']
         .forEach(id => document.getElementById(id).innerHTML = '<p class="empty">Carregando...</p>');
     try {
-        const [record, apptData, evoData, docsData, receiptsData, checklistData, certData] = await Promise.all([
+        const [record, apptData, evoData, docsData, chronoData, receiptsData, checklistData, certData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
             api(`/contacts/${contactId}/appointments`),
             api(`/contacts/${contactId}/evolution-notes`),
             api(`/contacts/${contactId}/documents`),
+            api(`/contacts/${contactId}/chronological-summary`),
             api(`/receipts?contact_id=${contactId}`),
             api(`/contacts/${contactId}/checklist-items`),
             api(`/certificates?contact_id=${contactId}`),
@@ -1217,7 +1219,10 @@ async function loadFichaPatient(resetTab) {
         document.getElementById('fichaCadastroBox').innerHTML = patientRecordFormHtml(record, Number(contactId));
         document.getElementById('fichaAgendamentosBox').innerHTML = buildApptHtml(apptData, null);
         document.getElementById('fichaEvolucaoBox').innerHTML = buildEvoHtml(evoData, Number(contactId), true);
-        document.getElementById('fichaDocumentosBox').innerHTML = buildDocsHtml(docsData);
+        document.getElementById('fichaDocumentosBox').innerHTML = buildDocsHtml(docsData, Number(contactId), chronoData, true);
+        if (chronoData && (chronoData.status === 'pending' || chronoData.status === 'processing')) {
+            startChronoPoll(Number(contactId));
+        }
 
         const treatments = (checklistData && checklistData.treatments) || [];
         document.getElementById('fichaChecklistBox').innerHTML = treatments.length
@@ -1551,9 +1556,73 @@ function aiSummaryHtml(d) {
     return '';
 }
 
-function buildDocsHtml(docsData) {
+let chronoPollInterval = null;
+
+function stopChronoPoll() {
+    if (chronoPollInterval) { clearInterval(chronoPollInterval); chronoPollInterval = null; }
+}
+
+function chronologicalSummaryHtml(contactId, chrono) {
+    const status = chrono && chrono.status;
+    const hasSummary = !!(chrono && chrono.summary);
+    const busy = status === 'pending' || status === 'processing';
+    const btnLabel = hasSummary ? '🔄 Atualizar resumo cronológico' : '🕐 Gerar resumo cronológico';
+    let body = '';
+    if (busy) {
+        body = `<div style="font-size:0.82rem; color:#64748b; margin-top:0.5rem;">Gerando resumo cronológico...</div>`;
+    } else if (status === 'failed') {
+        body = `<div style="font-size:0.82rem; color:#f59e0b; margin-top:0.5rem;">Falha ao gerar: ${esc(chrono.error || 'erro desconhecido')}</div>`;
+    } else if (!hasSummary) {
+        body = `<div style="font-size:0.78rem; color:#64748b; margin-top:0.4rem;">Ainda não gerado.</div>`;
+    }
+    if (hasSummary) {
+        body += `
+            <div style="margin-top:0.5rem; white-space:pre-wrap; font-size:0.85rem;">${esc(chrono.summary)}</div>
+            <div style="font-size:0.72rem; color:#64748b; margin-top:0.3rem;">Gerado em ${fmtDateTime(chrono.completed_at)}, com base em ${chrono.document_count ?? '?'} documento(s)${busy ? ' — desatualizado, gerando novo' : ''}.</div>
+        `;
+    }
+    return `
+    <div id="chronoSummaryBox" style="background:#0f1c33; border:1px solid #1a2744; border-radius:8px; padding:0.75rem; margin-bottom:0.75rem;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+            <div style="font-size:0.85rem; font-weight:600;">🕐 Resumo cronológico</div>
+            <button class="btn btn-sm" ${busy ? 'disabled' : ''} onclick="requestChronologicalSummary(${contactId})">${btnLabel}</button>
+        </div>
+        ${body}
+    </div>`;
+}
+
+async function pollChronologicalSummary(contactId) {
+    const box = document.getElementById('chronoSummaryBox');
+    if (!box) { stopChronoPoll(); return; }
+    try {
+        const chrono = await api(`/contacts/${contactId}/chronological-summary`);
+        box.outerHTML = chronologicalSummaryHtml(contactId, chrono);
+        if (chrono.status !== 'pending' && chrono.status !== 'processing') stopChronoPoll();
+    } catch (e) {
+        stopChronoPoll();
+    }
+}
+
+function startChronoPoll(contactId) {
+    stopChronoPoll();
+    chronoPollInterval = setInterval(() => pollChronologicalSummary(contactId), 4000);
+}
+
+async function requestChronologicalSummary(contactId) {
+    try {
+        await api(`/contacts/${contactId}/chronological-summary`, { method: 'POST' });
+        const box = document.getElementById('chronoSummaryBox');
+        if (box) box.outerHTML = chronologicalSummaryHtml(contactId, { status: 'pending' });
+        startChronoPoll(contactId);
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+function buildDocsHtml(docsData, contactId, chronoData, showActions) {
     const docs = docsData.documents || [];
-    return docs.length
+    const chronoBox = showActions ? chronologicalSummaryHtml(contactId, chronoData) : '';
+    const list = docs.length
         ? docs.map(d => {
             const fileUrl = API + `/patient-documents/${d.id}/file`;
             return `
@@ -1570,6 +1639,7 @@ function buildDocsHtml(docsData) {
             </div>`;
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
+    return chronoBox + list;
 }
 
 // Sub-abas do card de Atendimento (Cadastro/Agendamentos/Evolução/
@@ -1600,7 +1670,7 @@ async function loadConsultationPatientBox(appointmentId, contactId) {
         document.getElementById('cons-cadastro').innerHTML = patientRecordFormHtml(record, contactId);
         document.getElementById('cons-agendamentos').innerHTML = buildApptHtml(apptData, appointmentId);
         document.getElementById('cons-evolucao').innerHTML = buildEvoHtml(evoData, contactId, false);
-        document.getElementById('cons-documentos').innerHTML = buildDocsHtml(docsData);
+        document.getElementById('cons-documentos').innerHTML = buildDocsHtml(docsData, contactId, null, false);
     } catch (e) { /* aba Atendimento continua utilizável mesmo se isso falhar */ }
 }
 

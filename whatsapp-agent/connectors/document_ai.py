@@ -33,23 +33,31 @@ DEFAULT_SUMMARY_PROMPT = (
     "um documento médico, diga isso claramente em vez de inventar conteúdo."
 )
 
+DEFAULT_CHRONOLOGICAL_PROMPT_HEADER = (
+    "Você é um assistente médico. Abaixo estão os resumos de vários "
+    "documentos do MESMO paciente, cada um já processado individualmente, "
+    "listados em ordem cronológica. Alguns documentos podem ser páginas ou "
+    "mensagens separadas do mesmo laudo/exame, então pode haver informação "
+    "repetida entre eles.\n\n"
+    "Sua tarefa: escrever UM resumo cronológico único, em português, "
+    "organizando a evolução do paciente ao longo do tempo, SEM repetir a "
+    "mesma informação mais de uma vez — quando dois ou mais documentos "
+    "claramente pertencem ao mesmo laudo/exame (datas próximas, mesmo tipo "
+    "de conteúdo), trate-os como uma única entrada na linha do tempo. "
+    "Destaque tendências, mudanças e alertas relevantes entre os "
+    "documentos.\n\nDocumentos (mais antigo primeiro):\n"
+)
+
 
 class DocumentAIError(Exception):
     pass
 
 
-def summarize_document(images, prompt=None):
-    """images: lista de (bytes, mime_type), uma entrada por página/imagem.
-    Retorna (texto_resumo, prompt_tokens, completion_tokens, elapsed_seconds)."""
-    content = [{"type": "text", "text": prompt or DEFAULT_SUMMARY_PROMPT}]
-    for raw_bytes, mime_type in images:
-        b64 = base64.b64encode(raw_bytes).decode("ascii")
-        content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}})
-
+def _chat(content, max_tokens):
     payload = {
         "model": MODEL,
         "messages": [{"role": "user", "content": content}],
-        "max_tokens": 800,
+        "max_tokens": max_tokens,
     }
 
     start = time.monotonic()
@@ -73,3 +81,21 @@ def summarize_document(images, prompt=None):
         raise DocumentAIError(f"Resposta inesperada do modelo de IA: {e} — corpo: {str(data)[:300]}") from e
 
     return text, prompt_tokens, completion_tokens, elapsed
+
+
+def summarize_document(images, prompt=None):
+    """images: lista de (bytes, mime_type), uma entrada por página/imagem.
+    Retorna (texto_resumo, prompt_tokens, completion_tokens, elapsed_seconds)."""
+    content = [{"type": "text", "text": prompt or DEFAULT_SUMMARY_PROMPT}]
+    for raw_bytes, mime_type in images:
+        b64 = base64.b64encode(raw_bytes).decode("ascii")
+        content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}})
+    return _chat(content, max_tokens=800)
+
+
+def summarize_chronological(prompt):
+    """prompt: texto já pronto (ver document_summary._build_chronological_prompt)
+    — só texto, sem imagem, já que a entrada são os resumos individuais já
+    gerados, não os documentos originais de novo. Mesmo formato de retorno de
+    summarize_document."""
+    return _chat([{"type": "text", "text": prompt}], max_tokens=1500)
