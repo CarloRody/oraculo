@@ -35,18 +35,21 @@ def _require_admin_key_for_admin_routes():
     tree.html, reports.html — ver allowed_pages/access-guard.js), então
     aceitar só a admin_api_key quebraria o uso normal delas. Regra: chave de
     admin sempre passa; chave de cliente válida (resolve pra um user_id de
-    verdade) passa em qualquer rota MENOS /admin/whoami e
-    /admin/client-checklist/* (essas são admin-only de propósito:
-    /admin/whoami distingue "é o admin de verdade"; /admin/client-checklist
-    expõe configuração/cobrança de um user_id arbitrário passado na URL —
-    se aceitasse chave de cliente, um cliente poderia consultar o
-    checklist de configuração de QUALQUER outro cliente)."""
+    verdade) passa em qualquer rota MENOS /admin/whoami (existe só pra
+    distinguir "é o admin de verdade" pro frontend, então tem que ser
+    admin-only por definição). /admin/client-checklist/* expõe
+    configuração/cobrança de um user_id arbitrário passado na URL — em tese
+    um cliente com chave válida poderia consultar o checklist de QUALQUER
+    outro cliente — mas foi liberado pra aceitar chave de cliente também
+    (mesma regra do resumos-IA) porque o Painel Admin já é uma página que só
+    o operador acessa (bloqueado pelo cadastro de acessos/allowed_pages de
+    cada cliente comum), não por clientes comuns."""
     if not request.path.startswith("/admin/"):
         return None
 
     key = request.headers.get("X-Oraculo-Key")
     is_admin = bool(ADMIN_API_KEY) and key == ADMIN_API_KEY
-    admin_only_route = request.path == "/admin/whoami" or request.path.startswith("/admin/client-checklist/")
+    admin_only_route = request.path == "/admin/whoami"
 
     if admin_only_route:
         if is_admin:
