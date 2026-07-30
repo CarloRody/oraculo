@@ -34,21 +34,22 @@ DEFAULT_SUMMARY_PROMPT = (
 )
 
 DEFAULT_CHRONOLOGICAL_PROMPT_HEADER = (
-    "Você é um assistente médico. Abaixo estão vários documentos (exames, "
-    "receitas, laudos ou similares) do MESMO paciente, um após o outro, "
-    "cada um com um cabeçalho de texto antes das imagens dele.\n\n"
-    "IMPORTANTE sobre datas: o cabeçalho mostra a data em que o documento "
-    "foi RECEBIDO pelo WhatsApp — essa data pode NÃO ser a data real do "
-    "exame/laudo. Sempre que o próprio documento mostrar sua data real "
-    "(data do exame, da coleta, da emissão do laudo), use essa data real "
-    "pra ordenar a linha do tempo, não a data de recebimento.\n\n"
+    "Você é um assistente médico. Abaixo estão os resumos de vários "
+    "documentos do MESMO paciente, cada um já processado individualmente. "
+    "Estão listados na ordem em que foram RECEBIDOS pelo WhatsApp — isso "
+    "pode NÃO ser a ordem cronológica real dos exames. Sempre que um resumo "
+    "mencionar a data real do exame/laudo/coleta, use essa data pra montar "
+    "a linha do tempo, não a ordem de recebimento abaixo.\n\n"
     "Alguns documentos podem ser páginas ou mensagens separadas do mesmo "
-    "laudo/exame — trate-os como uma única entrada na linha do tempo, sem "
-    "repetir a mesma informação mais de uma vez.\n\n"
+    "laudo/exame, então pode haver informação repetida entre eles.\n\n"
     "Sua tarefa: escrever UM resumo cronológico único, em português, "
-    "organizando a evolução real do paciente ao longo do tempo (pela data "
-    "real de cada exame/documento), destacando tendências, mudanças e "
-    "alertas relevantes entre os documentos."
+    "organizando a evolução do paciente ao longo do tempo, SEM repetir a "
+    "mesma informação mais de uma vez — quando dois ou mais documentos "
+    "claramente pertencem ao mesmo laudo/exame (datas próximas, mesmo tipo "
+    "de conteúdo), trate-os como uma única entrada na linha do tempo. "
+    "Destaque tendências, mudanças e alertas relevantes entre os "
+    "documentos.\n\nResumos individuais (ordem de recebimento, mais antigo "
+    "primeiro):\n"
 )
 
 
@@ -96,25 +97,19 @@ def summarize_document(images, prompt=None):
     return _chat(content, max_tokens=800)
 
 
-def summarize_chronological_documents(entries):
-    """entries: lista de (rótulo_texto, [(bytes, mime_type), ...]) — um item
-    por documento, montada por document_summary._build_chronological_entries.
-    Reenvia os ARQUIVOS ORIGINAIS de cada documento pro modelo (não os
-    resumos individuais já gerados de cada um) — basear a cronologia num
-    resumo-de-resumos perdia precisão e confundia a ordem real dos exames.
+def summarize_chronological(prompt, document_count=1):
+    """prompt: texto já pronto (ver document_summary._build_chronological_prompt)
+    — só texto, sem imagem. A entrada são os RESUMOS INDIVIDUAIS já gerados
+    de cada documento, não os arquivos originais de novo (tentamos reenviar
+    as imagens originais e piorou: o modelo compara texto com muito mais
+    confiabilidade do que imagens visualmente parecidas — reenviar imagem
+    fazia o mesmo laudo, fotografado/recebido em mensagens diferentes,
+    aparecer repetido na linha do tempo em vez de virar uma entrada só).
     Mesmo formato de retorno de summarize_document.
 
-    max_tokens escala com a quantidade de documentos — um teto fixo baixo
-    cortava a resposta no meio pra pacientes com muitos documentos: o
-    completion_tokens batia exatamente no teto e o texto parava ali, sem
-    aviso. ~350 tokens por documento dá folga pra cada entrada da linha do
-    tempo, com piso de 1500 e teto de 8000 (evita pedido de tamanho
-    desproporcional)."""
-    content = [{"type": "text", "text": DEFAULT_CHRONOLOGICAL_PROMPT_HEADER}]
-    for label, images in entries:
-        content.append({"type": "text", "text": f"\n\n--- {label} ---"})
-        for raw_bytes, mime_type in images:
-            b64 = base64.b64encode(raw_bytes).decode("ascii")
-            content.append({"type": "image_url", "image_url": {"url": f"data:{mime_type};base64,{b64}"}})
-    max_tokens = max(1500, min(8000, len(entries) * 350 + 500))
-    return _chat(content, max_tokens=max_tokens)
+    `document_count` dimensiona max_tokens — um teto fixo baixo cortava a
+    resposta no meio pra pacientes com muitos documentos. ~350 tokens por
+    documento dá folga pra cada entrada da linha do tempo, com piso de 1500
+    e teto de 8000."""
+    max_tokens = max(1500, min(8000, document_count * 350 + 500))
+    return _chat([{"type": "text", "text": prompt}], max_tokens=max_tokens)
