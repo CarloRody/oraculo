@@ -93,9 +93,18 @@ def summarize_document(images, prompt=None):
     return _chat(content, max_tokens=800)
 
 
-def summarize_chronological(prompt):
+def summarize_chronological(prompt, document_count=1):
     """prompt: texto já pronto (ver document_summary._build_chronological_prompt)
     — só texto, sem imagem, já que a entrada são os resumos individuais já
     gerados, não os documentos originais de novo. Mesmo formato de retorno de
-    summarize_document."""
-    return _chat([{"type": "text", "text": prompt}], max_tokens=1500)
+    summarize_document.
+
+    `document_count` dimensiona max_tokens — um teto fixo baixo (era 1500)
+    cortava a resposta no meio pra pacientes com muitos documentos: o
+    completion_tokens batia exatamente no teto e o texto parava ali, sem
+    aviso, dando a impressão de que o resumo "perdeu" informação. ~350
+    tokens por documento dá folga pra cada entrada da linha do tempo, com
+    piso de 1500 (paciente com poucos documentos) e teto de 8000 (evita
+    pedido de tamanho desproporcional)."""
+    max_tokens = max(1500, min(8000, document_count * 350 + 500))
+    return _chat([{"type": "text", "text": prompt}], max_tokens=max_tokens)

@@ -332,7 +332,7 @@ def _process_one_chronological(contact_id, account_id):
         done_docs.sort(key=lambda d: d["captured_at"] or "")
 
         prompt = _build_chronological_prompt(done_docs)
-        text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological(prompt)
+        text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological(prompt, document_count=len(done_docs))
         mark_chronological_done(contact_id, text, prompt_tokens, completion_tokens, elapsed, len(done_docs))
         server.report_document_ai_usage(account_id, prompt_tokens, completion_tokens)
     except Exception as e:
