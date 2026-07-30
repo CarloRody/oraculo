@@ -61,6 +61,33 @@ def pdf_first_pages_to_png(pdf_bytes, max_pages=5, dpi=150):
     return images
 
 
+def _load_document_images(doc):
+    """Lê o arquivo de um documento do disco, convertendo PDF pra PNG —
+    lógica compartilhada por _process_one_document (resumo individual) e
+    _build_chronological_entries (resumo cronológico, que reenvia os
+    arquivos originais de verdade pro modelo em vez de reusar os resumos
+    já gerados)."""
+    import server  # tardio — ver docstring do módulo
+
+    if not doc or not doc.get("storage_path"):
+        raise RuntimeError(f"Documento {doc.get('id') if doc else '?'} sem arquivo associado")
+
+    base = os.path.realpath(server.MEDIA_STORAGE_DIR)
+    full = os.path.realpath(os.path.join(base, doc["storage_path"]))
+    if not (full == base or full.startswith(base + os.sep)) or not os.path.isfile(full):
+        raise RuntimeError(f"Arquivo do documento {doc['id']} não encontrado no disco")
+
+    with open(full, "rb") as f:
+        raw_bytes = f.read()
+
+    if doc.get("mime_type") == "application/pdf":
+        images = pdf_first_pages_to_png(raw_bytes)
+        if not images:
+            raise RuntimeError(f"PDF do documento {doc['id']} sem páginas legíveis")
+        return images
+    return [(raw_bytes, doc.get("mime_type") or "image/jpeg")]
+
+
 # ---------------------------------------------------------------------------
 # Configuração da fila (linha única, id=1)
 # ---------------------------------------------------------------------------
@@ -313,27 +340,42 @@ def mark_chronological_failed(contact_id, error):
         conn.close()
 
 
-def _build_chronological_prompt(done_docs):
-    lines = [document_ai.DEFAULT_CHRONOLOGICAL_PROMPT_HEADER]
-    for d in done_docs:
-        date_label = d["captured_at"][:10] if d["captured_at"] else "data desconhecida"
-        lines.append(f"[{date_label}] ({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
-    return "\n".join(lines)
+def _build_chronological_entries(contact_id):
+    """Monta a lista (rótulo, imagens) reenviando os ARQUIVOS ORIGINAIS de
+    cada documento — não os resumos individuais já gerados. Basear a
+    cronologia num resumo-de-resumos perdia precisão e confundia a ordem
+    real dos exames (dois laudos podem chegar pelo WhatsApp fora de ordem;
+    o rótulo aqui é só uma dica inicial, o prompt em document_ai instrui o
+    modelo a preferir a data real de dentro do próprio documento).
+    Considera qualquer documento com arquivo salvo (status='stored'), não só
+    os que já têm resumo individual pronto — o cronológico não depende mais
+    dessa etapa."""
+    import server  # tardio — ver docstring do módulo
+
+    docs = server.get_patient_documents_for_contact(contact_id)
+    stored_docs = [d for d in docs if d.get("status") == "stored"]
+    if not stored_docs:
+        raise RuntimeError("Nenhum documento disponível ainda pra esse paciente")
+    stored_docs.sort(key=lambda d: d["captured_at"] or "")
+
+    entries = []
+    for d in stored_docs:
+        full_doc = server.get_patient_document(d["id"])
+        images = _load_document_images(full_doc)
+        date_label = d["captured_at"][:10] if d.get("captured_at") else "data de recebimento desconhecida"
+        caption_part = f", legenda: {d['caption']}" if d.get("caption") else ""
+        label = f"Documento recebido em {date_label} ({d.get('doc_type') or 'documento'}{caption_part})"
+        entries.append((label, images))
+    return entries
 
 
 def _process_one_chronological(contact_id, account_id):
     import server  # tardio — ver docstring do módulo
 
     try:
-        docs = server.get_patient_documents_for_contact(contact_id)
-        done_docs = [d for d in docs if d.get("ai_summary_status") == "done" and d.get("ai_summary")]
-        if not done_docs:
-            raise RuntimeError("Nenhum documento com resumo pronto ainda pra esse paciente")
-        done_docs.sort(key=lambda d: d["captured_at"] or "")
-
-        prompt = _build_chronological_prompt(done_docs)
-        text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological(prompt, document_count=len(done_docs))
-        mark_chronological_done(contact_id, text, prompt_tokens, completion_tokens, elapsed, len(done_docs))
+        entries = _build_chronological_entries(contact_id)
+        text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological_documents(entries)
+        mark_chronological_done(contact_id, text, prompt_tokens, completion_tokens, elapsed, len(entries))
         server.report_document_ai_usage(account_id, prompt_tokens, completion_tokens)
     except Exception as e:
         mark_chronological_failed(contact_id, str(e))
@@ -400,24 +442,7 @@ def _process_one_document(doc_id):
     doc = None
     try:
         doc = server.get_patient_document(doc_id)
-        if not doc or not doc.get("storage_path"):
-            raise RuntimeError("Documento sem arquivo associado")
-
-        base = os.path.realpath(server.MEDIA_STORAGE_DIR)
-        full = os.path.realpath(os.path.join(base, doc["storage_path"]))
-        if not (full == base or full.startswith(base + os.sep)) or not os.path.isfile(full):
-            raise RuntimeError("Arquivo não encontrado no disco")
-
-        with open(full, "rb") as f:
-            raw_bytes = f.read()
-
-        if doc.get("mime_type") == "application/pdf":
-            images = pdf_first_pages_to_png(raw_bytes)
-            if not images:
-                raise RuntimeError("PDF sem páginas legíveis")
-        else:
-            images = [(raw_bytes, doc.get("mime_type") or "image/jpeg")]
-
+        images = _load_document_images(doc)
         text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_document(images)
         mark_summary_done(doc_id, text, prompt_tokens, completion_tokens, elapsed)
         server.report_document_ai_usage(doc["account_id"], prompt_tokens, completion_tokens)
