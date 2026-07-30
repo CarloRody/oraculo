@@ -485,13 +485,32 @@ def get_account_by_session(session_name):
 # Contatos / conversas / mensagens
 # ---------------------------------------------------------------------------
 
+def _wa_id_variants(wa_id):
+    """Número de celular BR pode aparecer com ou sem o nono dígito
+    (55+DDD+9+8dígitos vs 55+DDD+8dígitos) dependendo de qual sistema
+    gerou o wa_id — comparar por igualdade exata faz a mesma pessoa virar
+    dois contatos diferentes quando o WhatsApp manda o número de um jeito
+    numa mensagem e de outro jeito noutra. Devolve as formas equivalentes
+    de um wa_id, pra usar num WHERE wa_id = ANY(...)."""
+    if "@" not in wa_id:
+        return [wa_id]
+    local, domain = wa_id.split("@", 1)
+    digits = re.sub(r"\D", "", local)
+    variants = {wa_id}
+    if digits.startswith("55") and len(digits) == 13 and digits[4] == "9":
+        variants.add(f"{digits[:4]}{digits[5:]}@{domain}")
+    elif digits.startswith("55") and len(digits) == 12:
+        variants.add(f"{digits[:4]}9{digits[4:]}@{domain}")
+    return list(variants)
+
+
 def get_or_create_contact(account_id, wa_id, push_name=None):
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT id FROM whatsapp_contacts WHERE account_id = %s AND wa_id = %s",
-            (account_id, wa_id),
+            "SELECT id FROM whatsapp_contacts WHERE account_id = %s AND wa_id = ANY(%s)",
+            (account_id, _wa_id_variants(wa_id)),
         )
         row = cur.fetchone()
         if row:
@@ -523,7 +542,7 @@ def create_patient_contact(account_id, phone, name):
     try:
         cur = conn.cursor()
         wa_id = f"{phone}@s.whatsapp.net"
-        cur.execute("SELECT id FROM whatsapp_contacts WHERE account_id = %s AND wa_id = %s", (account_id, wa_id))
+        cur.execute("SELECT id FROM whatsapp_contacts WHERE account_id = %s AND wa_id = ANY(%s)", (account_id, _wa_id_variants(wa_id)))
         row = cur.fetchone()
         if row:
             contact_id = row[0]
@@ -2636,8 +2655,8 @@ def get_active_consultant_by_wa_id(account_id, wa_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT c.id, c.portal_token FROM whatsapp_consultants c JOIN whatsapp_contacts ct ON ct.id = c.contact_id
-               WHERE c.account_id = %s AND ct.wa_id = %s AND c.status = 'active'""",
-            (account_id, wa_id),
+               WHERE c.account_id = %s AND ct.wa_id = ANY(%s) AND c.status = 'active'""",
+            (account_id, _wa_id_variants(wa_id)),
         )
         row = cur.fetchone()
         return {"id": row[0], "portal_token": row[1]} if row else None
@@ -2766,8 +2785,8 @@ def get_consultant_by_pending_contact(account_id, wa_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT c.id FROM whatsapp_consultants c JOIN whatsapp_contacts ct ON ct.id = c.contact_id
-               WHERE c.account_id = %s AND ct.wa_id = %s AND c.status = 'pending_confirmation'""",
-            (account_id, wa_id),
+               WHERE c.account_id = %s AND ct.wa_id = ANY(%s) AND c.status = 'pending_confirmation'""",
+            (account_id, _wa_id_variants(wa_id)),
         )
         row = cur.fetchone()
         return row[0] if row else None
