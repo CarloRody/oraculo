@@ -200,7 +200,7 @@ function esc(s) {
 }
 
 function logout() {
-    localStorage.removeItem('oraculo_admin_key');
+    localStorage.removeItem('oraculo_api_key');
     window.location.reload();
 }
 
@@ -216,7 +216,7 @@ async function loginWithToken() {
     try {
         const res = await fetch(API + '/api/admin/whoami', { headers: { 'X-Oraculo-Key': key } });
         if (!res.ok) throw new Error('invalid');
-        localStorage.setItem('oraculo_admin_key', key);
+        localStorage.setItem('oraculo_api_key', key);
         window.location.reload();
     } catch (e) {
         errorEl.textContent = 'Chave de administrador inválida.';
@@ -227,7 +227,7 @@ async function loginWithToken() {
 }
 
 function initAuth() {
-    ADMIN_KEY = localStorage.getItem('oraculo_admin_key') || '';
+    ADMIN_KEY = localStorage.getItem('oraculo_api_key') || '';
     if (!ADMIN_KEY) {
         document.getElementById('deniedBox').style.display = 'block';
         return false;
@@ -240,7 +240,7 @@ async function authFetch(url, opts) {
     opts.headers = Object.assign({ 'X-Oraculo-Key': ADMIN_KEY }, opts.headers || {});
     const res = await fetch(url, opts);
     if (res.status === 401) {
-        localStorage.removeItem('oraculo_admin_key');
+        localStorage.removeItem('oraculo_api_key');
         window.location.reload();
     }
     return res;
