@@ -246,7 +246,20 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
             client_msg = (f"Recebi seu pedido de agendamento com {consultant['name']} em {when}!{subject_line}\n"
                            f"Assim que o {term} confirmar, eu te aviso por aqui.")
         else:
-            client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
+            acct = server.get_account(consultant["account_id"])
+            custom_template = (acct or {}).get("booking_confirmed_message")
+            if custom_template:
+                ctx = {
+                    "paciente": client_push_name or client_phone,
+                    "medico": consultant["name"],
+                    "data": scheduled_at.strftime("%d/%m/%Y"),
+                    "hora": scheduled_at.strftime("%H:%M"),
+                    "assunto": subject or "",
+                    "clinica": (acct or {}).get("label") or "",
+                }
+                client_msg = server.render_message_template(custom_template, ctx)
+            else:
+                client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
         try:
             evolution.send_text(consultant["wa_session_name"], client_phone, client_msg)
             server.report_whatsapp_sent_usage(consultant["account_id"])

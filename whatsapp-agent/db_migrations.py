@@ -974,6 +974,14 @@ MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_account_branding_account ON whatsapp_account_branding(account_id);
     """,
+
+    # 42 — mensagem de "agendamento confirmado" personalizável por conta,
+    # enviada por book_appointment() quando o agendamento já nasce
+    # confirmado (criação direta pela secretária/médico, sem etapa de
+    # espera). NULL/vazio = mantém o texto padrão do sistema.
+    """
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS booking_confirmed_message TEXT;
+    """,
 ]
 
 

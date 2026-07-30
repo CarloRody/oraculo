@@ -129,6 +129,7 @@ ACCOUNT_COLUMNS = [
     "weekly_summary_weekday", "weekly_summary_hour", "secretary_contact_id",
     "document_type", "document_number", "company_name", "company_address",
     "responsible_name", "responsible_cpf", "responsible_address",
+    "booking_confirmed_message",
 ]
 
 
@@ -560,6 +561,20 @@ def set_account_secretary_contact(account_id, phone):
         cur.execute("UPDATE whatsapp_accounts SET secretary_contact_id = %s WHERE id = %s", (contact_id, account_id))
         conn.commit()
         return contact_id
+    finally:
+        conn.close()
+
+
+def set_account_booking_confirmed_message(account_id, message):
+    """Texto customizado enviado por book_appointment() quando o
+    agendamento já nasce confirmado (sem etapa de espera). message vazio
+    limpa a customização e volta a usar o texto padrão do sistema."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_accounts SET booking_confirmed_message = %s WHERE id = %s",
+                     (message or None, account_id))
+        conn.commit()
     finally:
         conn.close()
 
@@ -5061,6 +5076,19 @@ def cp_set_secretary_contact(account_id):
         "secretary_wa_id": account.get("secretary_wa_id"),
         "secretary_push_name": account.get("secretary_push_name"),
     })
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/booking-confirmed-message", methods=["PATCH"])
+def cp_set_booking_confirmed_message(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    message = ((request.json or {}).get("message") or "").strip()
+    set_account_booking_confirmed_message(account_id, message)
+    return jsonify({"ok": True, "booking_confirmed_message": message or None})
 
 
 # ---------------------------------------------------------------------------

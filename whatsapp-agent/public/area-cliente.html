@@ -411,6 +411,15 @@
         </div>
 
         <div class="card" style="max-width:1000px;">
+            <h2>Mensagem de agendamento confirmado</h2>
+            <p class="subtitle">Enviada automaticamente por WhatsApp ao paciente quando um agendamento já nasce confirmado (criado direto pela secretária ou pelo médico), antes do checklist começar. Placeholders disponíveis: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>. Deixe em branco pra manter a mensagem padrão do sistema.</p>
+            <div class="form-group">
+                <textarea class="form-input" rows="3" id="bookingConfirmedMessageInput" placeholder="Você tem um agendamento confirmado com {{medico}} em {{data}} às {{hora}}!"></textarea>
+            </div>
+            <button class="btn btn-sm" onclick="saveBookingConfirmedMessage()">Salvar mensagem</button>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
             <h2>Configurar checklist da clínica</h2>
             <p class="subtitle">Etapas aplicadas a toda consulta marcada como concluída. Placeholders disponíveis na mensagem automática: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>. A secretária marca as etapas como concluídas pelo <a href="/whatsapp/painel-secretaria" style="color:#60a5fa;">Painel da Secretária</a>.</p>
             <div id="templateEditor"></div>
@@ -1544,12 +1553,14 @@ async function initChecklistTab() {
     }
     sel.value = currentChecklistAccountId;
     loadSecretaryContactField();
+    loadBookingConfirmedMessageField();
     await loadChecklistTemplate();
 }
 
 async function onChecklistAccountChange() {
     currentChecklistAccountId = Number(document.getElementById('checklistAccountSelect').value);
     loadSecretaryContactField();
+    loadBookingConfirmedMessageField();
     await loadChecklistTemplate();
 }
 
@@ -1568,6 +1579,23 @@ async function saveSecretaryContact() {
     const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
     if (acc) acc.secretary_wa_id = data.secretary_wa_id;
     alert('Telefone da secretária salvo!');
+}
+
+function loadBookingConfirmedMessageField() {
+    const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
+    document.getElementById('bookingConfirmedMessageInput').value = (acc && acc.booking_confirmed_message) || '';
+}
+
+async function saveBookingConfirmedMessage() {
+    const message = document.getElementById('bookingConfirmedMessageInput').value.trim();
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/booking-confirmed-message`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar mensagem.');
+    const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
+    if (acc) acc.booking_confirmed_message = data.booking_confirmed_message;
+    alert('Mensagem salva!');
 }
 
 async function loadChecklistTemplate() {
