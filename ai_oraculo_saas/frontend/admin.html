@@ -148,6 +148,7 @@
             <button class="nav-item" onclick="switchTab('checklist')"><span class="nav-icon">✅</span><span>Checklist</span></button>
             <button class="nav-item" onclick="switchTab('health')"><span class="nav-icon">💓</span><span>Saúde do Sistema</span></button>
             <button class="nav-item" onclick="openWhatsApp()" title="Abre o serviço de WhatsApp em outra aba (porta 5005, independente do Oráculo)"><span class="nav-icon">📱</span><span>WhatsApp ↗</span></button>
+            <button class="nav-item" onclick="openDocumentSummaries()" title="Abre a fila de resumo automático de documentos por IA (whatsapp-agent, porta 5005)"><span class="nav-icon">🤖</span><span>Resumos IA ↗</span></button>
         </nav>
 
         <div class="sidebar-footer">
@@ -643,6 +644,10 @@ function esc(s) { return s ? String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;'
 // ---- WhatsApp (serviço próprio, montado em /whatsapp — não faz parte do admin.html) ----
 function openWhatsApp() {
     window.open('/whatsapp/', '_blank');
+}
+
+function openDocumentSummaries() {
+    window.open('/whatsapp/admin/resumos-documentos', '_blank');
 }
 
 // ---- Tabs ----
