@@ -148,7 +148,7 @@
             <button class="nav-item" onclick="switchTab('checklist')"><span class="nav-icon">✅</span><span>Checklist</span></button>
             <button class="nav-item" onclick="switchTab('health')"><span class="nav-icon">💓</span><span>Saúde do Sistema</span></button>
             <button class="nav-item" onclick="openWhatsApp()" title="Abre o serviço de WhatsApp em outra aba (porta 5005, independente do Oráculo)"><span class="nav-icon">📱</span><span>WhatsApp ↗</span></button>
-            <button class="nav-item" onclick="openDocumentSummaries()" title="Abre a fila de resumo automático de documentos por IA (whatsapp-agent, porta 5005)"><span class="nav-icon">🤖</span><span>Resumos IA ↗</span></button>
+            <button class="nav-item" onclick="switchTab('document-summaries')"><span class="nav-icon">🤖</span><span>Resumos IA</span></button>
         </nav>
 
         <div class="sidebar-footer">
@@ -296,6 +296,52 @@
                 <button class="btn btn-sm" onclick="testDdns()" id="ddnsTestBtn">Testar agora</button>
             </div>
         </div>
+    </div>
+
+    <div id="document-summaries-tab" class="tab-content">
+        <h2 style="color:#60a5fa; margin-bottom:0.5rem;">🤖 Resumos de Documentos (IA)</h2>
+        <p style="color:#94a3b8; font-size:0.9rem; margin-bottom:1.5rem;">Fila de resumo automático de documento de paciente (whatsapp-agent) via IA local com visão.</p>
+
+        <h3 style="color:#60a5fa; margin-bottom:1rem;">Configuração</h3>
+        <div class="card-item" style="margin-bottom:1.5rem;">
+            <div class="form-group" style="max-width:220px;">
+                <label>Paralelismo máximo</label>
+                <input type="number" min="1" step="1" class="form-input" id="docsumMaxParallelism">
+            </div>
+            <div class="form-group" style="max-width:260px;">
+                <label>Velocidade desejada (tokens/s) <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
+                <input type="number" min="0" step="0.1" class="form-input" id="docsumTargetTps" placeholder="Sem limite">
+            </div>
+            <div class="form-group">
+                <label><input type="checkbox" id="docsumPaused" style="width:auto; margin-right:0.4rem;"> Pausar a fila (nenhum documento novo é processado)</label>
+            </div>
+            <button class="btn" onclick="saveDocSumSettings()">Salvar</button>
+        </div>
+
+        <h3 style="color:#60a5fa; margin-bottom:1rem;">Status ao vivo</h3>
+        <div class="card-item" style="margin-bottom:1.5rem; display:flex; gap:2rem; flex-wrap:wrap;">
+            <div><div style="font-size:1.4rem; font-weight:700;" id="docsumStatPending">—</div><div style="font-size:0.72rem; color:#64748b; text-transform:uppercase;">Pendente</div></div>
+            <div><div style="font-size:1.4rem; font-weight:700;" id="docsumStatProcessing">—</div><div style="font-size:0.72rem; color:#64748b; text-transform:uppercase;">Processando</div></div>
+            <div><div style="font-size:1.4rem; font-weight:700;" id="docsumStatDone">—</div><div style="font-size:0.72rem; color:#64748b; text-transform:uppercase;">Concluído</div></div>
+            <div><div style="font-size:1.4rem; font-weight:700;" id="docsumStatFailed">—</div><div style="font-size:0.72rem; color:#64748b; text-transform:uppercase;">Falhou</div></div>
+            <div><div style="font-size:1.4rem; font-weight:700;" id="docsumStatTps">—</div><div style="font-size:0.72rem; color:#64748b; text-transform:uppercase;">Velocidade recente</div></div>
+        </div>
+
+        <h3 style="color:#60a5fa; margin-bottom:1rem;">Fila</h3>
+        <div style="display:flex; gap:0.5rem; align-items:flex-end; margin-bottom:1rem;">
+            <div class="form-group" style="margin-bottom:0; max-width:180px;">
+                <label>Filtrar por status</label>
+                <select class="form-input" id="docsumStatusFilter" onchange="loadDocumentSummaries()">
+                    <option value="">Todos</option>
+                    <option value="pending">Pendente</option>
+                    <option value="processing">Processando</option>
+                    <option value="done">Concluído</option>
+                    <option value="failed">Falhou</option>
+                </select>
+            </div>
+            <button class="btn btn-sm" onclick="loadDocumentSummaries()">🔄 Atualizar</button>
+        </div>
+        <div id="docsumQueueList" class="card-item">Carregando...</div>
     </div>
 
     </main>
@@ -646,8 +692,84 @@ function openWhatsApp() {
     window.open('/whatsapp/', '_blank');
 }
 
-function openDocumentSummaries() {
-    window.open('/whatsapp/admin/resumos-documentos', '_blank');
+// ---- Resumos de Documentos (IA) — fila do whatsapp-agent, chamada direto
+// daqui via adminFetch (mesma origem, proxy /whatsapp) em vez de abrir em
+// outra aba: getAdminKey() já é a mesma chave que a rota /api/admin/... do
+// whatsapp-agent espera. ----
+const DOCSUM_STATUS_CLASS = { pending: 'status-pending', processing: 'status-processing', done: 'status-indexed', failed: 'status-failed' };
+const DOCSUM_STATUS_LABEL = { pending: 'Pendente', processing: 'Processando', done: 'Concluído', failed: 'Falhou' };
+
+function docsumFmtDateTime(iso) {
+    return iso ? new Date(iso).toLocaleString('pt-BR') : '';
+}
+
+function docsumTypeLabel(d) {
+    return d.doc_type === 'image' ? '🖼 Imagem' : '📎 Documento';
+}
+
+async function loadDocSumSettings() {
+    const res = await adminFetch('/whatsapp/api/admin/document-summaries/settings');
+    if (!res.ok) return;
+    const data = await res.json();
+    const s = data.settings || {};
+    document.getElementById('docsumMaxParallelism').value = s.max_parallelism ?? 1;
+    document.getElementById('docsumTargetTps').value = (s.target_tokens_per_second === null || s.target_tokens_per_second === undefined) ? '' : s.target_tokens_per_second;
+    document.getElementById('docsumPaused').checked = !!s.paused;
+}
+
+async function saveDocSumSettings() {
+    const maxParallelism = Number(document.getElementById('docsumMaxParallelism').value);
+    const targetRaw = document.getElementById('docsumTargetTps').value.trim();
+    const paused = document.getElementById('docsumPaused').checked;
+    const res = await adminFetch('/whatsapp/api/admin/document-summaries/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ max_parallelism: maxParallelism, target_tokens_per_second: targetRaw === '' ? null : Number(targetRaw), paused }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar configurações.');
+    alert('Configurações salvas!');
+    loadDocSumSettings();
+}
+
+async function loadDocumentSummaries() {
+    loadDocSumSettings();
+    const status = document.getElementById('docsumStatusFilter').value;
+    const url = '/whatsapp/api/admin/document-summaries/queue?limit=100' + (status ? `&status=${status}` : '');
+    const res = await adminFetch(url);
+    if (!res.ok) { document.getElementById('docsumQueueList').innerHTML = '<p style="color:#94a3b8;">Erro ao carregar.</p>'; return; }
+    const data = await res.json();
+    const stats = data.stats || {};
+    document.getElementById('docsumStatPending').textContent = stats.pending ?? 0;
+    document.getElementById('docsumStatProcessing').textContent = stats.processing ?? 0;
+    document.getElementById('docsumStatDone').textContent = stats.done ?? 0;
+    document.getElementById('docsumStatFailed').textContent = stats.failed ?? 0;
+    document.getElementById('docsumStatTps').textContent = (stats.recent_avg_tokens_per_second === null || stats.recent_avg_tokens_per_second === undefined)
+        ? '—' : `${Number(stats.recent_avg_tokens_per_second).toFixed(1)} tok/s`;
+
+    const docs = data.documents || [];
+    const el = document.getElementById('docsumQueueList');
+    if (!docs.length) { el.innerHTML = '<p style="color:#94a3b8;">Nenhum documento ainda.</p>'; return; }
+    el.innerHTML = docs.map(d => `
+        <div style="padding:0.8rem 0; border-bottom:1px solid #334155;">
+            <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                <strong>${esc(d.patient_name || (d.wa_id ? d.wa_id.split('@')[0] : 'Paciente'))}</strong>
+                <span class="status-badge ${DOCSUM_STATUS_CLASS[d.ai_summary_status] || ''}">${DOCSUM_STATUS_LABEL[d.ai_summary_status] || d.ai_summary_status}</span>
+            </div>
+            <div style="font-size:0.78rem; color:#64748b; margin-top:0.15rem;">
+                ${docsumTypeLabel(d)} · ${docsumFmtDateTime(d.captured_at)}${d.ai_summary_tokens ? ` · ${d.ai_summary_tokens} tokens em ${(d.ai_summary_elapsed_ms / 1000).toFixed(1)}s` : ''}
+            </div>
+            ${d.ai_summary_status === 'done' && d.ai_summary ? `<div style="font-size:0.85rem; white-space:pre-wrap; margin-top:0.4rem;">${esc(d.ai_summary)}</div>` : ''}
+            ${d.ai_summary_status === 'failed' && d.ai_summary_error ? `<div style="font-size:0.8rem; color:#f87171; margin-top:0.4rem;">${esc(d.ai_summary_error)}</div>` : ''}
+            ${d.ai_summary_status === 'failed' ? `<button class="btn btn-sm" style="margin-top:0.5rem;" onclick="retryDocSum(${d.id})">Tentar novamente</button>` : ''}
+        </div>
+    `).join('');
+}
+
+async function retryDocSum(id) {
+    const res = await adminFetch(`/whatsapp/api/admin/document-summaries/${id}/retry`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao tentar novamente.');
+    loadDocumentSummaries();
 }
 
 // ---- Tabs ----
@@ -659,6 +781,7 @@ const TAB_TITLES = {
     clients: 'Clientes',
     checklist: 'Checklist',
     health: 'Saúde do Sistema',
+    'document-summaries': 'Resumos de Documentos (IA)',
 };
 
 function switchTab(name) {
@@ -670,6 +793,7 @@ function switchTab(name) {
     if (btn) btn.classList.add('active');
     document.getElementById('contentTitle').textContent = TAB_TITLES[name] || name;
     if (name === 'checklist') populateChecklistClientSelect();
+    if (name === 'document-summaries') loadDocumentSummaries();
 }
 
 // ---- Áreas ----
