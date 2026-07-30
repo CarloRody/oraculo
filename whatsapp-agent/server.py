@@ -4948,7 +4948,7 @@ def cp_create_appointment(consultant_id):
     err = _require_crm_medico(user_id)
     if err: return err
     consultant = get_consultant(consultant_id)
-    return _create_appointment_for_consultant(consultant, request.json or {})
+    return _create_appointment_for_consultant(consultant, request.json or {}, notify_consultant=True)
 
 
 @app.route("/api/client-portal/consultants/<int:consultant_id>", methods=["PATCH"])
@@ -5969,11 +5969,14 @@ def _link_checklist_item_to_appointment(item_id, appointment_id, account_id, con
         conn.close()
 
 
-def _create_appointment_for_consultant(consultant, data):
+def _create_appointment_for_consultant(consultant, data, notify_consultant=False):
     """Corpo comum de criação de agendamento — usado tanto pelo próprio
     consultor (portal por token) quanto pela secretária (client-portal, modo
-    CRM médico). Sempre nasce 'confirmed' direto (notify_consultant=False):
-    quem cria já é quem administra a agenda, não precisa de auto-confirmação."""
+    CRM médico). Sempre nasce 'confirmed' direto. `notify_consultant`
+    controla se o médico recebe o aviso "Novo agendamento" no WhatsApp dele:
+    False quando é o próprio consultor criando pelo portal (não faz sentido
+    se autoavisar), True quando é a secretária criando em nome dele (ver
+    cp_create_appointment) — nesse caso ele não é quem criou e precisa saber."""
     phone = re.sub(r"\D", "", data.get("phone") or "")
     name = (data.get("name") or "").strip()
     subject = (data.get("subject") or "").strip() or None
@@ -6007,7 +6010,7 @@ def _create_appointment_for_consultant(consultant, data):
 
     new_appointment_id = booking_flow.book_appointment(
         consultant, client_contact_id, wa_id, name, scheduled_at,
-        notify_consultant=False, subject=subject, treatment_id=treatment_id,
+        notify_consultant=notify_consultant, subject=subject, treatment_id=treatment_id,
         notify_client=not suppress_patient_notice, duration_minutes=duration_minutes,
     )
     if not new_appointment_id:
