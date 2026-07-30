@@ -982,6 +982,32 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS booking_confirmed_message TEXT;
     """,
+
+    # 43 — resumo automático de documento de paciente via IA local (visão),
+    # e configuração da fila que despacha esses resumos (paralelismo máximo,
+    # velocidade mínima desejada em tokens/s — pra não competir com o chat ao
+    # vivo, que usa o mesmo modelo). ai_summary_status já nasce 'pending' por
+    # DEFAULT, então documentos já armazenados antes desta migração entram na
+    # fila sozinhos, sem UPDATE de backfill.
+    """
+    ALTER TABLE whatsapp_patient_documents
+        ADD COLUMN IF NOT EXISTS ai_summary_status VARCHAR(20) NOT NULL DEFAULT 'pending'
+            CHECK (ai_summary_status IN ('pending', 'processing', 'done', 'failed')),
+        ADD COLUMN IF NOT EXISTS ai_summary TEXT,
+        ADD COLUMN IF NOT EXISTS ai_summary_error TEXT,
+        ADD COLUMN IF NOT EXISTS ai_summary_tokens INTEGER,
+        ADD COLUMN IF NOT EXISTS ai_summary_elapsed_ms INTEGER,
+        ADD COLUMN IF NOT EXISTS ai_summary_completed_at TIMESTAMPTZ;
+
+    CREATE TABLE IF NOT EXISTS whatsapp_ai_summary_settings (
+        id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        max_parallelism INTEGER NOT NULL DEFAULT 1,
+        target_tokens_per_second NUMERIC(6,2),
+        paused BOOLEAN NOT NULL DEFAULT FALSE,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    INSERT INTO whatsapp_ai_summary_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
+    """,
 ]
 
 

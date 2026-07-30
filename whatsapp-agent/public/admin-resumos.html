@@ -1,0 +1,349 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Resumos de Documentos (Admin) | Oráculo</title>
+<style>
+    /* ===== Pulso — mesmo sistema de tokens dos outros portais ===== */
+    :root {
+        --bg:#071619; --surface:#0E2529; --surface-2:#122D31; --surface-3:#16363A;
+        --text:#E7F1EF; --text-muted:#8AA6A2; --border:#1E3A3D; --border-strong:#2A4B4E;
+        --accent:#2CC5B8; --accent-strong:#59D8CB; --vital:#34E0BE; --ember:#F4845F;
+        --on-accent:#052420;
+        --accent-tint:rgba(44,197,184,.12); --vital-tint:rgba(52,224,190,.13);
+        --ok:#3BC98D; --warn:#E0A83A; --crit:#F0736B;
+        --sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+        --mono: ui-monospace, "SF Mono", "Cascadia Code", "Segoe UI Mono", Menlo, Consolas, monospace;
+    }
+    :root[data-theme="light"] {
+        --bg:#EAF0EE; --surface:#FFFFFF; --surface-2:#F4F8F7; --surface-3:#E9F1EF;
+        --text:#0C2226; --text-muted:#5A726F; --border:#D7E4E1; --border-strong:#C3D6D2;
+        --accent:#0E7C7B; --accent-strong:#0B5F5E; --vital:#16B8A0; --ember:#E4724E;
+        --on-accent:#FFFFFF;
+        --accent-tint:rgba(14,124,123,.10); --vital-tint:rgba(22,184,160,.12);
+        --ok:#15926B; --warn:#C08421; --crit:#D2564F;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: var(--sans); background: var(--bg); color: var(--text); min-height: 100vh; }
+    h1 {
+        background: linear-gradient(105deg, var(--accent), var(--vital));
+        -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+        font-size: 1.5rem; letter-spacing: -0.02em;
+    }
+    .subtitle { color: var(--text-muted); margin-bottom: 1rem; font-size: 0.9rem; }
+    .btn {
+        background: var(--accent); border: 1px solid transparent; border-radius: 8px; color: var(--on-accent);
+        padding: 0.6rem 1.2rem; font-size: 0.9rem; font-weight: 600; cursor: pointer;
+        transition: transform .15s ease, box-shadow .15s ease;
+    }
+    .btn:hover { transform: translateY(-1px); box-shadow: 0 8px 20px var(--accent-tint); }
+    .btn:disabled { opacity: 0.6; cursor: default; transform: none; box-shadow: none; }
+    .btn-sm { padding: 0.35rem 0.7rem; font-size: 0.8rem; }
+    .btn-secondary { background: var(--surface-3); color: var(--text); border-color: var(--border-strong); }
+    .btn-secondary:hover { border-color: var(--accent); color: var(--accent); box-shadow: none; }
+
+    .topbar {
+        display: flex; align-items: center; justify-content: space-between; gap: 1rem;
+        padding: 1.1rem 2rem; border-bottom: 1px solid var(--border);
+    }
+    .theme-toggle {
+        background: var(--surface-2); border: 1px solid var(--border-strong); color: var(--text-muted);
+        border-radius: 8px; padding: 0.5rem 0.7rem; font-family: var(--mono); font-size: 0.72rem;
+        letter-spacing: .06em; cursor: pointer; display: flex; align-items: center; gap: 0.5rem;
+        transition: border-color .2s, color .2s;
+    }
+    .theme-toggle:hover { border-color: var(--accent); color: var(--accent); }
+    .topbar-actions { display: flex; gap: 0.6rem; align-items: center; }
+
+    .wrap { max-width: 900px; margin: 0 auto; padding: 1.5rem 2rem 3rem; }
+    .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.5rem; margin-bottom: 1.5rem; }
+    .card h2 { font-size: 1.05rem; margin-bottom: 0.9rem; letter-spacing: -0.01em; }
+    .form-row { display: flex; gap: 0.75rem; flex-wrap: wrap; align-items: flex-end; }
+    .form-group { margin-bottom: 0.8rem; flex: 1 1 180px; min-width: 0; }
+    .form-group label {
+        display: block; font-family: var(--mono); font-size: 0.68rem; color: var(--text-muted);
+        margin-bottom: 0.35rem; text-transform: uppercase; letter-spacing: .1em;
+    }
+    .form-input {
+        background: var(--surface-2); border: 1px solid var(--border-strong); border-radius: 8px;
+        padding: 0.6rem 0.8rem; color: var(--text); font-size: 0.9rem; font-family: var(--sans); width: 100%;
+    }
+    .form-input:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+    .checkbox-row { display: flex; align-items: center; gap: 0.5rem; margin-bottom: 0.8rem; }
+    .checkbox-row input { width: 16px; height: 16px; }
+
+    .stats-grid { display: flex; gap: 1rem; flex-wrap: wrap; }
+    .stat-tile { flex: 1 1 120px; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 0.9rem 1rem; }
+    .stat-tile .n { font-size: 1.5rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+    .stat-tile .l { font-size: 0.72rem; color: var(--text-muted); text-transform: uppercase; letter-spacing: .08em; font-family: var(--mono); }
+
+    .status-badge {
+        display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.24rem 0.6rem; border-radius: 999px;
+        font-family: var(--mono); font-size: 0.68rem; letter-spacing: .05em; font-weight: 600;
+    }
+    .status-badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
+    .status-done { background: color-mix(in srgb, var(--ok) 14%, transparent); color: var(--ok); }
+    .status-processing, .status-pending { background: color-mix(in srgb, var(--warn) 15%, transparent); color: var(--warn); }
+    .status-failed { background: color-mix(in srgb, var(--crit) 14%, transparent); color: var(--crit); }
+
+    .account-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding: 0.9rem 0; border-bottom: 1px solid var(--border); }
+    .account-row:last-child { border-bottom: none; }
+    .empty { color: var(--text-muted); font-size: 0.9rem; padding: 1rem 0; }
+    .error-box { background: color-mix(in srgb, var(--crit) 12%, transparent); border: 1px solid color-mix(in srgb, var(--crit) 40%, transparent); border-radius: 10px; padding: 1rem; color: var(--crit); font-size: 0.9rem; }
+    select.form-input { cursor: pointer; }
+</style>
+</head>
+<body>
+
+<div id="deniedBox" class="card" style="display:none; max-width:420px; margin: 4rem auto;">
+    <h2 style="margin-top:0;">Entrar</h2>
+    <p class="subtitle" style="margin-bottom:1rem;">Página de administração — cole a chave de administrador.</p>
+    <div class="form-group">
+        <label>Chave de administrador</label>
+        <input type="text" class="form-input" id="loginTokenInput" placeholder="Chave de administrador" onkeydown="if(event.key==='Enter') loginWithToken()">
+    </div>
+    <button class="btn" id="loginSubmitBtn" style="width:100%;" onclick="loginWithToken()">Entrar</button>
+    <div id="loginError" class="error-box" style="display:none; margin-top:0.75rem;"></div>
+</div>
+
+<div id="adminRoot" style="display:none;">
+    <div class="topbar">
+        <div>
+            <h1>🤖 Resumos de Documentos</h1>
+            <p class="subtitle" style="margin-bottom:0;">Fila de resumo automático via IA local — configuração e status.</p>
+        </div>
+        <div class="topbar-actions">
+            <button class="theme-toggle" id="themeToggle" onclick="toggleTheme()" aria-label="Alternar tema claro e escuro"><span id="themeIcon">☀</span><span id="themeLabel">Tema claro</span></button>
+            <button class="btn btn-secondary btn-sm" onclick="logout()">Sair</button>
+        </div>
+    </div>
+
+    <div class="wrap">
+        <div class="card">
+            <h2>Configuração</h2>
+            <div class="form-row">
+                <div class="form-group">
+                    <label>Paralelismo máximo</label>
+                    <input type="number" min="1" step="1" class="form-input" id="maxParallelismInput">
+                </div>
+                <div class="form-group">
+                    <label>Velocidade desejada (tokens/s, opcional)</label>
+                    <input type="number" min="0" step="0.1" class="form-input" id="targetTpsInput" placeholder="Sem limite">
+                </div>
+            </div>
+            <div class="checkbox-row">
+                <input type="checkbox" id="pausedInput">
+                <label for="pausedInput" style="margin-bottom:0; text-transform:none; font-family:var(--sans); font-size:0.9rem; letter-spacing:normal; color:var(--text);">Pausar a fila (nenhum documento novo é processado)</label>
+            </div>
+            <button class="btn btn-sm" onclick="saveSettings()">Salvar</button>
+        </div>
+
+        <div class="card">
+            <h2>Status ao vivo</h2>
+            <div class="stats-grid">
+                <div class="stat-tile"><div class="n" id="statPending">—</div><div class="l">Pendente</div></div>
+                <div class="stat-tile"><div class="n" id="statProcessing">—</div><div class="l">Processando</div></div>
+                <div class="stat-tile"><div class="n" id="statDone">—</div><div class="l">Concluído</div></div>
+                <div class="stat-tile"><div class="n" id="statFailed">—</div><div class="l">Falhou</div></div>
+                <div class="stat-tile"><div class="n" id="statTps">—</div><div class="l">Velocidade recente</div></div>
+            </div>
+        </div>
+
+        <div class="card">
+            <h2>Fila</h2>
+            <div class="form-group" style="max-width:220px;">
+                <label>Filtrar por status</label>
+                <select class="form-input" id="statusFilter" onchange="loadQueue()">
+                    <option value="">Todos</option>
+                    <option value="pending">Pendente</option>
+                    <option value="processing">Processando</option>
+                    <option value="done">Concluído</option>
+                    <option value="failed">Falhou</option>
+                </select>
+            </div>
+            <div id="queueList"><p class="empty">Carregando...</p></div>
+        </div>
+    </div>
+</div>
+
+<script>
+const API = window.location.origin + '/whatsapp';
+let ADMIN_KEY = '';
+let refreshTimer = null;
+
+(function initTheme() {
+    const saved = localStorage.getItem('pulso-theme') || 'dark';
+    document.documentElement.setAttribute('data-theme', saved);
+})();
+function syncThemeToggle() {
+    const dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    const icon = document.getElementById('themeIcon');
+    const label = document.getElementById('themeLabel');
+    if (icon) icon.textContent = dark ? '☀' : '☾';
+    if (label) label.textContent = dark ? 'Tema claro' : 'Tema escuro';
+}
+function toggleTheme() {
+    const dark = document.documentElement.getAttribute('data-theme') !== 'light';
+    const next = dark ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-theme', next);
+    localStorage.setItem('pulso-theme', next);
+    syncThemeToggle();
+}
+document.addEventListener('DOMContentLoaded', syncThemeToggle);
+
+function esc(s) {
+    const d = document.createElement('div');
+    d.textContent = s || '';
+    return d.innerHTML;
+}
+
+function logout() {
+    localStorage.removeItem('oraculo_admin_key');
+    window.location.reload();
+}
+
+async function loginWithToken() {
+    const input = document.getElementById('loginTokenInput');
+    const errorEl = document.getElementById('loginError');
+    const btn = document.getElementById('loginSubmitBtn');
+    const key = (input.value || '').trim();
+    errorEl.style.display = 'none';
+    if (!key) return;
+    btn.disabled = true;
+    btn.textContent = 'Entrando...';
+    try {
+        const res = await fetch(API + '/api/admin/whoami', { headers: { 'X-Oraculo-Key': key } });
+        if (!res.ok) throw new Error('invalid');
+        localStorage.setItem('oraculo_admin_key', key);
+        window.location.reload();
+    } catch (e) {
+        errorEl.textContent = 'Chave de administrador inválida.';
+        errorEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+    }
+}
+
+function initAuth() {
+    ADMIN_KEY = localStorage.getItem('oraculo_admin_key') || '';
+    if (!ADMIN_KEY) {
+        document.getElementById('deniedBox').style.display = 'block';
+        return false;
+    }
+    return true;
+}
+
+async function authFetch(url, opts) {
+    opts = opts || {};
+    opts.headers = Object.assign({ 'X-Oraculo-Key': ADMIN_KEY }, opts.headers || {});
+    const res = await fetch(url, opts);
+    if (res.status === 401) {
+        localStorage.removeItem('oraculo_admin_key');
+        window.location.reload();
+    }
+    return res;
+}
+
+function fmtDateTime(iso) {
+    if (!iso) return '';
+    return new Date(iso).toLocaleString('pt-BR');
+}
+
+function fmtTps(v) {
+    return (v === null || v === undefined) ? '—' : `${Number(v).toFixed(1)} tok/s`;
+}
+
+function docTypeLabel(d) {
+    return d.doc_type === 'image' ? '🖼 Imagem' : '📎 Documento';
+}
+
+const STATUS_LABELS = { pending: 'Pendente', processing: 'Processando', done: 'Concluído', failed: 'Falhou' };
+
+async function loadSettings() {
+    const res = await authFetch(API + '/api/admin/document-summaries/settings');
+    if (!res.ok) return;
+    const data = await res.json();
+    const s = data.settings || {};
+    document.getElementById('maxParallelismInput').value = s.max_parallelism ?? 1;
+    document.getElementById('targetTpsInput').value = (s.target_tokens_per_second ?? '') === null ? '' : (s.target_tokens_per_second ?? '');
+    document.getElementById('pausedInput').checked = !!s.paused;
+}
+
+async function saveSettings() {
+    const maxParallelism = Number(document.getElementById('maxParallelismInput').value);
+    const targetRaw = document.getElementById('targetTpsInput').value.trim();
+    const paused = document.getElementById('pausedInput').checked;
+    const body = {
+        max_parallelism: maxParallelism,
+        target_tokens_per_second: targetRaw === '' ? null : Number(targetRaw),
+        paused,
+    };
+    const res = await authFetch(API + '/api/admin/document-summaries/settings', {
+        method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar configurações.');
+    alert('Configurações salvas!');
+    loadSettings();
+}
+
+function renderStats(stats) {
+    document.getElementById('statPending').textContent = stats.pending ?? 0;
+    document.getElementById('statProcessing').textContent = stats.processing ?? 0;
+    document.getElementById('statDone').textContent = stats.done ?? 0;
+    document.getElementById('statFailed').textContent = stats.failed ?? 0;
+    document.getElementById('statTps').textContent = fmtTps(stats.recent_avg_tokens_per_second);
+}
+
+function renderQueue(docs) {
+    const el = document.getElementById('queueList');
+    if (!docs.length) { el.innerHTML = '<p class="empty">Nenhum documento ainda.</p>'; return; }
+    el.innerHTML = docs.map(d => `
+        <div class="account-row">
+            <div style="min-width:0; flex:1;">
+                <div style="display:flex; align-items:center; gap:0.5rem; flex-wrap:wrap;">
+                    <strong>${esc(d.patient_name || (d.wa_id ? d.wa_id.split('@')[0] : 'Paciente'))}</strong>
+                    <span class="status-badge status-${d.ai_summary_status}">${STATUS_LABELS[d.ai_summary_status] || d.ai_summary_status}</span>
+                </div>
+                <div style="font-size:0.78rem; color:var(--text-muted); margin-top:0.15rem;">
+                    ${docTypeLabel(d)} · ${fmtDateTime(d.captured_at)}${d.ai_summary_tokens ? ` · ${d.ai_summary_tokens} tokens em ${(d.ai_summary_elapsed_ms / 1000).toFixed(1)}s` : ''}
+                </div>
+                ${d.ai_summary_status === 'done' && d.ai_summary ? `<div style="font-size:0.85rem; white-space:pre-wrap; margin-top:0.4rem;">${esc(d.ai_summary)}</div>` : ''}
+                ${d.ai_summary_status === 'failed' && d.ai_summary_error ? `<div style="font-size:0.8rem; color:var(--crit); margin-top:0.4rem;">${esc(d.ai_summary_error)}</div>` : ''}
+            </div>
+            ${d.ai_summary_status === 'failed' ? `<button class="btn btn-sm btn-secondary" onclick="retryDocument(${d.id})">Tentar novamente</button>` : ''}
+        </div>
+    `).join('');
+}
+
+async function loadQueue() {
+    const status = document.getElementById('statusFilter').value;
+    const url = API + '/api/admin/document-summaries/queue?limit=100' + (status ? `&status=${status}` : '');
+    const res = await authFetch(url);
+    if (!res.ok) return;
+    const data = await res.json();
+    renderStats(data.stats || {});
+    renderQueue(data.documents || []);
+}
+
+async function retryDocument(id) {
+    const res = await authFetch(API + `/api/admin/document-summaries/${id}/retry`, { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao tentar novamente.');
+    loadQueue();
+}
+
+function init() {
+    if (!initAuth()) return;
+    document.getElementById('adminRoot').style.display = 'block';
+    loadSettings();
+    loadQueue();
+    refreshTimer = setInterval(loadQueue, 10000);
+}
+
+init();
+</script>
+</body>
+</html>

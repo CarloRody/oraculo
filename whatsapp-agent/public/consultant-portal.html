@@ -1535,19 +1535,38 @@ function buildEvoHtml(evoData, contactId, editable) {
         : evoListHtml;
 }
 
+function aiSummaryHtml(d) {
+    if (d.ai_summary_status === 'done' && d.ai_summary) {
+        return `<div style="margin-top:0.35rem;">
+            <div style="font-size:0.75rem; color:#64748b;">🤖 Resumo por IA</div>
+            <div style="font-size:0.82rem; white-space:pre-wrap;">${esc(d.ai_summary)}</div>
+        </div>`;
+    }
+    if (d.ai_summary_status === 'pending' || d.ai_summary_status === 'processing') {
+        return `<div style="font-size:0.75rem; color:#64748b; margin-top:0.35rem;">🤖 Gerando resumo...</div>`;
+    }
+    if (d.ai_summary_status === 'failed') {
+        return `<div style="font-size:0.75rem; color:#f59e0b; margin-top:0.35rem;">🤖 Falha ao gerar resumo</div>`;
+    }
+    return '';
+}
+
 function buildDocsHtml(docsData) {
     const docs = docsData.documents || [];
     return docs.length
         ? docs.map(d => {
             const fileUrl = API + `/patient-documents/${d.id}/file`;
             return `
-            <div style="padding:0.4rem 0; border-bottom:1px solid #1a2744; display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
-                <div>
-                    <div style="font-size:0.82rem;">${docTypeLabel(d)} ${d.original_name ? esc(d.original_name) : ''}</div>
-                    <div style="font-size:0.75rem; color:#64748b;">${fmtDateTime(d.captured_at)}</div>
-                    ${d.caption ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
+            <div style="padding:0.4rem 0; border-bottom:1px solid #1a2744;">
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
+                    <div>
+                        <div style="font-size:0.82rem;">${docTypeLabel(d)} ${d.original_name ? esc(d.original_name) : ''}</div>
+                        <div style="font-size:0.75rem; color:#64748b;">${fmtDateTime(d.captured_at)}</div>
+                        ${d.caption ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
+                    </div>
+                    ${d.status === 'stored' ? `<a class="btn btn-sm" href="${fileUrl}" target="_blank">Abrir</a>` : ''}
                 </div>
-                ${d.status === 'stored' ? `<a class="btn btn-sm" href="${fileUrl}" target="_blank">Abrir</a>` : ''}
+                ${aiSummaryHtml(d)}
             </div>`;
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';

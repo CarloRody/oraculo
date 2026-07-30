@@ -33,6 +33,15 @@ EVOLUTION_CONFIG = CONFIG.get("evolution_api") or {}
 ORACULO_API_CONFIG = CONFIG.get("oraculo_api") or {}
 WHATSAPP_MEDIA_CONFIG = WHATSAPP_CONFIG.get("media") or {}
 
+# Mesmo modelo local (LM Studio) já usado pelo ai_oraculo_saas pro chat — uma
+# única fonte de verdade pra base_url/model, evita duas seções divergindo.
+LLM_CONFIG = CONFIG.get("llm") or {}
+
+# Chave mestra do Painel Admin (mesma usada pelo ai_oraculo_saas/admin.html,
+# ver ai_oraculo_saas/config.py) — reaproveitada aqui pra página nova de
+# administração da fila de resumos de documento.
+ADMIN_API_KEY = CONFIG.get("admin_api_key")
+
 # Tipos aceitos pra anexo de SAÍDA (API pública /api/whatsapp/send e chat
 # manual) — lista separada de WHATSAPP_MEDIA_CONFIG["allowed_mimetypes"]
 # (essa é só pra captura automática de exame vindo do paciente).

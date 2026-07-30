@@ -30,10 +30,12 @@ from flask_cors import CORS
 from werkzeug.utils import secure_filename
 
 import booking_flow
+import document_summary
 import flow_engine
 import receipts_pdf
 import connectors.evolution as evolution
-from config import DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG, WHATSAPP_MEDIA_CONFIG, WHATSAPP_MEDIA_ALLOWED_OUTBOUND
+from config import (ADMIN_API_KEY, DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG,
+                     WHATSAPP_MEDIA_CONFIG, WHATSAPP_MEDIA_ALLOWED_OUTBOUND)
 from connectors.evolution import EvolutionError
 from db_migrations import migrate_if_needed
 
@@ -1472,7 +1474,8 @@ def get_patient_documents_for_contact(contact_id):
         cur = conn.cursor()
         cur.execute(
             """SELECT d.id, d.doc_type, d.caption, d.status, d.failure_reason, d.captured_at,
-                      d.appointment_id, f.original_name, f.mime_type, f.size_bytes
+                      d.appointment_id, f.original_name, f.mime_type, f.size_bytes,
+                      d.ai_summary_status, d.ai_summary
                FROM whatsapp_patient_documents d
                LEFT JOIN whatsapp_files f ON f.id = d.file_id
                WHERE d.contact_id = %s AND d.hidden = FALSE
@@ -1480,7 +1483,8 @@ def get_patient_documents_for_contact(contact_id):
             (contact_id,),
         )
         cols = ["id", "doc_type", "caption", "status", "failure_reason", "captured_at",
-                "appointment_id", "original_name", "mime_type", "size_bytes"]
+                "appointment_id", "original_name", "mime_type", "size_bytes",
+                "ai_summary_status", "ai_summary"]
         rows = []
         for r in cur.fetchall():
             d = dict(zip(cols, r))
@@ -3882,6 +3886,11 @@ def secretary_panel_page():
     return send_from_directory(PUBLIC_DIR, "painel-secretaria.html")
 
 
+@app.route("/admin/resumos-documentos")
+def admin_document_summaries_page():
+    return send_from_directory(PUBLIC_DIR, "admin-resumos.html")
+
+
 @app.route("/health")
 def health():
     return jsonify({"ok": True, "service": "whatsapp-agent"})
@@ -4387,6 +4396,16 @@ def _require_client():
     if not user_id:
         return None, (jsonify({"ok": False, "message": "Chave de acesso inválida"}), 401)
     return user_id, None
+
+
+def _require_admin():
+    """Guard da página/rotas de administração da fila de resumos de
+    documento — mesma admin_api_key já usada pelo Painel Admin do
+    ai_oraculo_saas (config.yaml, raiz do monorepo), não a chave de cliente."""
+    key = request.headers.get("X-Oraculo-Key")
+    if not ADMIN_API_KEY or key != ADMIN_API_KEY:
+        return jsonify({"ok": False, "message": "Chave de administrador inválida"}), 401
+    return None
 
 
 def _require_crm_medico(user_id):
@@ -6875,11 +6894,86 @@ def webhook_evolution():
     return jsonify({"ok": True})
 
 
+# ---------------------------------------------------------------------------
+# Administração — fila de resumo automático de documento via IA local
+# (connectors/document_ai.py + document_summary.py). Página nova em
+# /admin/resumos-documentos, autenticada pela mesma admin_api_key do Painel
+# Admin do ai_oraculo_saas — não a chave de cliente (_require_client).
+# ---------------------------------------------------------------------------
+
+@app.route("/api/admin/whoami", methods=["GET"])
+def api_admin_whoami():
+    err = _require_admin()
+    if err: return err
+    return jsonify({"ok": True})
+
+
+@app.route("/api/admin/document-summaries/settings", methods=["GET"])
+def api_admin_get_summary_settings():
+    err = _require_admin()
+    if err: return err
+    return jsonify({"settings": document_summary.get_ai_summary_settings()})
+
+
+@app.route("/api/admin/document-summaries/settings", methods=["PUT"])
+def api_admin_set_summary_settings():
+    err = _require_admin()
+    if err: return err
+    data = request.json or {}
+    current = document_summary.get_ai_summary_settings()
+
+    max_parallelism = data.get("max_parallelism", current["max_parallelism"])
+    try:
+        max_parallelism = int(max_parallelism)
+    except (TypeError, ValueError):
+        return jsonify({"ok": False, "message": "max_parallelism precisa ser um número inteiro."}), 400
+    if max_parallelism < 1:
+        return jsonify({"ok": False, "message": "max_parallelism precisa ser pelo menos 1."}), 400
+
+    target = data.get("target_tokens_per_second", current["target_tokens_per_second"])
+    if target is not None and target != "":
+        try:
+            target = float(target)
+        except (TypeError, ValueError):
+            return jsonify({"ok": False, "message": "target_tokens_per_second precisa ser um número."}), 400
+        if target <= 0:
+            return jsonify({"ok": False, "message": "target_tokens_per_second precisa ser maior que zero (ou vazio, pra não limitar)."}), 400
+    else:
+        target = None
+
+    paused = bool(data.get("paused", current["paused"]))
+
+    document_summary.set_ai_summary_settings(max_parallelism, target, paused)
+    return jsonify({"ok": True, "settings": document_summary.get_ai_summary_settings()})
+
+
+@app.route("/api/admin/document-summaries/queue", methods=["GET"])
+def api_admin_list_summary_queue():
+    err = _require_admin()
+    if err: return err
+    status = request.args.get("status") or None
+    limit = request.args.get("limit", 50, type=int)
+    return jsonify({
+        "documents": document_summary.list_queue(status=status, limit=limit),
+        "stats": document_summary.get_queue_stats(),
+    })
+
+
+@app.route("/api/admin/document-summaries/<int:doc_id>/retry", methods=["POST"])
+def api_admin_retry_summary(doc_id):
+    err = _require_admin()
+    if err: return err
+    if not document_summary.retry_document(doc_id):
+        return jsonify({"ok": False, "message": "Documento não encontrado ou não está com falha."}), 404
+    return jsonify({"ok": True})
+
+
 if __name__ == "__main__":
     migrate_if_needed()
     server_cfg = WHATSAPP_CONFIG.get("server") or {}
     threading.current_thread().name = "whatsapp-agent-main"
     threading.Thread(target=_reminder_loop, daemon=True, name="reminder-loop").start()
+    threading.Thread(target=document_summary.document_summary_loop, daemon=True, name="document-summary-loop").start()
     app.run(
         host=server_cfg.get("host", "0.0.0.0"),
         port=server_cfg.get("port", 5005),
