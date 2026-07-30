@@ -327,6 +327,16 @@ def update_account_client(account_id, user_id):
         conn.close()
 
 
+def set_account_label(account_id, label):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_accounts SET label = %s WHERE id = %s", (label, account_id))
+        conn.commit()
+    finally:
+        conn.close()
+
+
 REGISTRATION_FIELDS = (
     "document_type", "document_number", "company_name", "company_address",
     "responsible_name", "responsible_cpf", "responsible_address",
@@ -4697,6 +4707,21 @@ def cp_disconnect_account(account_id):
     if _account_owner(account_id) != user_id:
         return _not_found("Conta não encontrada")
     return api_disconnect_account(account_id)
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/label", methods=["PATCH"])
+def cp_set_account_label(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    label = ((request.json or {}).get("label") or "").strip()
+    if not label:
+        return jsonify({"ok": False, "message": "O nome da conta não pode ficar em branco."}), 400
+    if len(label) > 100:
+        return jsonify({"ok": False, "message": "O nome da conta pode ter no máximo 100 caracteres."}), 400
+    set_account_label(account_id, label)
+    return jsonify({"ok": True, "label": label})
 
 
 @app.route("/api/client-portal/accounts/<int:account_id>/branding", methods=["GET"])

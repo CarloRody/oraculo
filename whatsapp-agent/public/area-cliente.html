@@ -805,6 +805,7 @@ async function renderAccounts() {
             <div class="account-info">
                 <div class="account-logo" id="acctLogo-${a.id}">${esc((a.label || '?').charAt(0).toUpperCase())}</div>
                 <strong>${esc(a.label)}</strong>
+                <button class="btn btn-sm btn-secondary" onclick="renameAccount(${a.id})" title="Renomear conta">✏️</button>
                 <span class="status-badge status-${a.status}">${statusLabel(a.status)}</span>
             </div>
             <div class="account-actions">
@@ -830,6 +831,20 @@ async function loadAccountLogoInto(accountId, el) {
         el.classList.add('has-img');
         el.textContent = '';
     } catch (e) { /* mantém o monograma */ }
+}
+
+async function renameAccount(id) {
+    const acc = cachedAccounts.find(a => a.id === id);
+    const novo = prompt('Novo nome da conta:', acc ? acc.label : '');
+    if (novo === null) return;
+    const label = novo.trim();
+    if (!label) return alert('O nome não pode ficar em branco.');
+    const res = await authFetch(API + `/api/client-portal/accounts/${id}/label`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ label }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao renomear conta.');
+    await renderAccounts();
 }
 
 async function disconnectAccount(id) {
