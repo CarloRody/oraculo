@@ -272,7 +272,16 @@
 </head>
 <body id="app">
 
-<div id="deniedBox" style="display:none; max-width:520px; margin: 3rem auto;" class="error-box"></div>
+<div id="deniedBox" style="display:none; max-width:420px; margin: 3rem auto;" class="card">
+    <h2 style="margin-top:0;">Entrar</h2>
+    <p class="subtitle" style="margin-bottom:1rem;">Cole sua chave de acesso pra entrar direto na Área do Cliente.</p>
+    <div class="form-group">
+        <label>Chave de acesso</label>
+        <input type="text" class="form-input" id="loginTokenInput" placeholder="Sua chave de acesso" onkeydown="if(event.key==='Enter') loginWithToken()">
+    </div>
+    <button class="btn" id="loginSubmitBtn" style="width:100%;" onclick="loginWithToken()">Entrar</button>
+    <div id="loginError" class="error-box" style="display:none; margin-top:0.75rem;"></div>
+</div>
 
 <div id="portalRoot" class="app-shell" style="display:none;">
 
@@ -615,7 +624,29 @@ function esc(s) {
 
 function logout() {
     localStorage.removeItem('oraculo_api_key');
-    window.location.href = SAAS + '/index.html';
+    window.location.reload();
+}
+
+async function loginWithToken() {
+    const input = document.getElementById('loginTokenInput');
+    const errorEl = document.getElementById('loginError');
+    const btn = document.getElementById('loginSubmitBtn');
+    const key = (input.value || '').trim();
+    errorEl.style.display = 'none';
+    if (!key) return;
+    btn.disabled = true;
+    btn.textContent = 'Entrando...';
+    try {
+        const res = await fetch(API + '/api/client-portal/accounts', { headers: { 'X-Oraculo-Key': key } });
+        if (!res.ok) throw new Error('invalid');
+        localStorage.setItem('oraculo_api_key', key);
+        window.location.reload();
+    } catch (e) {
+        errorEl.textContent = 'Chave de acesso inválida. Confira e tente novamente.';
+        errorEl.style.display = 'block';
+        btn.disabled = false;
+        btn.textContent = 'Entrar';
+    }
 }
 
 function openHelp() { window.open(SAAS + '/ajuda.html', '_blank'); }
@@ -643,8 +674,6 @@ function initAuth() {
     API_KEY = localStorage.getItem('oraculo_api_key') || '';
     if (!API_KEY) {
         document.getElementById('deniedBox').style.display = 'block';
-        document.getElementById('deniedBox').innerHTML =
-            `Acesso inválido. Volte ao <a href="${SAAS}/index.html" style="color:#60a5fa;">portal do Oráculo</a> e entre novamente com sua chave de acesso.`;
         return false;
     }
     return true;
