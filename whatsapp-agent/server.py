@@ -4400,12 +4400,18 @@ def _require_client():
 
 def _require_admin():
     """Guard da página/rotas de administração da fila de resumos de
-    documento — mesma admin_api_key já usada pelo Painel Admin do
-    ai_oraculo_saas (config.yaml, raiz do monorepo), não a chave de cliente."""
+    documento — aceita a admin_api_key de verdade OU qualquer chave de
+    cliente válida, mesmo padrão do guard /admin/* do ai_oraculo_saas
+    (api/server.py:_require_admin_key_for_admin_routes): quem não deveria
+    ver o Painel Admin já é barrado no cadastro de clientes/páginas
+    liberadas, não nesta camada — replicado aqui pra reaproveitar a mesma
+    sessão já logada, sem pedir a admin_api_key de novo."""
     key = request.headers.get("X-Oraculo-Key")
-    if not ADMIN_API_KEY or key != ADMIN_API_KEY:
-        return jsonify({"ok": False, "message": "Chave de administrador inválida"}), 401
-    return None
+    if ADMIN_API_KEY and key == ADMIN_API_KEY:
+        return None
+    if key and resolve_client_from_request():
+        return None
+    return jsonify({"ok": False, "message": "Chave de acesso inválida"}), 401
 
 
 def _require_crm_medico(user_id):
