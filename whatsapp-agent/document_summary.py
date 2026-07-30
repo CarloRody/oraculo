@@ -161,16 +161,17 @@ def _claim_next_pending(limit):
         conn.close()
 
 
-def mark_summary_done(doc_id, text, tokens, elapsed_seconds):
+def mark_summary_done(doc_id, text, prompt_tokens, completion_tokens, elapsed_seconds):
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """UPDATE whatsapp_patient_documents
                SET ai_summary_status = 'done', ai_summary = %s, ai_summary_tokens = %s,
+                   ai_summary_prompt_tokens = %s,
                    ai_summary_elapsed_ms = %s, ai_summary_error = NULL, ai_summary_completed_at = NOW()
                WHERE id = %s""",
-            (text, tokens, int(elapsed_seconds * 1000), doc_id),
+            (text, completion_tokens, prompt_tokens, int(elapsed_seconds * 1000), doc_id),
         )
         conn.commit()
     finally:
@@ -284,8 +285,9 @@ def _process_one_document(doc_id):
         else:
             images = [(raw_bytes, doc.get("mime_type") or "image/jpeg")]
 
-        text, tokens, elapsed = document_ai.summarize_document(images)
-        mark_summary_done(doc_id, text, tokens, elapsed)
+        text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_document(images)
+        mark_summary_done(doc_id, text, prompt_tokens, completion_tokens, elapsed)
+        server.report_document_ai_usage(doc["account_id"], prompt_tokens, completion_tokens)
     except Exception as e:
         mark_summary_failed(doc_id, str(e))
         account_id = doc.get("account_id") if doc else None

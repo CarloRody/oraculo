@@ -1008,6 +1008,16 @@ MIGRATIONS = [
     );
     INSERT INTO whatsapp_ai_summary_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING;
     """,
+
+    # 44 — o resumo de documento agora é cobrado do saldo do cliente (ver
+    # report_document_ai_usage/document_ai_pricing no ai_oraculo_saas), por
+    # 1k tokens somando enviados+recebidos. ai_summary_tokens continua sendo
+    # só completion_tokens (usado pelo throttle da fila,
+    # _recent_avg_tokens_per_second) — prompt_tokens ganha coluna própria
+    # pra não misturar os dois significados.
+    """
+    ALTER TABLE whatsapp_patient_documents ADD COLUMN IF NOT EXISTS ai_summary_prompt_tokens INTEGER;
+    """,
 ]
 
 

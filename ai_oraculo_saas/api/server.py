@@ -862,6 +862,32 @@ def unrelated_message_pricing(user_id):
         return False, None
 
 
+def document_ai_pricing(user_id):
+    """Preço por 1k tokens (enviados + recebidos) do resumo de documento por
+    IA, conforme o plano do cliente — None = não cobra (plans.price_document_ai_per_1k_tokens
+    começa NULL)."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT p.price_document_ai_per_1k_tokens
+               FROM users u JOIN plans p ON p.id = u.plan_id
+               WHERE u.id = %s""",
+            (user_id,)
+        )
+        row = cur.fetchone()
+        conn.close()
+        if not row or row[0] is None:
+            return None
+        return float(row[0])
+    except Exception as e:
+        if conn: conn.close()
+        print(f"ERRO document_ai_pricing: {e}")
+        return None
+
+
 def log_whatsapp_message_usage(user_id, area_id, direction, price_charged, wa_account_id=None):
     """Grava uma linha de whatsapp_message_usage — nunca levanta, falha aqui
     não deve derrubar o envio/recebimento que já aconteceu de verdade."""
@@ -1565,6 +1591,33 @@ def api_whatsapp_sent_usage():
 
     log_whatsapp_message_usage(user_id, None, 'sent', price_charged)
     return jsonify({"ok": True, "charged": price_charged is not None})
+
+
+@app.route('/api/whatsapp/document-ai-usage', methods=['POST'])
+def api_whatsapp_document_ai_usage():
+    """Chamado servidor-a-servidor pelo whatsapp-agent quando termina de
+    resumir um documento de paciente pelo modelo de visão local — cobra por
+    token (prompt + completion), conforme plans.price_document_ai_per_1k_tokens
+    do cliente. Mesma autenticação X-Oraculo-Key das outras rotas de uso."""
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida ou ausente"}), 401
+
+    data = request.get_json() or {}
+    tokens_input = int(data.get('tokens_input') or 0)
+    tokens_output = int(data.get('tokens_output') or 0)
+
+    price = document_ai_pricing(user_id)
+    charged = None
+    if price:
+        cost = round((tokens_input + tokens_output) / 1000 * price, 4)
+        new_balance = apply_credit_transaction(
+            user_id, -cost, 'consumption', "Resumo de documento (IA)",
+            tokens_input=tokens_input, tokens_output=tokens_output)
+        if new_balance is not None:
+            charged = cost
+
+    return jsonify({"ok": True, "charged": charged})
 
 
 @app.route('/api/agent-research', methods=['POST'])
@@ -2628,7 +2681,8 @@ def admin_list_plans():
         cur.execute(
             """SELECT p.id, p.name, p.description, p.model_id, m.name,
                       p.charge_unrelated_received_messages, p.price_per_unrelated_message, p.booking_mode,
-                      p.whatsapp_context_tokens, p.pesquisa_context_tokens, p.consultores_mode
+                      p.whatsapp_context_tokens, p.pesquisa_context_tokens, p.consultores_mode,
+                      p.price_document_ai_per_1k_tokens
                FROM plans p LEFT JOIN ai_models m ON m.id = p.model_id ORDER BY p.name"""
         )
         plans = [{
@@ -2638,7 +2692,8 @@ def admin_list_plans():
             "booking_mode": r[7],
             "whatsapp_context_tokens": r[8],
             "pesquisa_context_tokens": r[9],
-            "consultores_mode": r[10]
+            "consultores_mode": r[10],
+            "price_document_ai_per_1k_tokens": float(r[11]) if r[11] is not None else None
         } for r in cur.fetchall()]
 
         for plan in plans:
@@ -2711,6 +2766,7 @@ def admin_create_plan():
         return jsonify({"error": "consultores_mode inválido"}), 400
     whatsapp_context_tokens = data.get('whatsapp_context_tokens')
     pesquisa_context_tokens = data.get('pesquisa_context_tokens')
+    price_document_ai_per_1k_tokens = data.get('price_document_ai_per_1k_tokens')
 
     conn = get_db_connection()
     if not conn:
@@ -2718,9 +2774,9 @@ def admin_create_plan():
     try:
         cur = conn.cursor()
         cur.execute(
-            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
-            (name, description, model_id, charge_unrelated, unrelated_price, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens)
+            """INSERT INTO plans (name, description, model_id, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens, price_document_ai_per_1k_tokens)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id""",
+            (name, description, model_id, charge_unrelated, unrelated_price, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens, price_document_ai_per_1k_tokens)
         )
         plan_id = cur.fetchone()[0]
         _replace_plan_area_pricing(cur, plan_id, data.get('areas'))
@@ -2778,6 +2834,8 @@ def admin_update_plan(plan_id):
             fields['whatsapp_context_tokens'] = data.get('whatsapp_context_tokens')
         if 'pesquisa_context_tokens' in data:
             fields['pesquisa_context_tokens'] = data.get('pesquisa_context_tokens')
+        if 'price_document_ai_per_1k_tokens' in data:
+            fields['price_document_ai_per_1k_tokens'] = data.get('price_document_ai_per_1k_tokens')
 
         if fields:
             set_clause = ", ".join(f"{k} = %s" for k in fields)

@@ -40,7 +40,7 @@ class DocumentAIError(Exception):
 
 def summarize_document(images, prompt=None):
     """images: lista de (bytes, mime_type), uma entrada por página/imagem.
-    Retorna (texto_resumo, completion_tokens, elapsed_seconds)."""
+    Retorna (texto_resumo, prompt_tokens, completion_tokens, elapsed_seconds)."""
     content = [{"type": "text", "text": prompt or DEFAULT_SUMMARY_PROMPT}]
     for raw_bytes, mime_type in images:
         b64 = base64.b64encode(raw_bytes).decode("ascii")
@@ -67,8 +67,9 @@ def summarize_document(images, prompt=None):
     data = resp.json()
     try:
         text = data["choices"][0]["message"]["content"]
-        tokens = data["usage"]["completion_tokens"]
+        prompt_tokens = data["usage"]["prompt_tokens"]
+        completion_tokens = data["usage"]["completion_tokens"]
     except (KeyError, IndexError, TypeError) as e:
         raise DocumentAIError(f"Resposta inesperada do modelo de IA: {e} — corpo: {str(data)[:300]}") from e
 
-    return text, tokens, elapsed
+    return text, prompt_tokens, completion_tokens, elapsed

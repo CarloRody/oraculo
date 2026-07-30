@@ -91,6 +91,12 @@
         .form-group label { display: block; color: #94a3b8; margin-bottom: 0.5rem; font-size: 0.9rem; }
         .form-input { background: #0f172a; border: 1px solid #334155; color: #e0e0e0; padding: 0.6rem 1rem; border-radius: 6px; width: 100%; font-size: 0.95rem; }
         .form-input:focus { outline: none; border-color: #60a5fa; }
+        .form-section { border-top: 1px solid #334155; margin-top: 1.25rem; padding-top: 1.1rem; }
+        .form-section:first-of-type { border-top: none; margin-top: 0; padding-top: 0; }
+        .form-section-title { color: #60a5fa; font-size: 0.8rem; font-weight: 600; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 0.35rem; }
+        .form-section-hint { color: #64748b; font-size: 0.8rem; margin-bottom: 0.75rem; }
+        .plan-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.6rem; }
+        .plan-badge { background: #0f172a; border: 1px solid #334155; color: #94a3b8; font-size: 0.75rem; padding: 0.2rem 0.55rem; border-radius: 999px; white-space: nowrap; }
 
         /* Modal */
         .modal-overlay { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.6); z-index: 100; justify-content: center; align-items: center; }
@@ -512,53 +518,90 @@
     <div class="modal" style="max-width:640px;">
         <h2 id="planModalTitle">Novo Plano</h2>
         <input type="hidden" id="editPlanId">
-        <div class="form-group">
-            <label>Nome do Plano</label>
-            <input type="text" class="form-input" id="planName" placeholder="Ex: Pro, Mín, Teste...">
+
+        <div class="form-section">
+            <div class="form-section-title">Identificação</div>
+            <div class="form-group">
+                <label>Nome do Plano</label>
+                <input type="text" class="form-input" id="planName" placeholder="Ex: Pro, Mín, Teste...">
+            </div>
+            <div class="form-group">
+                <label>Descrição <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
+                <input type="text" class="form-input" id="planDescription" placeholder="Ex: Plano padrão para clientes novos">
+            </div>
         </div>
-        <div class="form-group">
-            <label>Descrição <span style="font-weight:normal; color:#64748b;">(opcional)</span></label>
-            <input type="text" class="form-input" id="planDescription" placeholder="Ex: Plano padrão para clientes novos">
+
+        <div class="form-section">
+            <div class="form-section-title">Modelo de IA e cobrança de chat</div>
+            <div class="form-group">
+                <label>Modelo de IA <span style="font-weight:normal; color:#64748b;">(define qual API responde e quanto é debitado do saldo do cliente)</span></label>
+                <select class="form-input" id="planModelId">
+                    <option value="">Nenhum (usa a configuração global, sem cobrança de crédito)</option>
+                </select>
+            </div>
         </div>
-        <div class="form-group">
-            <label>Modelo de IA <span style="font-weight:normal; color:#64748b;">(define qual API responde e quanto é debitado do saldo do cliente)</span></label>
-            <select class="form-input" id="planModelId">
-                <option value="">Nenhum (usa a configuração global, sem cobrança de crédito)</option>
-            </select>
+
+        <div class="form-section">
+            <div class="form-section-title">Áreas de conhecimento (RAG)</div>
+            <p class="form-section-hint">Cada área é uma base de conhecimento pesquisável. Cota mensal limita tokens de busca (vazio = ilimitado); preço por 1k tokens cobra o uso da busca; preço por mensagem cobra o envio pago de WhatsApp vinculado a essa área específica.</p>
+            <table>
+                <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th><th>R$ / msg WhatsApp enviada</th><th></th></tr></thead>
+                <tbody id="plan-areas-table-body"></tbody>
+            </table>
+            <div style="display:flex; gap:0.5rem; align-items:center; margin:0.75rem 0;">
+                <select class="form-input" id="planAddAreaSelect" style="flex:1;"><option value="">Selecione uma área...</option></select>
+                <button type="button" class="btn btn-sm" onclick="addAreaToPlan()">+ Adicionar Área</button>
+            </div>
         </div>
-        <table>
-            <thead><tr><th>Área</th><th>Cota mensal (tokens)</th><th>R$ / 1k tokens</th><th>R$ / msg WhatsApp enviada</th><th></th></tr></thead>
-            <tbody id="plan-areas-table-body"></tbody>
-        </table>
-        <div style="display:flex; gap:0.5rem; align-items:center; margin:0.75rem 0;">
-            <select class="form-input" id="planAddAreaSelect" style="flex:1;"><option value="">Selecione uma área...</option></select>
-            <button type="button" class="btn btn-sm" onclick="addAreaToPlan()">+ Adicionar Área</button>
+
+        <div class="form-section">
+            <div class="form-section-title">WhatsApp — mensagens fora de área</div>
+            <p class="form-section-hint">Cobra mensagens numa conexão de WhatsApp sem nenhuma área vinculada — diferente do preço por área acima, que só vale pra conexões ligadas a uma base de conhecimento.</p>
+            <div class="form-group">
+                <label style="display:flex; align-items:center; gap:0.5rem; font-weight:normal; cursor:pointer;">
+                    <input type="checkbox" id="planChargeUnrelated" onchange="document.getElementById('planUnrelatedPrice').disabled = !this.checked;">
+                    Cobrar mensagens WhatsApp recebidas em conexões sem área vinculada
+                </label>
+                <input type="number" step="0.0001" min="0" class="form-input" id="planUnrelatedPrice" placeholder="R$ por mensagem recebida" style="margin-top:0.4rem; max-width:220px;" disabled>
+            </div>
         </div>
-        <div class="form-group">
-            <label style="display:flex; align-items:center; gap:0.5rem; font-weight:normal; cursor:pointer;">
-                <input type="checkbox" id="planChargeUnrelated" onchange="document.getElementById('planUnrelatedPrice').disabled = !this.checked;">
-                Cobrar mensagens WhatsApp recebidas em conexões sem área vinculada
-            </label>
-            <input type="number" step="0.01" class="form-input" id="planUnrelatedPrice" placeholder="R$ por mensagem recebida" style="margin-top:0.4rem; max-width:220px;" disabled>
+
+        <div class="form-section">
+            <div class="form-section-title">WhatsApp — resumo de documentos por IA</div>
+            <p class="form-section-hint">Cobra pelos tokens (enviados + recebidos) quando o sistema resume documentos que o paciente manda pelo WhatsApp — exames, receitas, laudos. Vazio = não cobra.</p>
+            <div class="form-group">
+                <label>R$ / 1k tokens</label>
+                <input type="number" step="0.0001" min="0" class="form-input" id="planDocumentAiPrice" placeholder="Ex: 0.05 — vazio = não cobra" style="max-width:220px;">
+            </div>
         </div>
-        <div class="form-group">
-            <label>Agenda de consultores (whatsapp-agent)</label>
-            <select class="form-input" id="planBookingMode" style="max-width:420px;">
-                <option value="none">Desativada</option>
-                <option value="consultores:agendamento">Consultores — agendamento automático (fluxo fixo: profissional, horário, confirmação)</option>
-                <option value="consultores:fluxo">Consultores — fluxo de atendimento configurável (construtor de fluxo)</option>
-                <option value="crm_medico">CRM médico — painel da secretária + checklist, sem agendamento direto do paciente</option>
-            </select>
-            <p style="color:#64748b; font-size:0.8rem; margin-top:0.3rem;">As duas opções de Consultores são mutuamente exclusivas — nunca rodam juntas na mesma conta.</p>
+
+        <div class="form-section">
+            <div class="form-section-title">Agenda de consultores</div>
+            <div class="form-group">
+                <label>Agenda de consultores (whatsapp-agent)</label>
+                <select class="form-input" id="planBookingMode" style="max-width:420px;">
+                    <option value="none">Desativada</option>
+                    <option value="consultores:agendamento">Consultores — agendamento automático (fluxo fixo: profissional, horário, confirmação)</option>
+                    <option value="consultores:fluxo">Consultores — fluxo de atendimento configurável (construtor de fluxo)</option>
+                    <option value="crm_medico">CRM médico — painel da secretária + checklist, sem agendamento direto do paciente</option>
+                </select>
+                <p style="color:#64748b; font-size:0.8rem; margin-top:0.3rem;">As duas opções de Consultores são mutuamente exclusivas — nunca rodam juntas na mesma conta.</p>
+            </div>
         </div>
-        <div class="form-group">
-            <label>Contexto de conversa — WhatsApp (tokens, vazio = sem contexto)</label>
-            <input type="number" min="0" step="1" class="form-input" id="planWhatsappContext" placeholder="Ex: 1000" style="max-width:220px;">
+
+        <div class="form-section">
+            <div class="form-section-title">Contexto de conversa (memória)</div>
+            <p class="form-section-hint">Quantos tokens de histórico o assistente lembra por atendimento — não confundir com a cota de tokens das áreas de conhecimento acima, que é sobre busca (RAG).</p>
+            <div class="form-group">
+                <label>Contexto de conversa — WhatsApp (tokens, vazio = sem contexto)</label>
+                <input type="number" min="0" step="1" class="form-input" id="planWhatsappContext" placeholder="Ex: 1000" style="max-width:220px;">
+            </div>
+            <div class="form-group">
+                <label>Contexto de conversa — Pesquisas (tokens, vazio = sem contexto)</label>
+                <input type="number" min="0" step="1" class="form-input" id="planPesquisaContext" placeholder="Ex: 1000" style="max-width:220px;">
+            </div>
         </div>
-        <div class="form-group">
-            <label>Contexto de conversa — Pesquisas (tokens, vazio = sem contexto)</label>
-            <input type="number" min="0" step="1" class="form-input" id="planPesquisaContext" placeholder="Ex: 1000" style="max-width:220px;">
-        </div>
+
         <div class="modal-actions">
             <button class="btn btn-danger" onclick="closePlanModal()">Cancelar</button>
             <button class="btn" onclick="savePlan()">Salvar</button>
@@ -1526,6 +1569,40 @@ async function deactivateModel(id, name) {
 // ---- Planos ----
 let allPlans = [];
 
+const PLAN_BOOKING_MODE_LABEL = {
+    'crm_medico': '🗓 CRM médico',
+};
+
+function planBookingModeBadge(p) {
+    if (p.booking_mode === 'crm_medico') return PLAN_BOOKING_MODE_LABEL.crm_medico;
+    if (p.booking_mode === 'consultores') {
+        return p.consultores_mode === 'fluxo' ? '🗓 Consultores — fluxo' : '🗓 Consultores — agendamento';
+    }
+    return null;
+}
+
+// Resume, em badges curtas, as configurações que hoje só aparecem dentro do
+// modal de edição — sem isso, agenda/contexto/preços fora-de-área/preço do
+// resumo IA ficavam invisíveis até clicar em "Editar" (motivo do pedido de
+// deixar o cadastro de planos mais visível). Plano simples sem nada disso
+// configurado continua com o card limpo, sem badge nenhuma.
+function planBadgesHtml(p) {
+    const badges = [];
+    const bookingBadge = planBookingModeBadge(p);
+    if (bookingBadge) badges.push(bookingBadge);
+    if (p.charge_unrelated_received_messages && p.price_per_unrelated_message != null) {
+        badges.push(`💬 R$${p.price_per_unrelated_message}/msg fora de área`);
+    }
+    if (p.price_document_ai_per_1k_tokens != null) {
+        badges.push(`🤖 R$${p.price_document_ai_per_1k_tokens}/1k tokens — resumo IA`);
+    }
+    if (p.whatsapp_context_tokens != null || p.pesquisa_context_tokens != null) {
+        badges.push(`🧠 ctx: ${p.whatsapp_context_tokens ?? '—'} / ${p.pesquisa_context_tokens ?? '—'}`);
+    }
+    if (!badges.length) return '';
+    return `<div class="plan-badges">${badges.map(b => `<span class="plan-badge">${esc(b)}</span>`).join('')}</div>`;
+}
+
 async function loadPlans() {
     try {
         const res = await adminFetch(ADMIN_API + '/admin/plans');
@@ -1542,6 +1619,7 @@ async function loadPlans() {
                 <h3>${esc(p.name)}</h3>
                 <p>${p.description ? esc(p.description) + ' • ' : ''}${p.user_count} cliente(s)${p.model_name ? ` • Modelo: ${esc(p.model_name)}` : ' • Sem modelo (sem cobrança de crédito)'}</p>
                 <p style="color:#64748b; font-size:0.85rem;">${areasSummary}</p>
+                ${planBadgesHtml(p)}
                 <div style="margin-top:0.75rem;">
                     <button class="btn btn-sm" onclick="showPlanModal(${p.id})">Editar</button>
                     <button class="btn btn-sm" onclick="duplicatePlan(${p.id})">Duplicar</button>
@@ -1560,9 +1638,9 @@ function planAreaRowHtml(area, s) {
     const ownerTag = area.owner_user_id ? ` <span style="color:#a78bfa; font-size:0.75rem;">🔒 ${esc(area.owner_email)}</span>` : '';
     return `<tr id="planAreaRow_${area.id}">
         <td>${esc(area.name)}${ownerTag}</td>
-        <td><input type="number" class="form-input" id="planQuota_${area.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
-        <td><input type="number" step="0.01" class="form-input" id="planPrice_${area.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
-        <td><input type="number" step="0.01" class="form-input" id="planMsgPrice_${area.id}" value="${s.price_per_message_sent ?? ''}" placeholder="bloqueado" style="width:110px;"></td>
+        <td><input type="number" min="0" step="1" class="form-input" id="planQuota_${area.id}" value="${s.monthly_token_quota ?? ''}" placeholder="ilimitado" style="width:120px;"></td>
+        <td><input type="number" min="0" step="0.0001" class="form-input" id="planPrice_${area.id}" value="${s.price_per_1k_tokens ?? ''}" placeholder="—" style="width:100px;"></td>
+        <td><input type="number" min="0" step="0.0001" class="form-input" id="planMsgPrice_${area.id}" value="${s.price_per_message_sent ?? ''}" placeholder="bloqueado" style="width:110px;"></td>
         <td><button type="button" class="btn btn-sm btn-danger" title="Remover esta área do plano" onclick="removeAreaFromPlan(${area.id})">🗑</button></td>
     </tr>`;
 }
@@ -1635,6 +1713,8 @@ function showPlanModal(planId) {
     unrelatedPrice.value = plan && plan.price_per_unrelated_message != null ? plan.price_per_unrelated_message : '';
     unrelatedPrice.disabled = !chargeUnrelated.checked;
 
+    document.getElementById('planDocumentAiPrice').value = plan && plan.price_document_ai_per_1k_tokens != null ? plan.price_document_ai_per_1k_tokens : '';
+
     const planBookingModeRaw = plan && plan.booking_mode ? plan.booking_mode : 'none';
     document.getElementById('planBookingMode').value = planBookingModeRaw === 'consultores'
         ? `consultores:${(plan && plan.consultores_mode) || 'agendamento'}`
@@ -1693,6 +1773,8 @@ async function savePlan() {
     const charge_unrelated_received_messages = document.getElementById('planChargeUnrelated').checked;
     const unrelatedPriceVal = document.getElementById('planUnrelatedPrice').value;
     const price_per_unrelated_message = unrelatedPriceVal ? Number(unrelatedPriceVal) : null;
+    const documentAiPriceVal = document.getElementById('planDocumentAiPrice').value;
+    const price_document_ai_per_1k_tokens = documentAiPriceVal ? Number(documentAiPriceVal) : null;
     const planBookingModeRaw = document.getElementById('planBookingMode').value;
     // Um único <select> mostra 4 opções, mas o back-end guarda em 2 colunas
     // ortogonais (booking_mode + consultores_mode, essa só relevante quando
@@ -1709,7 +1791,7 @@ async function savePlan() {
         const res = await adminFetch(ADMIN_API + (id ? `/admin/plans/${id}` : '/admin/plans'), {
             method: id ? 'PATCH' : 'POST',
             headers: {'Content-Type':'application/json'},
-            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens })
+            body: JSON.stringify({ name, description, model_id, areas, charge_unrelated_received_messages, price_per_unrelated_message, price_document_ai_per_1k_tokens, booking_mode, consultores_mode, whatsapp_context_tokens, pesquisa_context_tokens })
         });
         const data = await res.json();
         if (!res.ok) return alert(data.error || 'Erro ao salvar plano.');

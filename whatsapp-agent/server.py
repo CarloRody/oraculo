@@ -6739,6 +6739,31 @@ def report_whatsapp_sent_usage(account_id):
     threading.Thread(target=_run, daemon=True).start()
 
 
+def report_document_ai_usage(account_id, tokens_input, tokens_output):
+    """Reporta pro Oráculo os tokens (prompt + completion) gastos resumindo
+    um documento de paciente pelo modelo de visão local — cobrado por
+    plans.price_document_ai_per_1k_tokens do cliente, ver
+    /api/whatsapp/document-ai-usage. Mesmo princípio de
+    report_whatsapp_sent_usage: thread própria, nunca derruba o
+    processamento da fila, erro só loga."""
+    def _run():
+        account = get_account(account_id)
+        if not account or not account.get("user_id"):
+            return
+        api_key = _client_api_key(account["user_id"])
+        if not api_key:
+            return
+        base_url = (ORACULO_API_CONFIG.get("base_url") or "http://127.0.0.1:5001").rstrip("/")
+        try:
+            requests.post(f"{base_url}/api/whatsapp/document-ai-usage",
+                          headers={"X-Oraculo-Key": api_key},
+                          json={"tokens_input": tokens_input, "tokens_output": tokens_output},
+                          timeout=10)
+        except Exception as e:
+            log_event(account_id, "document_ai_usage_report_failed", level="error", detail={"error": str(e)})
+    threading.Thread(target=_run, daemon=True).start()
+
+
 @app.route("/webhooks/evolution", methods=["POST"])
 def webhook_evolution():
     payload = request.json or {}

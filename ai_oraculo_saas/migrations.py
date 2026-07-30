@@ -413,6 +413,17 @@ MIGRATIONS = [
       AND u.estimated_cost IS NULL
       AND s.price_per_1k_tokens IS NOT NULL;
     """,
+
+    # 23 — cobrança do resumo de documentos por IA (whatsapp-agent manda
+    # documento de paciente pro modelo de visão local e grava um resumo,
+    # feature que não descontava nada do saldo do cliente). Preço único por
+    # 1k tokens somando enviados (prompt) e recebidos (completion) desse
+    # processamento — diferente de plan_area_pricing (que é por área de
+    # conhecimento RAG, conceito não relacionado). NULL = não cobra,
+    # preserva o comportamento atual de todo plano já existente.
+    """
+    ALTER TABLE plans ADD COLUMN IF NOT EXISTS price_document_ai_per_1k_tokens NUMERIC(10,4);
+    """,
 ]
 
 
