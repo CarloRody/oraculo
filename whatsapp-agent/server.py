@@ -1494,7 +1494,7 @@ def get_patient_documents_for_contact(contact_id):
         cur.execute(
             """SELECT d.id, d.doc_type, d.caption, d.status, d.failure_reason, d.captured_at,
                       d.appointment_id, f.original_name, f.mime_type, f.size_bytes,
-                      d.ai_summary_status, d.ai_summary
+                      d.ai_summary_status, d.ai_summary, d.document_date
                FROM whatsapp_patient_documents d
                LEFT JOIN whatsapp_files f ON f.id = d.file_id
                WHERE d.contact_id = %s AND d.hidden = FALSE
@@ -1503,11 +1503,12 @@ def get_patient_documents_for_contact(contact_id):
         )
         cols = ["id", "doc_type", "caption", "status", "failure_reason", "captured_at",
                 "appointment_id", "original_name", "mime_type", "size_bytes",
-                "ai_summary_status", "ai_summary"]
+                "ai_summary_status", "ai_summary", "document_date"]
         rows = []
         for r in cur.fetchall():
             d = dict(zip(cols, r))
             d["captured_at"] = d["captured_at"].isoformat() if d["captured_at"] else None
+            d["document_date"] = d["document_date"].isoformat() if d["document_date"] else None
             rows.append(d)
         return rows
     finally:

@@ -20,7 +20,9 @@ de chat ao vivo — daí o freio por tokens/segundo (medido nas últimas
 conclusões, não informado pelo modelo) além do paralelismo máximo.
 """
 
+import datetime
 import os
+import re
 import threading
 import time
 
@@ -31,6 +33,24 @@ import connectors.document_ai as document_ai
 
 POLL_INTERVAL_SECONDS = 10
 RECENT_SAMPLE_COUNT = 5
+_DATE_LINE_RE = re.compile(r"^\s*Data:\s*(\d{2})/(\d{2})/(\d{4})", re.IGNORECASE)
+
+
+def _parse_document_date(text):
+    """Extrai a data real do documento da primeira linha do resumo (ver
+    DEFAULT_SUMMARY_PROMPT, que pede "Data: DD/MM/AAAA" como primeira
+    linha). Devolve None se ausente, "não identificada" ou mal formatada —
+    nunca derruba o processamento do documento por causa disso."""
+    if not text:
+        return None
+    match = _DATE_LINE_RE.match(text.strip())
+    if not match:
+        return None
+    day, month, year = (int(g) for g in match.groups())
+    try:
+        return datetime.date(year, month, day)
+    except ValueError:
+        return None
 
 
 def _conn():
@@ -193,16 +213,17 @@ def _claim_next_pending(limit):
 
 
 def mark_summary_done(doc_id, text, prompt_tokens, completion_tokens, elapsed_seconds):
+    document_date = _parse_document_date(text)
     conn = _conn()
     try:
         cur = conn.cursor()
         cur.execute(
             """UPDATE whatsapp_patient_documents
                SET ai_summary_status = 'done', ai_summary = %s, ai_summary_tokens = %s,
-                   ai_summary_prompt_tokens = %s,
+                   ai_summary_prompt_tokens = %s, document_date = %s,
                    ai_summary_elapsed_ms = %s, ai_summary_error = NULL, ai_summary_completed_at = NOW()
                WHERE id = %s""",
-            (text, completion_tokens, prompt_tokens, int(elapsed_seconds * 1000), doc_id),
+            (text, completion_tokens, prompt_tokens, document_date, int(elapsed_seconds * 1000), doc_id),
         )
         conn.commit()
     finally:
@@ -342,13 +363,24 @@ def _build_chronological_prompt(done_docs):
     os arquivos originais de novo — tentamos reenviar as imagens e piorou:
     o modelo dedupe texto com muito mais confiabilidade do que imagens
     visualmente parecidas, e a linha do tempo ficou repetindo exame.
-    `done_docs` vem ordenado por captured_at (recebimento no WhatsApp) só
-    como dica inicial — o prompt instrui o modelo a preferir a data real
-    mencionada dentro de cada resumo, quando houver."""
+
+    Ordena/rotula por document_date (data real do exame, extraída pelo
+    próprio modelo no resumo individual — ver DEFAULT_SUMMARY_PROMPT), NÃO
+    por captured_at (recebimento no WhatsApp): um paciente pode mandar
+    vários exames antigos de uma vez, todos com o mesmo captured_at (hoje),
+    o que fazia a cronologia datar tudo como "hoje". Documentos sem
+    document_date identificado vão numa seção separada no fim, sem fingir
+    uma posição na linha do tempo."""
+    dated = sorted((d for d in done_docs if d.get("document_date")), key=lambda d: d["document_date"])
+    undated = [d for d in done_docs if not d.get("document_date")]
+
     lines = [document_ai.DEFAULT_CHRONOLOGICAL_PROMPT_HEADER]
-    for d in done_docs:
-        date_label = d["captured_at"][:10] if d["captured_at"] else "data de recebimento desconhecida"
-        lines.append(f"[{date_label}] ({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
+    for d in dated:
+        lines.append(f"[{d['document_date']}] ({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
+    if undated:
+        lines.append(document_ai.CHRONOLOGICAL_NO_DATE_SECTION_HEADER)
+        for d in undated:
+            lines.append(f"({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
     return "\n".join(lines)
 
 
@@ -360,7 +392,6 @@ def _process_one_chronological(contact_id, account_id):
         done_docs = [d for d in docs if d.get("ai_summary_status") == "done" and d.get("ai_summary")]
         if not done_docs:
             raise RuntimeError("Nenhum documento com resumo pronto ainda pra esse paciente")
-        done_docs.sort(key=lambda d: d["captured_at"] or "")
 
         prompt = _build_chronological_prompt(done_docs)
         text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological(prompt, document_count=len(done_docs))
