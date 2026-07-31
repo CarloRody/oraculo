@@ -1041,6 +1041,15 @@ MIGRATIONS = [
         completed_at TIMESTAMPTZ
     );
     """,
+
+    # 47 — reverte a migração #46: a extração estruturada de data por
+    # documento (coluna document_date) foi testada e revertida no código
+    # (piorou o resultado geral do resumo cronológico comparado à versão
+    # simples anterior) — nenhum documento real chegou a ser reprocessado
+    # com ela, então não há dado pra perder ao remover a coluna.
+    """
+    ALTER TABLE whatsapp_patient_documents DROP COLUMN IF EXISTS document_date;
+    """,
 ]
 
 
