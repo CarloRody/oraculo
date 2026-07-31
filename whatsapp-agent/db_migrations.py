@@ -1041,18 +1041,6 @@ MIGRATIONS = [
         completed_at TIMESTAMPTZ
     );
     """,
-
-    # 46 — data real do documento (do exame/laudo), extraída pelo próprio
-    # modelo de visão no resumo individual — captured_at (recebimento no
-    # WhatsApp) não serve pra ordenar cronologia médica: um paciente pode
-    # mandar vários exames antigos de uma vez, todos com o mesmo
-    # captured_at (hoje), o que fazia o resumo cronológico datar tudo como
-    # "hoje" quando o resumo individual não mencionava a data real por
-    # extenso. Nullable — nem todo documento tem data identificável (ex:
-    # foto ilegível, documento sem data visível).
-    """
-    ALTER TABLE whatsapp_patient_documents ADD COLUMN IF NOT EXISTS document_date DATE;
-    """,
 ]
 
 

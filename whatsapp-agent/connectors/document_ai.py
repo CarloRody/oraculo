@@ -26,16 +26,7 @@ TIMEOUT = LLM_CONFIG.get("timeout_seconds") or 600
 
 DEFAULT_SUMMARY_PROMPT = (
     "Você está analisando um documento de paciente de uma clínica (exame, "
-    "receita, laudo ou similar).\n\n"
-    "Primeiro, identifique a data real deste documento (data do exame, da "
-    "coleta, ou da emissão do laudo — o que estiver mais claro nele) e "
-    "escreva-a na PRIMEIRA LINHA, exatamente neste formato: \"Data: "
-    "DD/MM/AAAA\". Se o documento não mostrar nenhuma data, escreva "
-    "\"Data: não identificada\" na primeira linha. Essa data é usada por "
-    "outro sistema pra montar a linha do tempo do paciente — não pule essa "
-    "linha e não invente uma data se ela não estiver visível no "
-    "documento.\n\n"
-    "Depois, numa nova linha, gere um resumo objetivo em português, "
+    "receita, laudo ou similar). Gere um resumo objetivo em português, "
     "destacando: o tipo de documento, os principais achados/valores "
     "relevantes, e qualquer recomendação ou alerta importante. Seja conciso "
     "(até um parágrafo curto). Se a imagem não for legível ou não parecer "
@@ -44,29 +35,21 @@ DEFAULT_SUMMARY_PROMPT = (
 
 DEFAULT_CHRONOLOGICAL_PROMPT_HEADER = (
     "Você é um assistente médico. Abaixo estão os resumos de vários "
-    "documentos do MESMO paciente, cada um já processado individualmente, "
-    "com a data real do documento (do exame/laudo/coleta) já identificada e "
-    "indicada antes de cada resumo. Os documentos com data identificada já "
-    "estão na ORDEM CRONOLÓGICA CORRETA (mais antigo primeiro) — não "
-    "precisa reordenar. Documentos sem data identificada aparecem numa "
-    "lista separada no final; não tente adivinhar a posição deles na linha "
-    "do tempo, apenas os inclua com a ressalva de que a data é "
-    "desconhecida.\n\n"
+    "documentos do MESMO paciente, cada um já processado individualmente. "
+    "Estão listados na ordem em que foram RECEBIDOS pelo WhatsApp — isso "
+    "pode NÃO ser a ordem cronológica real dos exames. Sempre que um resumo "
+    "mencionar a data real do exame/laudo/coleta, use essa data pra montar "
+    "a linha do tempo, não a ordem de recebimento abaixo.\n\n"
     "Alguns documentos podem ser páginas ou mensagens separadas do mesmo "
     "laudo/exame, então pode haver informação repetida entre eles.\n\n"
     "Sua tarefa: escrever UM resumo cronológico único, em português, "
     "organizando a evolução do paciente ao longo do tempo, SEM repetir a "
     "mesma informação mais de uma vez — quando dois ou mais documentos "
-    "claramente pertencem ao mesmo laudo/exame (mesma data, mesmo tipo de "
-    "conteúdo), trate-os como uma única entrada na linha do tempo. "
+    "claramente pertencem ao mesmo laudo/exame (datas próximas, mesmo tipo "
+    "de conteúdo), trate-os como uma única entrada na linha do tempo. "
     "Destaque tendências, mudanças e alertas relevantes entre os "
-    "documentos.\n\nDocumentos com data identificada (ordem cronológica, "
-    "mais antigo primeiro):\n"
-)
-
-CHRONOLOGICAL_NO_DATE_SECTION_HEADER = (
-    "\n\nDocumentos SEM data identificada (posição real na linha do tempo "
-    "desconhecida):\n"
+    "documentos.\n\nResumos individuais (ordem de recebimento, mais antigo "
+    "primeiro):\n"
 )
 
 
