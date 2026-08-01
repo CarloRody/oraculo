@@ -1619,17 +1619,27 @@ async function requestChronologicalSummary(contactId) {
     }
 }
 
+function _docOptionLabel(d) {
+    return (d.title || docTypeLabel(d)) + ' — ' + fmtDateTime(d.captured_at);
+}
+
 function buildDocsHtml(docsData, contactId, chronoData, showActions) {
     const docs = docsData.documents || [];
     const chronoBox = showActions ? chronologicalSummaryHtml(contactId, chronoData) : '';
     const list = docs.length
         ? docs.map(d => {
             const fileUrl = API + `/patient-documents/${d.id}/file`;
+            const otherDocs = docs.filter(o => o.id !== d.id && o.status === 'stored');
+            const joinSelect = showActions && d.status === 'stored' && otherDocs.length ? `
+                <select class="form-input" style="font-size:0.75rem; margin-top:0.3rem; max-width:280px;"
+                    onchange="if(this.value) joinWithDocument(${contactId}, ${d.id}, Number(this.value)); this.value='';">
+                    <option value="">📎 Juntar com...</option>
+                    ${otherDocs.map(o => `<option value="${o.id}">${esc(_docOptionLabel(o))}</option>`).join('')}
+                </select>` : '';
             return `
             <div style="padding:0.4rem 0; border-bottom:1px solid #1a2744;">
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
                     <div style="display:flex; align-items:center; gap:0.6rem;">
-                        ${showActions ? `<input type="checkbox" class="doc-join-checkbox" value="${d.id}">` : ''}
                         ${d.doc_type === 'image' && d.status === 'stored' ? `<a href="${fileUrl}" target="_blank"><img src="${fileUrl}" style="width:70px; height:70px; object-fit:cover; border-radius:6px;"></a>` : ''}
                         <div>
                             <div style="font-size:0.88rem; font-weight:600;">${d.title ? esc(d.title) : docTypeLabel(d)}</div>
@@ -1654,24 +1664,21 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
                         }).join('')}
                     </div>` : ''}
                 ${aiSummaryHtml(d)}
+                ${joinSelect}
             </div>`;
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
-    const joinBar = showActions && docs.length ? `
-        <div style="padding:0.5rem 0; border-bottom:1px solid #1a2744;">
-            <button class="btn btn-sm btn-secondary" onclick="joinSelectedDocuments(${contactId})" title="Use quando o mesmo laudo/exame chegou em fotos separadas">📎 Juntar selecionados em 1 documento</button>
-        </div>` : '';
-    return chronoBox + joinBar + list;
+    return chronoBox + list;
 }
 
-// ---- Juntar páginas do mesmo laudo num documento só (resumo de IA) ----
-async function joinSelectedDocuments(contactId) {
-    const ids = [...document.querySelectorAll('.doc-join-checkbox:checked')].map(b => Number(b.value));
-    if (ids.length < 2) return alert('Marque pelo menos 2 documentos (as páginas do mesmo laudo).');
-    if (!confirm(`Juntar ${ids.length} documentos em um só e reprocessar o resumo de IA?`)) return;
+// Escolher um documento no dropdown "Juntar com..." já dispara o join na
+// hora (sem checkbox nem botão separado) — mesma rota que o antigo botão
+// "Juntar selecionados" chamava, só que com os 2 ids desta escolha.
+async function joinWithDocument(contactId, docId, otherId) {
+    if (!confirm('Juntar estes dois documentos em um só e reprocessar o resumo de IA?')) return;
     try {
         await api(`/contacts/${contactId}/documents/join`, {
-            method: 'POST', body: JSON.stringify({ document_ids: ids }),
+            method: 'POST', body: JSON.stringify({ document_ids: [docId, otherId] }),
         });
         alert('Documentos juntados — o resumo de IA combinado será gerado em instantes.');
         loadFichaPatient(false);
