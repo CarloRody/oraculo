@@ -1628,10 +1628,14 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
             return `
             <div style="padding:0.4rem 0; border-bottom:1px solid #1a2744;">
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
-                    <div>
-                        <div style="font-size:0.82rem;">${docTypeLabel(d)} ${d.original_name ? esc(d.original_name) : ''}</div>
-                        <div style="font-size:0.75rem; color:#64748b;">${fmtDateTime(d.captured_at)}</div>
-                        ${d.caption ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
+                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                        ${showActions ? `<input type="checkbox" class="doc-join-checkbox" value="${d.id}">` : ''}
+                        <div>
+                            <div style="font-size:0.82rem;">${docTypeLabel(d)} ${d.original_name ? esc(d.original_name) : ''}</div>
+                            <div style="font-size:0.75rem; color:#64748b;">${fmtDateTime(d.captured_at)}</div>
+                            ${d.caption ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
+                            ${d.group_count >= 2 ? `<div style="font-size:0.75rem; color:#64748b;">📎 ${d.group_count} páginas agrupadas — <a href="#" onclick="adjustDocumentGroup(${contactId}, ${d.id}); return false;">Ajustar</a></div>` : ''}
+                        </div>
                     </div>
                     ${d.status === 'stored' ? `<a class="btn btn-sm" href="${fileUrl}" target="_blank">Abrir</a>` : ''}
                 </div>
@@ -1639,7 +1643,39 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
             </div>`;
         }).join('')
         : '<p class="empty" style="padding:0.3rem 0;">Nenhum documento recebido ainda.</p>';
-    return chronoBox + list;
+    const joinBar = showActions && docs.length ? `
+        <div style="padding:0.5rem 0; border-bottom:1px solid #1a2744;">
+            <button class="btn btn-sm btn-secondary" onclick="joinSelectedDocuments(${contactId})" title="Use quando o mesmo laudo/exame chegou em fotos separadas">📎 Juntar selecionados em 1 documento</button>
+        </div>` : '';
+    return chronoBox + joinBar + list;
+}
+
+// ---- Juntar páginas do mesmo laudo num documento só (resumo de IA) ----
+async function joinSelectedDocuments(contactId) {
+    const ids = [...document.querySelectorAll('.doc-join-checkbox:checked')].map(b => Number(b.value));
+    if (ids.length < 2) return alert('Marque pelo menos 2 documentos (as páginas do mesmo laudo).');
+    if (!confirm(`Juntar ${ids.length} documentos em um só e reprocessar o resumo de IA?`)) return;
+    try {
+        await api(`/contacts/${contactId}/documents/join`, {
+            method: 'POST', body: JSON.stringify({ document_ids: ids }),
+        });
+        alert('Documentos juntados — o resumo de IA combinado será gerado em instantes.');
+        loadFichaPatient(false);
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+async function adjustDocumentGroup(contactId, primaryId) {
+    try {
+        const data = await api(`/documents/${primaryId}/group-members`);
+        const members = data.members || [];
+        if (!confirm(`Este documento tem ${members.length} página(s) agrupada(s). Desfazer o agrupamento? Cada página volta a ser um documento separado (você pode selecionar outra combinação e juntar de novo).`)) return;
+        await api(`/documents/${primaryId}/ungroup`, { method: 'POST' });
+        loadFichaPatient(false);
+    } catch (e) {
+        alert(e.message);
+    }
 }
 
 // Sub-abas do card de Atendimento (Cadastro/Agendamentos/Evolução/

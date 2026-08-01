@@ -1050,6 +1050,21 @@ MIGRATIONS = [
     """
     ALTER TABLE whatsapp_patient_documents DROP COLUMN IF EXISTS document_date;
     """,
+
+    # 48 — agrupar páginas do mesmo laudo/exame que chegaram em mensagens
+    # separadas do WhatsApp, pra resumir todas de uma vez (mesmo mecanismo
+    # que já existe pra PDF de várias páginas) em vez de resumir cada foto
+    # sozinha e tentar remontar a cronologia depois só por texto. Convenção:
+    # avulso = NULL; agrupado = TODOS os membros (inclusive o principal, o
+    # mais antigo por captured_at) apontam pro id do principal — assim
+    # "WHERE document_group_id = X" sempre devolve o grupo inteiro, sem caso
+    # especial. Membros não-principais viram hidden=TRUE, reaproveitando o
+    # soft-delete que já existe e que já é filtrado em todo lugar que
+    # interessa (get_patient_documents_for_contact, fila de resumo).
+    """
+    ALTER TABLE whatsapp_patient_documents
+        ADD COLUMN IF NOT EXISTS document_group_id INTEGER REFERENCES whatsapp_patient_documents(id);
+    """,
 ]
 
 

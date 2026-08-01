@@ -1494,7 +1494,9 @@ def get_patient_documents_for_contact(contact_id):
         cur.execute(
             """SELECT d.id, d.doc_type, d.caption, d.status, d.failure_reason, d.captured_at,
                       d.appointment_id, f.original_name, f.mime_type, f.size_bytes,
-                      d.ai_summary_status, d.ai_summary
+                      d.ai_summary_status, d.ai_summary,
+                      (SELECT COUNT(*) FROM whatsapp_patient_documents g
+                        WHERE g.document_group_id = d.id) AS group_count
                FROM whatsapp_patient_documents d
                LEFT JOIN whatsapp_files f ON f.id = d.file_id
                WHERE d.contact_id = %s AND d.hidden = FALSE
@@ -1503,7 +1505,7 @@ def get_patient_documents_for_contact(contact_id):
         )
         cols = ["id", "doc_type", "caption", "status", "failure_reason", "captured_at",
                 "appointment_id", "original_name", "mime_type", "size_bytes",
-                "ai_summary_status", "ai_summary"]
+                "ai_summary_status", "ai_summary", "group_count"]
         rows = []
         for r in cur.fetchall():
             d = dict(zip(cols, r))
@@ -5399,6 +5401,54 @@ def cp_resend_documents(account_id):
     return jsonify({"ok": True, "sent": sent, "failed": len(doc_ids) - sent})
 
 
+@app.route("/api/client-portal/accounts/<int:account_id>/documents/join", methods=["POST"])
+def cp_join_documents(account_id):
+    """Junta 2+ páginas (fotos separadas do mesmo laudo) num documento só —
+    ver document_summary.group_documents. Dispara reprocessamento pela
+    mesma fila de resumo já existente (marca o principal como 'pending')."""
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    doc_ids = (request.json or {}).get("document_ids") or []
+    for doc_id in doc_ids:
+        if _patient_document_owner(doc_id) != user_id:
+            return _not_found("Documento não encontrado")
+    try:
+        primary_id = document_summary.group_documents(doc_ids)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    return jsonify({"ok": True, "primary_id": primary_id})
+
+
+@app.route("/api/client-portal/patient-documents/<int:primary_id>/ungroup", methods=["POST"])
+def cp_ungroup_documents(primary_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _patient_document_owner(primary_id) != user_id:
+        return _not_found("Documento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    try:
+        member_ids = document_summary.ungroup_document(primary_id)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    return jsonify({"ok": True, "member_ids": member_ids})
+
+
+@app.route("/api/client-portal/patient-documents/<int:primary_id>/group-members", methods=["GET"])
+def cp_get_document_group_members(primary_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _patient_document_owner(primary_id) != user_id:
+        return _not_found("Documento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    return jsonify({"members": document_summary.get_document_group_members(primary_id)})
+
+
 @app.route("/api/client-portal/contacts/<int:contact_id>/documents", methods=["GET"])
 def cp_list_patient_documents(contact_id):
     user_id, err = _require_client()
@@ -6104,6 +6154,48 @@ def api_portal_patient_documents(token, contact_id):
     if not _consultant_sees_contact(consultant["id"], contact_id):
         return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
     return jsonify({"documents": get_patient_documents_for_contact(contact_id)})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/documents/join", methods=["POST"])
+def api_portal_join_documents(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    doc_ids = (request.json or {}).get("document_ids") or []
+    for doc_id in doc_ids:
+        if not _consultant_sees_document(consultant["id"], doc_id):
+            return jsonify({"ok": False, "message": "Documento não encontrado"}), 404
+    try:
+        primary_id = document_summary.group_documents(doc_ids)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    return jsonify({"ok": True, "primary_id": primary_id})
+
+
+@app.route("/api/consultant-portal/<token>/documents/<int:primary_id>/ungroup", methods=["POST"])
+def api_portal_ungroup_documents(token, primary_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_document(consultant["id"], primary_id):
+        return jsonify({"ok": False, "message": "Documento não encontrado"}), 404
+    try:
+        member_ids = document_summary.ungroup_document(primary_id)
+    except ValueError as e:
+        return jsonify({"ok": False, "message": str(e)}), 400
+    return jsonify({"ok": True, "member_ids": member_ids})
+
+
+@app.route("/api/consultant-portal/<token>/documents/<int:primary_id>/group-members", methods=["GET"])
+def api_portal_get_document_group_members(token, primary_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_document(consultant["id"], primary_id):
+        return jsonify({"ok": False, "message": "Documento não encontrado"}), 404
+    return jsonify({"members": document_summary.get_document_group_members(primary_id)})
 
 
 @app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/chronological-summary", methods=["POST"])

@@ -422,6 +422,127 @@ def get_queue_stats():
 
 
 # ---------------------------------------------------------------------------
+# Agrupar páginas do mesmo laudo/exame (chegam em mensagens separadas do
+# WhatsApp) num documento só, pra resumir todas as imagens de uma vez em vez
+# de cada página sozinha — ver docstring da migração #48 em db_migrations.py.
+# ---------------------------------------------------------------------------
+
+def group_documents(document_ids):
+    """document_ids: ids de 2+ documentos do MESMO paciente que são páginas
+    do mesmo laudo. O mais antigo por captured_at vira o principal — todos
+    (inclusive ele) recebem document_group_id = id do principal, os outros
+    ficam hidden (somem da timeline/fila individual). Marca o principal como
+    'pending' de novo: o loop existente pega em até 10s e resume TODAS as
+    páginas do grupo numa chamada só (ver _process_one_document abaixo)."""
+    document_ids = list(dict.fromkeys(document_ids))
+    if len(document_ids) < 2:
+        raise ValueError("Selecione ao menos 2 documentos pra juntar")
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id, contact_id, captured_at FROM whatsapp_patient_documents WHERE id = ANY(%s) FOR UPDATE",
+            (document_ids,),
+        )
+        rows = cur.fetchall()
+        if len(rows) != len(document_ids):
+            raise ValueError("Um ou mais documentos não foram encontrados")
+        if len({r[1] for r in rows}) > 1:
+            raise ValueError("Os documentos selecionados são de pacientes diferentes")
+
+        # Se algum dos selecionados já é principal de um grupo existente (tem
+        # outras páginas escondidas apontando pra ele), traz essas páginas
+        # junto — senão elas ficariam órfãs (hidden, apontando pro id antigo,
+        # que deixaria de ser o principal).
+        cur.execute(
+            "SELECT id FROM whatsapp_patient_documents WHERE document_group_id = ANY(%s) FOR UPDATE",
+            (document_ids,),
+        )
+        all_ids = sorted({r[0] for r in rows} | {r[0] for r in cur.fetchall()})
+
+        primary_id = min(rows, key=lambda r: r[2])[0]
+        cur.execute(
+            "UPDATE whatsapp_patient_documents SET document_group_id = %s WHERE id = ANY(%s)",
+            (primary_id, all_ids),
+        )
+        cur.execute(
+            "UPDATE whatsapp_patient_documents SET hidden = TRUE WHERE id = ANY(%s) AND id != %s",
+            (all_ids, primary_id),
+        )
+        cur.execute(
+            """UPDATE whatsapp_patient_documents
+               SET hidden = FALSE, ai_summary_status = 'pending', ai_summary_error = NULL
+               WHERE id = %s""",
+            (primary_id,),
+        )
+        conn.commit()
+        return primary_id
+    finally:
+        conn.close()
+
+
+def ungroup_document(primary_id):
+    """Desfaz um agrupamento — todos os membros voltam a ficar avulsos e
+    visíveis (usado pelo botão "Ajustar", pra escolher outra combinação).
+    O principal volta pra 'pending' — sua ai_summary tinha o resumo
+    combinado das páginas, que não vale mais isolado; os outros membros
+    mantêm intacto o resumo individual que já tinham antes de serem
+    agrupados (nunca foi sobrescrito, só ficaram hidden)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM whatsapp_patient_documents WHERE document_group_id = %s FOR UPDATE",
+            (primary_id,),
+        )
+        member_ids = [r[0] for r in cur.fetchall()]
+        if not member_ids:
+            raise ValueError("Documento não está agrupado")
+        cur.execute(
+            "UPDATE whatsapp_patient_documents SET document_group_id = NULL, hidden = FALSE WHERE id = ANY(%s)",
+            (member_ids,),
+        )
+        cur.execute(
+            """UPDATE whatsapp_patient_documents
+               SET ai_summary_status = 'pending', ai_summary_error = NULL
+               WHERE id = %s""",
+            (primary_id,),
+        )
+        conn.commit()
+        return member_ids
+    finally:
+        conn.close()
+
+
+def get_document_group_members(primary_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """SELECT id, doc_type, captured_at FROM whatsapp_patient_documents
+               WHERE document_group_id = %s ORDER BY captured_at ASC""",
+            (primary_id,),
+        )
+        return [{"id": r[0], "doc_type": r[1], "captured_at": r[2].isoformat() if r[2] else None}
+                for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def _group_member_ids(doc_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT id FROM whatsapp_patient_documents WHERE document_group_id = %s ORDER BY captured_at ASC",
+            (doc_id,),
+        )
+        return [r[0] for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
 # Processamento de um documento
 # ---------------------------------------------------------------------------
 
@@ -431,7 +552,13 @@ def _process_one_document(doc_id):
     doc = None
     try:
         doc = server.get_patient_document(doc_id)
-        images = _load_document_images(doc)
+        member_ids = _group_member_ids(doc_id)
+        if member_ids:
+            images = []
+            for member_id in member_ids:
+                images.extend(_load_document_images(server.get_patient_document(member_id)))
+        else:
+            images = _load_document_images(doc)
         text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_document(images)
         mark_summary_done(doc_id, text, prompt_tokens, completion_tokens, elapsed)
         server.report_document_ai_usage(doc["account_id"], prompt_tokens, completion_tokens)
