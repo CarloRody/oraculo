@@ -21,7 +21,6 @@ conclusões, não informado pelo modelo) além do paralelismo máximo.
 """
 
 import os
-import re
 import threading
 import time
 
@@ -358,58 +357,23 @@ def mark_chronological_failed(contact_id, error):
         conn.close()
 
 
-_SUMMARY_DATE_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
-_BIRTHDATE_CONTEXT_RE = re.compile(r"nasc", re.IGNORECASE)
-
-
-def _extract_summary_date(text):
-    """Tenta achar a data real do exame/laudo dentro do resumo individual
-    já gerado (ex.: "realizado em 08/08/2025", "emitido em 13/05/2024") —
-    só pra ordenar/rotular o resumo cronológico, não muda nada armazenado
-    nem pede nada novo ao modelo. Percorre as datas DD/MM/AAAA do texto na
-    ordem em que aparecem e pula qualquer uma logo precedida por "nasc"
-    (nascimento/nascida/nascido) — sem isso, um resumo que só cita a data
-    de nascimento da paciente (nenhuma data do próprio exame no texto)
-    fazia a entrada inteira ser ordenada como se o exame fosse de décadas
-    atrás. Pega a primeira data restante: na prática o resumo quase sempre
-    cita a data do próprio exame antes de qualquer data de comparação com
-    estudo anterior. Devolve (rótulo "DD/MM/AAAA", chave de ordenação
-    "AAAA-MM-DD") ou None se nenhuma data (fora nascimento) foi encontrada."""
-    if not text:
-        return None
-    for m in _SUMMARY_DATE_RE.finditer(text):
-        context_before = text[max(0, m.start() - 30):m.start()]
-        if _BIRTHDATE_CONTEXT_RE.search(context_before):
-            continue
-        day, month, year = m.groups()
-        return f"{day}/{month}/{year}", f"{year}-{month}-{day}"
-    return None
-
-
-def _document_sort_key(d):
-    extracted = _extract_summary_date(d["ai_summary"])
-    return extracted[1] if extracted else (d["captured_at"] or "")
-
-
 def _build_chronological_prompt(done_docs):
     """Usa os resumos individuais JÁ GERADOS de cada documento (texto), não
     os arquivos originais de novo — tentamos reenviar as imagens e piorou:
     o modelo dedupe texto com muito mais confiabilidade do que imagens
     visualmente parecidas, e a linha do tempo ficou repetindo exame.
-    `done_docs` já vem ordenado (ver _document_sort_key) pela data real do
-    exame quando ela aparece no texto do resumo, com o recebimento no
-    WhatsApp só como aproximação pros casos sem data extraída — o rótulo
-    de cada entrada usa essa mesma data, pra não dar um rótulo que
-    contradiga o que o texto do resumo diz."""
+    `done_docs` vem ordenado por captured_at (recebimento no WhatsApp) —
+    é só a ordem de APRESENTAÇÃO da entrada nesta lista, não uma afirmação
+    de ordem cronológica real. Quem identifica a data real do exame de
+    cada resumo (lendo o próprio texto) e monta a ordem cronológica
+    correta é o modelo (ver DEFAULT_CHRONOLOGICAL_PROMPT_HEADER) — regex
+    tentando extrair "a data" de texto livre não distingue semanticamente
+    data de nascimento, data de exame comparado só como referência, data
+    do exame atual etc., e cada caso novo quebraria a extração de novo."""
     lines = [document_ai.DEFAULT_CHRONOLOGICAL_PROMPT_HEADER]
     for d in done_docs:
-        extracted = _extract_summary_date(d["ai_summary"])
-        if extracted:
-            date_label = extracted[0]
-        else:
-            recebimento = d["captured_at"][:10] if d["captured_at"] else "desconhecida"
-            date_label = f"data real não identificada — recebido em {recebimento}"
-        lines.append(f"[{date_label}] ({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
+        recebimento = d["captured_at"][:10] if d["captured_at"] else "desconhecida"
+        lines.append(f"[recebido em {recebimento}] ({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
     return "\n".join(lines)
 
 
@@ -421,7 +385,7 @@ def _process_one_chronological(contact_id, account_id):
         done_docs = [d for d in docs if d.get("ai_summary_status") == "done" and d.get("ai_summary")]
         if not done_docs:
             raise RuntimeError("Nenhum documento com resumo pronto ainda pra esse paciente")
-        done_docs.sort(key=_document_sort_key)
+        done_docs.sort(key=lambda d: d["captured_at"] or "")
 
         prompt = _build_chronological_prompt(done_docs)
         text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological(prompt, document_count=len(done_docs))
