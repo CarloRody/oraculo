@@ -1487,6 +1487,32 @@ def get_consultant_patients(consultant_id):
         conn.close()
 
 
+_DOCUMENT_TITLE_PREFIX_RE = re.compile(r"^\s*documento(?:\s+médico)?\s*:\s*", re.IGNORECASE)
+# Corta na primeira vírgula, ou no primeiro ponto que não faça parte de uma
+# abreviação tipo "A.C." (ponto não precedido de letra maiúscula isolada) —
+# sem isso, nomes como "A.C. Camargo Cancer Center" cortavam em "A".
+_DOCUMENT_TITLE_CUT_RE = re.compile(r",|(?<![A-ZÀ-Ú])\.(?=\s|$)")
+
+
+def _derive_document_title(summary_text, max_len=70):
+    """Título curto pra mostrar na lista de documentos, sem exigir digitação
+    manual — extraído do resumo de IA já gerado (não pede nada novo ao
+    modelo). A maioria dos resumos começa com "Documento: <tipo>, ..." ou
+    "Documento médico: <tipo>, ..."; tiramos esse prefixo e cortamos no
+    primeiro limite de frase. Devolve None se ainda não há resumo — a lista
+    continua mostrando o rótulo genérico (Imagem/Documento) até terminar."""
+    if not summary_text:
+        return None
+    text = _DOCUMENT_TITLE_PREFIX_RE.sub("", summary_text.strip())
+    m = _DOCUMENT_TITLE_CUT_RE.search(text)
+    title = text[:m.start()].strip() if m else text[:max_len].strip()
+    if not title:
+        title = text[:max_len].strip()
+    if len(title) > max_len:
+        title = title[:max_len].rstrip() + "…"
+    return title or None
+
+
 def get_patient_documents_for_contact(contact_id):
     conn = _conn()
     try:
@@ -1510,7 +1536,26 @@ def get_patient_documents_for_contact(contact_id):
         for r in cur.fetchall():
             d = dict(zip(cols, r))
             d["captured_at"] = d["captured_at"].isoformat() if d["captured_at"] else None
+            d["title"] = _derive_document_title(d["ai_summary"])
             rows.append(d)
+
+        # Páginas escondidas (membros de grupo, ver migração #48) — busca de
+        # uma vez só pra todos os grupos desse paciente, não é N+1.
+        cur.execute(
+            """SELECT id, doc_type, captured_at, document_group_id FROM whatsapp_patient_documents
+               WHERE contact_id = %s AND document_group_id IS NOT NULL AND hidden = TRUE
+               ORDER BY captured_at ASC""",
+            (contact_id,),
+        )
+        members_by_group = {}
+        for member_id, member_doc_type, member_captured_at, group_id in cur.fetchall():
+            members_by_group.setdefault(group_id, []).append({
+                "id": member_id,
+                "doc_type": member_doc_type,
+                "captured_at": member_captured_at.isoformat() if member_captured_at else None,
+            })
+        for d in rows:
+            d["members"] = members_by_group.get(d["id"], [])
         return rows
     finally:
         conn.close()

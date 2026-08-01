@@ -1632,10 +1632,10 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
                         ${showActions ? `<input type="checkbox" class="doc-join-checkbox" value="${d.id}">` : ''}
                         ${d.doc_type === 'image' && d.status === 'stored' ? `<a href="${fileUrl}" target="_blank"><img src="${fileUrl}" style="width:70px; height:70px; object-fit:cover; border-radius:6px;"></a>` : ''}
                         <div>
-                            <div style="font-size:0.82rem;">${docTypeLabel(d)} ${d.original_name ? esc(d.original_name) : ''}</div>
-                            <div style="font-size:0.75rem; color:#64748b;">${fmtDateTime(d.captured_at)}</div>
+                            <div style="font-size:0.88rem; font-weight:600;">${d.title ? esc(d.title) : docTypeLabel(d)}</div>
+                            <div style="font-size:0.75rem; color:#64748b;">${docTypeLabel(d)}${d.original_name ? ' · ' + esc(d.original_name) : ''} · ${fmtDateTime(d.captured_at)}</div>
                             ${d.caption ? `<div style="font-size:0.78rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
-                            ${d.group_count >= 2 ? `<div style="font-size:0.75rem; color:#64748b;">📎 ${d.group_count} páginas agrupadas — <a href="#" onclick="adjustDocumentGroup(${contactId}, ${d.id}); return false;">Ajustar</a></div>` : ''}
+                            ${d.group_count >= 2 ? `<div style="font-size:0.75rem; color:#64748b;">📎 ${d.group_count} páginas neste documento — <a href="#" onclick="adjustDocumentGroup(${contactId}, ${d.id}); return false;">Ajustar</a></div>` : ''}
                         </div>
                     </div>
                     <div style="display:flex; gap:0.4rem;">
@@ -1643,6 +1643,16 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
                         ${showActions && d.ai_summary_status && d.ai_summary_status !== 'pending' && d.ai_summary_status !== 'processing' ? `<button class="btn btn-sm btn-secondary" onclick="reprocessDocument(${d.id})">🔄 Reprocessar</button>` : ''}
                     </div>
                 </div>
+                ${d.members && d.members.length ? `
+                    <div style="display:flex; gap:0.5rem; flex-wrap:wrap; margin-top:0.4rem; padding:0.4rem; background:#0f1c33; border:1px dashed #1a2744; border-radius:6px;">
+                        ${d.members.map(m => {
+                            const memberUrl = API + `/patient-documents/${m.id}/file`;
+                            const thumb = m.doc_type === 'image'
+                                ? `<img src="${memberUrl}" style="width:55px; height:55px; object-fit:cover; border-radius:6px; display:block;">`
+                                : `<div style="width:55px; height:55px; background:#111a2e; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:1.1rem;">📎</div>`;
+                            return `<a href="${memberUrl}" target="_blank" style="text-align:center; text-decoration:none;">${thumb}<div style="font-size:0.62rem; color:#64748b;">${fmtDateTime(m.captured_at)}</div></a>`;
+                        }).join('')}
+                    </div>` : ''}
                 ${aiSummaryHtml(d)}
             </div>`;
         }).join('')
