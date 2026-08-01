@@ -1628,8 +1628,9 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
             return `
             <div style="padding:0.4rem 0; border-bottom:1px solid #1a2744;">
                 <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
-                    <div style="display:flex; align-items:center; gap:0.5rem;">
+                    <div style="display:flex; align-items:center; gap:0.6rem;">
                         ${showActions ? `<input type="checkbox" class="doc-join-checkbox" value="${d.id}">` : ''}
+                        ${d.doc_type === 'image' && d.status === 'stored' ? `<a href="${fileUrl}" target="_blank"><img src="${fileUrl}" style="width:70px; height:70px; object-fit:cover; border-radius:6px;"></a>` : ''}
                         <div>
                             <div style="font-size:0.82rem;">${docTypeLabel(d)} ${d.original_name ? esc(d.original_name) : ''}</div>
                             <div style="font-size:0.75rem; color:#64748b;">${fmtDateTime(d.captured_at)}</div>
@@ -1637,7 +1638,10 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
                             ${d.group_count >= 2 ? `<div style="font-size:0.75rem; color:#64748b;">📎 ${d.group_count} páginas agrupadas — <a href="#" onclick="adjustDocumentGroup(${contactId}, ${d.id}); return false;">Ajustar</a></div>` : ''}
                         </div>
                     </div>
-                    ${d.status === 'stored' ? `<a class="btn btn-sm" href="${fileUrl}" target="_blank">Abrir</a>` : ''}
+                    <div style="display:flex; gap:0.4rem;">
+                        ${d.status === 'stored' ? `<a class="btn btn-sm" href="${fileUrl}" target="_blank">Abrir</a>` : ''}
+                        ${showActions && d.ai_summary_status && d.ai_summary_status !== 'pending' && d.ai_summary_status !== 'processing' ? `<button class="btn btn-sm btn-secondary" onclick="reprocessDocument(${d.id})">🔄 Reprocessar</button>` : ''}
+                    </div>
                 </div>
                 ${aiSummaryHtml(d)}
             </div>`;
@@ -1672,6 +1676,16 @@ async function adjustDocumentGroup(contactId, primaryId) {
         const members = data.members || [];
         if (!confirm(`Este documento tem ${members.length} página(s) agrupada(s). Desfazer o agrupamento? Cada página volta a ser um documento separado (você pode selecionar outra combinação e juntar de novo).`)) return;
         await api(`/documents/${primaryId}/ungroup`, { method: 'POST' });
+        loadFichaPatient(false);
+    } catch (e) {
+        alert(e.message);
+    }
+}
+
+async function reprocessDocument(docId) {
+    if (!confirm('Gerar o resumo de IA deste documento de novo?')) return;
+    try {
+        await api(`/documents/${docId}/reprocess`, { method: 'POST' });
         loadFichaPatient(false);
     } catch (e) {
         alert(e.message);

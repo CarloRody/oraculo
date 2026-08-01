@@ -239,6 +239,26 @@ def retry_document(doc_id):
         conn.close()
 
 
+def force_reprocess(doc_id):
+    """Diferente de retry_document (só funciona se 'failed'): força gerar o
+    resumo de novo mesmo se já está 'done' — usado quando o resultado saiu
+    ruim ou depois de trocar o modelo de IA. Funciona igual pra documento
+    avulso ou principal de um grupo: quem decide buscar as imagens de todas
+    as páginas do grupo é _process_one_document, não muda aqui."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_patient_documents SET ai_summary_status = 'pending', ai_summary_error = NULL
+               WHERE id = %s AND ai_summary_status != 'processing'""",
+            (doc_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        conn.close()
+
+
 def _claim_next_pending_chronological(limit):
     """Mesmo padrão de _claim_next_pending (FOR UPDATE SKIP LOCKED), só que
     na fila de resumo cronológico por paciente. Devolve (contact_id,

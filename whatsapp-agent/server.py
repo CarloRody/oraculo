@@ -5449,6 +5449,19 @@ def cp_get_document_group_members(primary_id):
     return jsonify({"members": document_summary.get_document_group_members(primary_id)})
 
 
+@app.route("/api/client-portal/patient-documents/<int:doc_id>/reprocess", methods=["POST"])
+def cp_reprocess_patient_document(doc_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _patient_document_owner(doc_id) != user_id:
+        return _not_found("Documento não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    if not document_summary.force_reprocess(doc_id):
+        return jsonify({"ok": False, "message": "Documento está processando agora, aguarde."}), 400
+    return jsonify({"ok": True})
+
+
 @app.route("/api/client-portal/contacts/<int:contact_id>/documents", methods=["GET"])
 def cp_list_patient_documents(contact_id):
     user_id, err = _require_client()
@@ -6196,6 +6209,18 @@ def api_portal_get_document_group_members(token, primary_id):
     if not _consultant_sees_document(consultant["id"], primary_id):
         return jsonify({"ok": False, "message": "Documento não encontrado"}), 404
     return jsonify({"members": document_summary.get_document_group_members(primary_id)})
+
+
+@app.route("/api/consultant-portal/<token>/documents/<int:doc_id>/reprocess", methods=["POST"])
+def api_portal_reprocess_document(token, doc_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_document(consultant["id"], doc_id):
+        return jsonify({"ok": False, "message": "Documento não encontrado"}), 404
+    if not document_summary.force_reprocess(doc_id):
+        return jsonify({"ok": False, "message": "Documento está processando agora, aguarde."}), 400
+    return jsonify({"ok": True})
 
 
 @app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/chronological-summary", methods=["POST"])
