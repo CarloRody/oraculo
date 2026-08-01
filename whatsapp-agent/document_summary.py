@@ -21,6 +21,7 @@ conclusões, não informado pelo modelo) além do paralelismo máximo.
 """
 
 import os
+import re
 import threading
 import time
 
@@ -357,17 +358,49 @@ def mark_chronological_failed(contact_id, error):
         conn.close()
 
 
+_SUMMARY_DATE_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
+
+
+def _extract_summary_date(text):
+    """Tenta achar a data real do exame/laudo dentro do resumo individual
+    já gerado (ex.: "realizado em 08/08/2025", "emitido em 13/05/2024") —
+    só pra ordenar/rotular o resumo cronológico, não muda nada armazenado
+    nem pede nada novo ao modelo. Pega a primeira data DD/MM/AAAA do texto:
+    na prática o resumo quase sempre cita a data do próprio exame antes de
+    qualquer data de comparação com estudo anterior. Devolve
+    (rótulo "DD/MM/AAAA", chave de ordenação "AAAA-MM-DD") ou None."""
+    if not text:
+        return None
+    m = _SUMMARY_DATE_RE.search(text)
+    if not m:
+        return None
+    day, month, year = m.groups()
+    return f"{day}/{month}/{year}", f"{year}-{month}-{day}"
+
+
+def _document_sort_key(d):
+    extracted = _extract_summary_date(d["ai_summary"])
+    return extracted[1] if extracted else (d["captured_at"] or "")
+
+
 def _build_chronological_prompt(done_docs):
     """Usa os resumos individuais JÁ GERADOS de cada documento (texto), não
     os arquivos originais de novo — tentamos reenviar as imagens e piorou:
     o modelo dedupe texto com muito mais confiabilidade do que imagens
     visualmente parecidas, e a linha do tempo ficou repetindo exame.
-    `done_docs` vem ordenado por captured_at (recebimento no WhatsApp) só
-    como dica inicial — o prompt instrui o modelo a preferir a data real
-    mencionada dentro de cada resumo, quando houver."""
+    `done_docs` já vem ordenado (ver _document_sort_key) pela data real do
+    exame quando ela aparece no texto do resumo, com o recebimento no
+    WhatsApp só como aproximação pros casos sem data extraída — o rótulo
+    de cada entrada usa essa mesma data, pra não dar um rótulo que
+    contradiga o que o texto do resumo diz."""
     lines = [document_ai.DEFAULT_CHRONOLOGICAL_PROMPT_HEADER]
     for d in done_docs:
-        date_label = d["captured_at"][:10] if d["captured_at"] else "data de recebimento desconhecida"
+        extracted = _extract_summary_date(d["ai_summary"])
+        if extracted:
+            date_label = extracted[0]
+        else:
+            recebimento = d["captured_at"][:10] if d["captured_at"] else "desconhecida"
+            date_label = f"data real não identificada — recebido em {recebimento}"
         lines.append(f"[{date_label}] ({d.get('doc_type') or 'documento'}) {d['ai_summary']}")
     return "\n".join(lines)
 
@@ -380,7 +413,7 @@ def _process_one_chronological(contact_id, account_id):
         done_docs = [d for d in docs if d.get("ai_summary_status") == "done" and d.get("ai_summary")]
         if not done_docs:
             raise RuntimeError("Nenhum documento com resumo pronto ainda pra esse paciente")
-        done_docs.sort(key=lambda d: d["captured_at"] or "")
+        done_docs.sort(key=_document_sort_key)
 
         prompt = _build_chronological_prompt(done_docs)
         text, prompt_tokens, completion_tokens, elapsed = document_ai.summarize_chronological(prompt, document_count=len(done_docs))
