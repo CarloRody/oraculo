@@ -1200,6 +1200,7 @@ async function loadFichaPatient(resetTab) {
     const contactId = document.getElementById('fichaPatientSelect').value;
     const area = document.getElementById('fichaArea');
     stopChronoPoll();
+    stopDocsPoll();
     if (!contactId) { area.style.display = 'none'; return; }
     if (resetTab) currentFichaSubTab = 'cadastro';
     area.style.display = 'block';
@@ -1222,6 +1223,9 @@ async function loadFichaPatient(resetTab) {
         document.getElementById('fichaDocumentosBox').innerHTML = buildDocsHtml(docsData, Number(contactId), chronoData, true);
         if (chronoData && (chronoData.status === 'pending' || chronoData.status === 'processing')) {
             startChronoPoll(Number(contactId));
+        }
+        if ((docsData.documents || []).some(d => d.ai_summary_status === 'pending' || d.ai_summary_status === 'processing')) {
+            startDocsPoll(Number(contactId));
         }
 
         const treatments = (checklistData && checklistData.treatments) || [];
@@ -1606,6 +1610,36 @@ async function pollChronologicalSummary(contactId) {
 function startChronoPoll(contactId) {
     stopChronoPoll();
     chronoPollInterval = setInterval(() => pollChronologicalSummary(contactId), 4000);
+}
+
+let docsPollInterval = null;
+
+function stopDocsPoll() {
+    if (docsPollInterval) { clearInterval(docsPollInterval); docsPollInterval = null; }
+}
+
+// Enquanto algum documento estiver pending/processing (reprocessando ou
+// recém-juntado), recarrega a aba Documentos sozinho a cada 4s — antes só
+// atualizava se a pessoa saísse e voltasse na aba.
+async function pollPatientDocuments(contactId) {
+    const box = document.getElementById('fichaDocumentosBox');
+    if (!box) { stopDocsPoll(); return; }
+    try {
+        const [docsData, chronoData] = await Promise.all([
+            api(`/contacts/${contactId}/documents`),
+            api(`/contacts/${contactId}/chronological-summary`),
+        ]);
+        box.innerHTML = buildDocsHtml(docsData, contactId, chronoData, true);
+        const docs = docsData.documents || [];
+        if (!docs.some(d => d.ai_summary_status === 'pending' || d.ai_summary_status === 'processing')) stopDocsPoll();
+    } catch (e) {
+        stopDocsPoll();
+    }
+}
+
+function startDocsPoll(contactId) {
+    if (docsPollInterval) return;
+    docsPollInterval = setInterval(() => pollPatientDocuments(contactId), 4000);
 }
 
 async function requestChronologicalSummary(contactId) {
