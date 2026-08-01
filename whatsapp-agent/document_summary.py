@@ -359,23 +359,31 @@ def mark_chronological_failed(contact_id, error):
 
 
 _SUMMARY_DATE_RE = re.compile(r"\b(\d{2})/(\d{2})/(\d{4})\b")
+_BIRTHDATE_CONTEXT_RE = re.compile(r"nasc", re.IGNORECASE)
 
 
 def _extract_summary_date(text):
     """Tenta achar a data real do exame/laudo dentro do resumo individual
     já gerado (ex.: "realizado em 08/08/2025", "emitido em 13/05/2024") —
     só pra ordenar/rotular o resumo cronológico, não muda nada armazenado
-    nem pede nada novo ao modelo. Pega a primeira data DD/MM/AAAA do texto:
-    na prática o resumo quase sempre cita a data do próprio exame antes de
-    qualquer data de comparação com estudo anterior. Devolve
-    (rótulo "DD/MM/AAAA", chave de ordenação "AAAA-MM-DD") ou None."""
+    nem pede nada novo ao modelo. Percorre as datas DD/MM/AAAA do texto na
+    ordem em que aparecem e pula qualquer uma logo precedida por "nasc"
+    (nascimento/nascida/nascido) — sem isso, um resumo que só cita a data
+    de nascimento da paciente (nenhuma data do próprio exame no texto)
+    fazia a entrada inteira ser ordenada como se o exame fosse de décadas
+    atrás. Pega a primeira data restante: na prática o resumo quase sempre
+    cita a data do próprio exame antes de qualquer data de comparação com
+    estudo anterior. Devolve (rótulo "DD/MM/AAAA", chave de ordenação
+    "AAAA-MM-DD") ou None se nenhuma data (fora nascimento) foi encontrada."""
     if not text:
         return None
-    m = _SUMMARY_DATE_RE.search(text)
-    if not m:
-        return None
-    day, month, year = m.groups()
-    return f"{day}/{month}/{year}", f"{year}-{month}-{day}"
+    for m in _SUMMARY_DATE_RE.finditer(text):
+        context_before = text[max(0, m.start() - 30):m.start()]
+        if _BIRTHDATE_CONTEXT_RE.search(context_before):
+            continue
+        day, month, year = m.groups()
+        return f"{day}/{month}/{year}", f"{year}-{month}-{day}"
+    return None
 
 
 def _document_sort_key(d):
