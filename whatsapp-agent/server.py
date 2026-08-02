@@ -32,6 +32,7 @@ from werkzeug.utils import secure_filename
 import booking_flow
 import document_summary
 import flow_engine
+import nfse_flow
 import receipts_pdf
 import connectors.evolution as evolution
 from config import (ADMIN_API_KEY, DB_CONFIG, ORACULO_API_CONFIG, WHATSAPP_CONFIG,
@@ -132,6 +133,7 @@ ACCOUNT_COLUMNS = [
     "document_type", "document_number", "company_name", "company_address",
     "responsible_name", "responsible_cpf", "responsible_address",
     "booking_confirmed_message",
+    "inscricao_municipal", "regime_tributario", "codigo_servico_municipal",
 ]
 
 
@@ -342,6 +344,7 @@ def set_account_label(account_id, label):
 REGISTRATION_FIELDS = (
     "document_type", "document_number", "company_name", "company_address",
     "responsible_name", "responsible_cpf", "responsible_address",
+    "inscricao_municipal", "regime_tributario", "codigo_servico_municipal",
 )
 
 
@@ -5761,6 +5764,78 @@ def cp_send_receipt(receipt_id):
     return jsonify({"ok": True})
 
 
+def _invoice_owner(invoice_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_invoices WHERE id = %s", (invoice_id,))
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/invoices", methods=["GET"])
+def cp_list_invoices(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    contact_id = request.args.get("contact_id", type=int)
+    return jsonify({"invoices": nfse_flow.get_invoices(account_id, contact_id=contact_id)})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/invoices", methods=["GET"])
+def cp_list_patient_invoices(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account_id = _contact_account_id(contact_id)
+    return jsonify({"invoices": nfse_flow.get_invoices(account_id, contact_id=contact_id)})
+
+
+@app.route("/api/client-portal/contacts/<int:contact_id>/invoices", methods=["POST"])
+def cp_create_invoice(contact_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _contact_owner(contact_id) != user_id:
+        return _not_found("Paciente não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    account_id = _contact_account_id(contact_id)
+    data = request.json or {}
+    consultant_id = data.get("consultant_id")
+    if consultant_id and _consultant_owner(consultant_id) != user_id:
+        return _consultant_not_found(user_id)
+    invoice_id, error = nfse_flow.create_invoice(
+        account_id, contact_id, "secretary", consultant_id,
+        data.get("service_description"), data.get("amount"), data.get("service_date"),
+    )
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "id": invoice_id}), 201
+
+
+@app.route("/api/client-portal/invoices/<int:invoice_id>/cancel", methods=["POST"])
+def cp_cancel_invoice(invoice_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _invoice_owner(invoice_id) != user_id:
+        return _not_found("Nota fiscal não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    ok, error = nfse_flow.cancel_invoice(invoice_id, reason=data.get("reason"))
+    if not ok:
+        return jsonify({"ok": False, "message": error or "Não foi possível cancelar."}), 400
+    return jsonify({"ok": True})
+
+
 @app.route("/api/client-portal/contacts/<int:contact_id>/certificates", methods=["GET"])
 def cp_list_patient_certificates(contact_id):
     user_id, err = _require_client()
@@ -6495,6 +6570,51 @@ def api_portal_send_receipt(token, receipt_id):
     return jsonify({"ok": True})
 
 
+def _consultant_owns_invoice(consultant_id, invoice_id):
+    invoice = nfse_flow.get_invoice(invoice_id)
+    return invoice is not None and invoice["consultant_id"] == consultant_id
+
+
+@app.route("/api/consultant-portal/<token>/invoices", methods=["GET"])
+def api_portal_list_invoices(token):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    contact_id = request.args.get("contact_id", type=int)
+    return jsonify({"invoices": nfse_flow.get_invoices(consultant["account_id"], contact_id=contact_id)})
+
+
+@app.route("/api/consultant-portal/<token>/contacts/<int:contact_id>/invoices", methods=["POST"])
+def api_portal_create_invoice(token, contact_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_sees_contact(consultant["id"], contact_id):
+        return jsonify({"ok": False, "message": "Paciente não encontrado"}), 404
+    data = request.json or {}
+    invoice_id, error = nfse_flow.create_invoice(
+        consultant["account_id"], contact_id, "consultant", consultant["id"],
+        data.get("service_description"), data.get("amount"), data.get("service_date"),
+    )
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "id": invoice_id}), 201
+
+
+@app.route("/api/consultant-portal/<token>/invoices/<int:invoice_id>/cancel", methods=["POST"])
+def api_portal_cancel_invoice(token, invoice_id):
+    consultant = get_consultant_by_portal_token(token)
+    if not consultant:
+        return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
+    if not _consultant_owns_invoice(consultant["id"], invoice_id):
+        return jsonify({"ok": False, "message": "Nota fiscal não encontrada"}), 404
+    data = request.json or {}
+    ok, error = nfse_flow.cancel_invoice(invoice_id, reason=data.get("reason"))
+    if not ok:
+        return jsonify({"ok": False, "message": error or "Não foi possível cancelar."}), 400
+    return jsonify({"ok": True})
+
+
 def _consultant_owns_certificate(consultant_id, certificate_id):
     certificate = get_certificate(certificate_id)
     return certificate is not None and certificate["consultant_id"] == consultant_id
@@ -7210,6 +7330,7 @@ if __name__ == "__main__":
     threading.current_thread().name = "whatsapp-agent-main"
     threading.Thread(target=_reminder_loop, daemon=True, name="reminder-loop").start()
     threading.Thread(target=document_summary.document_summary_loop, daemon=True, name="document-summary-loop").start()
+    threading.Thread(target=nfse_flow.nfse_loop, daemon=True, name="nfse-loop").start()
     app.run(
         host=server_cfg.get("host", "0.0.0.0"),
         port=server_cfg.get("port", 5005),

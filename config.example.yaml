@@ -78,3 +78,9 @@ evolution_api:
 
 oraculo_api:
   base_url: "http://127.0.0.1:5001"   # ai_oraculo_saas (mesmo host, bare-metal) — usado pelo bot de resposta automática do WhatsApp pra chamar /api/chat
+
+nfse:
+  provider: "focus_nfe"
+  base_url: "https://api.focusnfe.com.br"
+  token: null              # token da empresa, gerado no painel da Focus NFe (Basic Auth: token como usuário, senha em branco)
+  ambiente: "homologacao"  # homologacao | producao — só trocar pra producao depois de validar uma nota de teste

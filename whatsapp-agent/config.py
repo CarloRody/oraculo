@@ -31,6 +31,7 @@ DB_CONFIG = {k: v for k, v in CONFIG["database"].items() if v is not None}
 WHATSAPP_CONFIG = CONFIG.get("whatsapp_agent") or {}
 EVOLUTION_CONFIG = CONFIG.get("evolution_api") or {}
 ORACULO_API_CONFIG = CONFIG.get("oraculo_api") or {}
+NFSE_CONFIG = CONFIG.get("nfse") or {}
 WHATSAPP_MEDIA_CONFIG = WHATSAPP_CONFIG.get("media") or {}
 
 # Mesmo modelo local (LM Studio) já usado pelo ai_oraculo_saas pro chat — uma

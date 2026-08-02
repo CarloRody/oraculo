@@ -1065,6 +1065,63 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_patient_documents
         ADD COLUMN IF NOT EXISTS document_group_id INTEGER REFERENCES whatsapp_patient_documents(id);
     """,
+
+    # 49 — dados fiscais do prestador (a clínica), necessários pra emitir
+    # NFS-e (ver nfse_flow.py/connectors/nfse_focus.py) além dos campos de
+    # empresa que já existem (document_type/document_number/company_name,
+    # migração #32) — inscrição municipal, regime tributário e código de
+    # serviço são específicos de nota fiscal, não fazem sentido pro recibo
+    # simples que já existia antes. Editados uma única vez no cadastro da
+    # conta (mesma tela que já edita os campos da #32).
+    """
+    ALTER TABLE whatsapp_accounts
+        ADD COLUMN IF NOT EXISTS inscricao_municipal VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS regime_tributario VARCHAR(30),
+        ADD COLUMN IF NOT EXISTS codigo_servico_municipal VARCHAR(20);
+    """,
+
+    # 50 — emissão de NFS-e (nota fiscal eletrônica de serviço), via Focus
+    # NFe (padrão nacional NFS-e — ver connectors/nfse_focus.py). Fluxo
+    # próprio, desacoplado de whatsapp_receipts (migração #33) por decisão
+    # explícita: o recibo atual não tem função fiscal, e juntar os dois
+    # complicaria o significado de "recibo" pra quem já usa. Snapshot de
+    # paciente na emissão (mesmo espírito do recibo — nunca muda
+    # retroativamente se o cadastro for editado depois). Nunca DELETE —
+    # só cancela, preservando trilha de auditoria de documento fiscal.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_invoices (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES whatsapp_contacts(id) ON DELETE CASCADE,
+        consultant_id INTEGER REFERENCES whatsapp_consultants(id) ON DELETE SET NULL,
+
+        patient_name VARCHAR(150) NOT NULL,
+        patient_cpf VARCHAR(14) NOT NULL,
+        patient_address TEXT,
+
+        service_description TEXT NOT NULL,
+        amount NUMERIC(10,2) NOT NULL CHECK (amount > 0),
+        service_date DATE NOT NULL,
+
+        status VARCHAR(20) NOT NULL DEFAULT 'pending'
+            CHECK (status IN ('pending', 'processing', 'authorized', 'error', 'cancelled')),
+        focus_ref VARCHAR(60),
+        numero_nfse VARCHAR(30),
+        codigo_verificacao VARCHAR(60),
+        pdf_url TEXT,
+        xml_url TEXT,
+        error_message TEXT,
+
+        requested_by VARCHAR(20) NOT NULL CHECK (requested_by IN ('secretary', 'consultant')),
+        requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        cancelled_at TIMESTAMPTZ,
+        cancelled_reason TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_invoices_account ON whatsapp_invoices(account_id, requested_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_invoices_contact ON whatsapp_invoices(contact_id, requested_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_invoices_pending ON whatsapp_invoices(status) WHERE status IN ('pending', 'processing');
+    """,
 ]
 
 

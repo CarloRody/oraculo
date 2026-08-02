@@ -411,6 +411,25 @@
             <label>Endereço</label>
             <input type="text" class="form-input" id="companyAddress" placeholder="Rua, número, bairro, cidade/UF">
         </div>
+        <h3 style="margin-top:1.25rem;">Dados fiscais (nota fiscal eletrônica)</h3>
+        <div class="form-row">
+            <div class="form-group" style="flex:1;">
+                <label>Inscrição municipal</label>
+                <input type="text" class="form-input" id="companyInscricaoMunicipal" placeholder="Confirme com o contador">
+            </div>
+            <div class="form-group" style="flex:1;">
+                <label>Regime tributário</label>
+                <select class="form-input" id="companyRegimeTributario">
+                    <option value="">Selecione</option>
+                    <option value="simples_nacional">Simples Nacional</option>
+                    <option value="normal">Normal (Lucro Presumido/Real)</option>
+                </select>
+            </div>
+        </div>
+        <div class="form-group">
+            <label>Código de serviço municipal</label>
+            <input type="text" class="form-input" id="companyCodigoServico" placeholder="Item da lista de serviços — confirme com o contador">
+        </div>
         <h3 style="margin-top:1.25rem;">Responsável</h3>
         <div class="form-group">
             <label>Nome</label>
@@ -595,6 +614,9 @@ function openCompanyModal(accountId) {
     document.getElementById('companyDocNumber').value = a.document_number || '';
     document.getElementById('companyName').value = a.company_name || '';
     document.getElementById('companyAddress').value = a.company_address || '';
+    document.getElementById('companyInscricaoMunicipal').value = a.inscricao_municipal || '';
+    document.getElementById('companyRegimeTributario').value = a.regime_tributario || '';
+    document.getElementById('companyCodigoServico').value = a.codigo_servico_municipal || '';
     document.getElementById('responsibleName').value = a.responsible_name || '';
     document.getElementById('responsibleCpf').value = a.responsible_cpf || '';
     document.getElementById('responsibleAddress').value = a.responsible_address || '';
@@ -612,6 +634,9 @@ async function submitCompanyModal() {
         document_number: document.getElementById('companyDocNumber').value.trim(),
         company_name: document.getElementById('companyName').value.trim(),
         company_address: document.getElementById('companyAddress').value.trim(),
+        inscricao_municipal: document.getElementById('companyInscricaoMunicipal').value.trim(),
+        regime_tributario: document.getElementById('companyRegimeTributario').value,
+        codigo_servico_municipal: document.getElementById('companyCodigoServico').value.trim(),
         responsible_name: document.getElementById('responsibleName').value.trim(),
         responsible_cpf: document.getElementById('responsibleCpf').value.trim(),
         responsible_address: document.getElementById('responsibleAddress').value.trim(),

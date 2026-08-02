@@ -526,6 +526,7 @@ function renderShell(me) {
                     <button class="subtab-btn" id="fichaSubTabEvolucao" onclick="switchFichaSubTab('evolucao')">Evolução</button>
                     <button class="subtab-btn" id="fichaSubTabDocumentos" onclick="switchFichaSubTab('documentos')">Documentos</button>
                     <button class="subtab-btn" id="fichaSubTabRecibos" onclick="switchFichaSubTab('recibos')">Recibos</button>
+                    <button class="subtab-btn" id="fichaSubTabNotasfiscais" onclick="switchFichaSubTab('notasfiscais')">Notas Fiscais</button>
                     <button class="subtab-btn" id="fichaSubTabAtestados" onclick="switchFichaSubTab('atestados')">Atestados</button>
                 </div>
 
@@ -557,6 +558,12 @@ function renderShell(me) {
                 <div id="ficha-recibos" class="card" style="display:none;">
                     <h2>Recibos</h2>
                     <div id="fichaRecibosBox"><p class="empty">Carregando...</p></div>
+                </div>
+
+                <div id="ficha-notasfiscais" class="card" style="display:none;">
+                    <h2>Notas Fiscais (NFS-e)</h2>
+                    <p class="empty" style="padding-top:0;">Emissão de nota fiscal eletrônica de serviço (via Focus NFe). Processamento é assíncrono — o status atualiza sozinho.</p>
+                    <div id="fichaInvoicesBox"><p class="empty">Carregando...</p></div>
                 </div>
 
                 <div id="ficha-atestados" class="card" style="display:none;">
@@ -1188,7 +1195,7 @@ let currentFichaSubTab = 'cadastro';
 
 function switchFichaSubTab(name) {
     currentFichaSubTab = name;
-    const names = ['cadastro', 'agendamentos', 'checklist', 'evolucao', 'documentos', 'recibos', 'atestados'];
+    const names = ['cadastro', 'agendamentos', 'checklist', 'evolucao', 'documentos', 'recibos', 'notasfiscais', 'atestados'];
     for (const n of names) {
         document.getElementById('ficha-' + n).style.display = (n === name) ? 'block' : 'none';
         document.getElementById('fichaSubTab' + n.charAt(0).toUpperCase() + n.slice(1)).classList.toggle('active', n === name);
@@ -1201,19 +1208,21 @@ async function loadFichaPatient(resetTab) {
     const area = document.getElementById('fichaArea');
     stopChronoPoll();
     stopDocsPoll();
+    stopInvoicesPoll();
     if (!contactId) { area.style.display = 'none'; return; }
     if (resetTab) currentFichaSubTab = 'cadastro';
     area.style.display = 'block';
-    ['fichaCadastroBox', 'fichaAgendamentosBox', 'fichaChecklistBox', 'fichaEvolucaoBox', 'fichaDocumentosBox', 'fichaRecibosBox', 'fichaAtestadosBox']
+    ['fichaCadastroBox', 'fichaAgendamentosBox', 'fichaChecklistBox', 'fichaEvolucaoBox', 'fichaDocumentosBox', 'fichaRecibosBox', 'fichaInvoicesBox', 'fichaAtestadosBox']
         .forEach(id => document.getElementById(id).innerHTML = '<p class="empty">Carregando...</p>');
     try {
-        const [record, apptData, evoData, docsData, chronoData, receiptsData, checklistData, certData] = await Promise.all([
+        const [record, apptData, evoData, docsData, chronoData, receiptsData, invoicesData, checklistData, certData] = await Promise.all([
             api(`/contacts/${contactId}/patient-record`),
             api(`/contacts/${contactId}/appointments`),
             api(`/contacts/${contactId}/evolution-notes`),
             api(`/contacts/${contactId}/documents`),
             api(`/contacts/${contactId}/chronological-summary`),
             api(`/receipts?contact_id=${contactId}`),
+            api(`/invoices?contact_id=${contactId}`),
             api(`/contacts/${contactId}/checklist-items`),
             api(`/certificates?contact_id=${contactId}`),
         ]);
@@ -1245,6 +1254,21 @@ async function loadFichaPatient(resetTab) {
             <button class="btn btn-sm" onclick="emitReceiptForContact(${contactId})">+ Emitir recibo</button>
             <div style="margin-top:0.6rem;">${receiptsListHtml((receiptsData && receiptsData.receipts) || [])}</div>
         `;
+        const invoicesList = (invoicesData && invoicesData.invoices) || [];
+        document.getElementById('fichaInvoicesBox').innerHTML = `
+            <button class="btn btn-sm" onclick="toggleNewInvoiceForm()">+ Emitir NFS-e</button>
+            <div id="newInvoiceForm" style="display:none; margin-top:1rem; border-top:1px solid #1a2744; padding-top:1rem;">
+                <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <div style="flex:1 1 140px;"><label>Data do serviço</label><input type="date" class="form-input" id="invoiceDate"></div>
+                    <div style="flex:1 1 140px;"><label>Valor (R$)</label><input type="number" step="0.01" min="0.01" class="form-input" id="invoiceAmount"></div>
+                </div>
+                <div class="form-group"><label>Serviço prestado</label><textarea class="form-input" id="invoiceService" rows="2" placeholder="Ex: Consulta médica"></textarea></div>
+                <button class="btn btn-block" onclick="createInvoice()">Emitir</button>
+                <button class="btn btn-secondary btn-block" onclick="toggleNewInvoiceForm(false)">Cancelar</button>
+            </div>
+            <div style="margin-top:0.6rem;">${invoicesListHtml(invoicesList)}</div>
+        `;
+        if (invoicesList.some(i => i.status === 'pending' || i.status === 'processing')) startInvoicesPoll(contactId);
         document.getElementById('fichaAtestadosBox').innerHTML = atestadosListHtml((certData && certData.certificates) || []);
 
         switchFichaSubTab(currentFichaSubTab);
@@ -1507,6 +1531,26 @@ function fmtDateOnly(iso) {
     return `${d}/${m}/${y}`;
 }
 
+const INVOICE_STATUS_LABEL = {
+    pending: '⏳ Aguardando envio', processing: '⏳ Processando na prefeitura',
+    authorized: '✅ Autorizada', error: '⚠️ Erro', cancelled: '❌ Cancelada',
+};
+
+function invoicesListHtml(invoices) {
+    if (!invoices.length) return '<p class="empty" style="padding:0.3rem 0;">Nenhuma nota fiscal emitida ainda.</p>';
+    return invoices.map(i => `
+        <div style="padding:0.5rem 0; border-bottom:1px solid #1a2744;">
+            <div style="font-size:0.85rem;"><strong>${i.numero_nfse ? 'NFS-e Nº ' + esc(i.numero_nfse) : 'Nota fiscal #' + i.id}</strong> — ${INVOICE_STATUS_LABEL[i.status] || i.status}</div>
+            <div style="font-size:0.78rem; color:#94a3b8;">${esc(i.patient_name)} · ${fmtDateOnly(i.service_date)} · R$ ${Number(i.amount).toFixed(2).replace('.', ',')} · ${esc(i.service_description)}</div>
+            ${i.status === 'error' && i.error_message ? `<div style="font-size:0.78rem; color:#f87171;">${esc(i.error_message)}</div>` : ''}
+            <div style="display:flex; gap:0.4rem; margin-top:0.3rem;">
+                ${i.status === 'authorized' && i.pdf_url ? `<a class="btn btn-sm btn-secondary" href="${esc(i.pdf_url)}" target="_blank" rel="noopener">Ver PDF</a>` : ''}
+                ${(i.status === 'authorized' || i.status === 'pending' || i.status === 'processing') ? `<button class="btn btn-sm btn-danger" onclick="cancelInvoice(${i.id})">Cancelar</button>` : ''}
+            </div>
+        </div>
+    `).join('');
+}
+
 // Agrupamento pendente/próximos/histórico com tendência de sinais vitais —
 // compartilhado entre o box compacto do atendimento e a ficha completa da
 // aba Pacientes.
@@ -1640,6 +1684,43 @@ async function pollPatientDocuments(contactId) {
 function startDocsPoll(contactId) {
     if (docsPollInterval) return;
     docsPollInterval = setInterval(() => pollPatientDocuments(contactId), 4000);
+}
+
+let invoicesPollInterval = null;
+
+function stopInvoicesPoll() {
+    if (invoicesPollInterval) { clearInterval(invoicesPollInterval); invoicesPollInterval = null; }
+}
+
+async function pollPatientInvoices(contactId) {
+    const box = document.getElementById('fichaInvoicesBox');
+    if (!box) { stopInvoicesPoll(); return; }
+    try {
+        const invoicesData = await api(`/invoices?contact_id=${contactId}`);
+        const invoicesList = (invoicesData && invoicesData.invoices) || [];
+        const formOpen = document.getElementById('newInvoiceForm').style.display !== 'none';
+        box.innerHTML = `
+            <button class="btn btn-sm" onclick="toggleNewInvoiceForm()">+ Emitir NFS-e</button>
+            <div id="newInvoiceForm" style="display:${formOpen ? 'block' : 'none'}; margin-top:1rem; border-top:1px solid #1a2744; padding-top:1rem;">
+                <div style="display:flex; gap:0.5rem; flex-wrap:wrap;">
+                    <div style="flex:1 1 140px;"><label>Data do serviço</label><input type="date" class="form-input" id="invoiceDate"></div>
+                    <div style="flex:1 1 140px;"><label>Valor (R$)</label><input type="number" step="0.01" min="0.01" class="form-input" id="invoiceAmount"></div>
+                </div>
+                <div class="form-group"><label>Serviço prestado</label><textarea class="form-input" id="invoiceService" rows="2" placeholder="Ex: Consulta médica"></textarea></div>
+                <button class="btn btn-block" onclick="createInvoice()">Emitir</button>
+                <button class="btn btn-secondary btn-block" onclick="toggleNewInvoiceForm(false)">Cancelar</button>
+            </div>
+            <div style="margin-top:0.6rem;">${invoicesListHtml(invoicesList)}</div>
+        `;
+        if (!invoicesList.some(i => i.status === 'pending' || i.status === 'processing')) stopInvoicesPoll();
+    } catch (e) {
+        stopInvoicesPoll();
+    }
+}
+
+function startInvoicesPoll(contactId) {
+    if (invoicesPollInterval) return;
+    invoicesPollInterval = setInterval(() => pollPatientInvoices(contactId), 4000);
 }
 
 async function requestChronologicalSummary(contactId) {
@@ -2164,6 +2245,47 @@ async function cancelReceipt(id) {
         await api(`/receipts/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
         loadRecibosList();
         if (document.getElementById('fichaPatientSelect').value) loadFichaPatient();
+    } catch (e) { alert(e.message); }
+}
+
+// Paciente é sempre o da ficha aberta (sem select próprio no formulário,
+// mesmo espírito de createAtestado/loadAtestadoFormOptionsForFicha).
+function toggleNewInvoiceForm(show) {
+    const box = document.getElementById('newInvoiceForm');
+    const visible = show !== undefined ? show : box.style.display === 'none';
+    box.style.display = visible ? 'block' : 'none';
+    if (visible) {
+        document.getElementById('invoiceDate').value = '';
+        document.getElementById('invoiceAmount').value = '';
+        document.getElementById('invoiceService').value = '';
+    }
+}
+
+async function createInvoice() {
+    const contactId = document.getElementById('fichaPatientSelect').value;
+    const serviceDate = document.getElementById('invoiceDate').value;
+    const amount = document.getElementById('invoiceAmount').value;
+    const serviceDescription = document.getElementById('invoiceService').value.trim();
+    if (!contactId) return alert('Selecione o paciente.');
+    if (!serviceDate) return alert('Informe a data do serviço.');
+    if (!amount || Number(amount) <= 0) return alert('Informe um valor válido.');
+    if (!serviceDescription) return alert('Descreva o serviço prestado.');
+    try {
+        await api(`/contacts/${contactId}/invoices`, {
+            method: 'POST',
+            body: JSON.stringify({ service_description: serviceDescription, amount: Number(amount), service_date: serviceDate }),
+        });
+        toggleNewInvoiceForm(false);
+        loadFichaPatient(false);
+    } catch (e) { alert(e.message); }
+}
+
+async function cancelInvoice(id) {
+    const reason = prompt('Motivo do cancelamento (opcional):') || '';
+    if (!confirm('Cancelar esta nota fiscal? Se já estiver autorizada, o cancelamento é enviado à prefeitura.')) return;
+    try {
+        await api(`/invoices/${id}/cancel`, { method: 'POST', body: JSON.stringify({ reason }) });
+        loadFichaPatient(false);
     } catch (e) { alert(e.message); }
 }
 
