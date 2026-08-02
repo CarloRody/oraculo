@@ -1591,15 +1591,15 @@ function buildEvoHtml(evoData, contactId, editable) {
 function aiSummaryHtml(d) {
     if (d.ai_summary_status === 'done' && d.ai_summary) {
         return `<div style="margin-top:0.35rem;">
-            <div style="font-size:0.82rem; color:#64748b;">🤖 Resumo por IA</div>
-            <div style="font-size:0.94rem; white-space:pre-wrap;">${esc(d.ai_summary)}</div>
+            <div style="font-size:0.9rem; color:#64748b;">🤖 Resumo por IA</div>
+            <div style="font-size:1.08rem; line-height:1.5; white-space:pre-wrap;">${esc(d.ai_summary)}</div>
         </div>`;
     }
     if (d.ai_summary_status === 'pending' || d.ai_summary_status === 'processing') {
-        return `<div style="font-size:0.82rem; color:#64748b; margin-top:0.35rem;">🤖 Gerando resumo...</div>`;
+        return `<div style="font-size:0.9rem; color:#64748b; margin-top:0.35rem;">🤖 Gerando resumo...</div>`;
     }
     if (d.ai_summary_status === 'failed') {
-        return `<div style="font-size:0.82rem; color:#f59e0b; margin-top:0.35rem;">🤖 Falha ao gerar resumo</div>`;
+        return `<div style="font-size:0.9rem; color:#f59e0b; margin-top:0.35rem;">🤖 Falha ao gerar resumo</div>`;
     }
     return '';
 }
@@ -1617,22 +1617,22 @@ function chronologicalSummaryHtml(contactId, chrono) {
     const btnLabel = hasSummary ? '🔄 Atualizar resumo cronológico' : '🕐 Gerar resumo cronológico';
     let body = '';
     if (busy) {
-        body = `<div style="font-size:0.9rem; color:#64748b; margin-top:0.5rem;">Gerando resumo cronológico...</div>`;
+        body = `<div style="font-size:1rem; color:#64748b; margin-top:0.5rem;">Gerando resumo cronológico...</div>`;
     } else if (status === 'failed') {
-        body = `<div style="font-size:0.9rem; color:#f59e0b; margin-top:0.5rem;">Falha ao gerar: ${esc(chrono.error || 'erro desconhecido')}</div>`;
+        body = `<div style="font-size:1rem; color:#f59e0b; margin-top:0.5rem;">Falha ao gerar: ${esc(chrono.error || 'erro desconhecido')}</div>`;
     } else if (!hasSummary) {
-        body = `<div style="font-size:0.85rem; color:#64748b; margin-top:0.4rem;">Ainda não gerado.</div>`;
+        body = `<div style="font-size:0.95rem; color:#64748b; margin-top:0.4rem;">Ainda não gerado.</div>`;
     }
     if (hasSummary) {
         body += `
-            <div style="margin-top:0.5rem; white-space:pre-wrap; font-size:0.94rem;">${esc(chrono.summary)}</div>
-            <div style="font-size:0.78rem; color:#64748b; margin-top:0.3rem;">Gerado em ${fmtDateTime(chrono.completed_at)}, com base em ${chrono.document_count ?? '?'} documento(s)${busy ? ' — desatualizado, gerando novo' : ''}.</div>
+            <div style="margin-top:0.5rem; white-space:pre-wrap; font-size:1.08rem; line-height:1.5;">${esc(chrono.summary)}</div>
+            <div style="font-size:0.85rem; color:#64748b; margin-top:0.3rem;">Gerado em ${fmtDateTime(chrono.completed_at)}, com base em ${chrono.document_count ?? '?'} documento(s)${busy ? ' — desatualizado, gerando novo' : ''}.</div>
         `;
     }
     return `
     <div id="chronoSummaryBox" style="background:#0f1c33; border:1px solid #1a2744; border-radius:8px; padding:0.75rem; margin-bottom:0.75rem;">
         <div style="display:flex; justify-content:space-between; align-items:center; gap:0.5rem;">
-            <div style="font-size:0.92rem; font-weight:600;">🕐 Resumo cronológico</div>
+            <div style="font-size:1.02rem; font-weight:600;">🕐 Resumo cronológico</div>
             <button class="btn btn-sm" ${busy ? 'disabled' : ''} onclick="requestChronologicalSummary(${contactId})">${btnLabel}</button>
         </div>
         ${body}
@@ -1757,10 +1757,10 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
                     <div style="display:flex; align-items:center; gap:0.6rem;">
                         ${d.doc_type === 'image' && d.status === 'stored' ? `<a href="${fileUrl}" target="_blank"><img src="${fileUrl}" style="width:70px; height:70px; object-fit:cover; border-radius:6px;"></a>` : ''}
                         <div>
-                            <div style="font-size:0.98rem; font-weight:600;">${d.title ? esc(d.title) : docTypeLabel(d)}</div>
-                            <div style="font-size:0.82rem; color:#64748b;">${docTypeLabel(d)}${d.original_name ? ' · ' + esc(d.original_name) : ''} · ${fmtDateTime(d.captured_at)}</div>
-                            ${d.caption ? `<div style="font-size:0.85rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
-                            ${d.group_count >= 2 ? `<div style="font-size:0.82rem; color:#64748b;">📎 ${d.group_count} páginas neste documento — <a href="#" onclick="adjustDocumentGroup(${contactId}, ${d.id}); return false;">Ajustar</a></div>` : ''}
+                            <div style="font-size:1.15rem; font-weight:600;">${d.title ? esc(d.title) : docTypeLabel(d)}</div>
+                            <div style="font-size:0.92rem; color:#64748b;">${docTypeLabel(d)}${d.original_name ? ' · ' + esc(d.original_name) : ''} · ${fmtDateTime(d.captured_at)}</div>
+                            ${d.caption ? `<div style="font-size:0.98rem; color:#94a3b8;">${esc(d.caption)}</div>` : ''}
+                            ${d.group_count >= 2 ? `<div style="font-size:0.92rem; color:#64748b;">📎 ${d.group_count} páginas neste documento — <a href="#" onclick="adjustDocumentGroup(${contactId}, ${d.id}); return false;">Ajustar</a></div>` : ''}
                         </div>
                     </div>
                     <div style="display:flex; gap:0.4rem;">
@@ -1775,7 +1775,7 @@ function buildDocsHtml(docsData, contactId, chronoData, showActions) {
                             const thumb = m.doc_type === 'image'
                                 ? `<img src="${memberUrl}" style="width:55px; height:55px; object-fit:cover; border-radius:6px; display:block;">`
                                 : `<div style="width:55px; height:55px; background:#111a2e; border-radius:6px; display:flex; align-items:center; justify-content:center; font-size:1.1rem;">📎</div>`;
-                            return `<a href="${memberUrl}" target="_blank" style="text-align:center; text-decoration:none;">${thumb}<div style="font-size:0.7rem; color:#64748b;">${fmtDateTime(m.captured_at)}</div></a>`;
+                            return `<a href="${memberUrl}" target="_blank" style="text-align:center; text-decoration:none;">${thumb}<div style="font-size:0.8rem; color:#64748b;">${fmtDateTime(m.captured_at)}</div></a>`;
                         }).join('')}
                     </div>` : ''}
                 ${aiSummaryHtml(d)}
