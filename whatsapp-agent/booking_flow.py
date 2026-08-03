@@ -111,7 +111,7 @@ def parse_yes_no(text):
     return None
 
 
-def compute_free_slots(consultant, days_ahead=14, limit=10):
+def compute_free_slots(consultant, days_ahead=14, limit=10, start_date=None):
     """Próximos horários livres do consultor, cruzando weekly_availability
     (JSONB, ex: {"mon": [["09:00","12:00"]]}) com os agendamentos já
     confirmados. Retorna datetimes com timezone (America/Sao_Paulo).
@@ -120,7 +120,12 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
     lado das chaves de dia da semana — datas avulsas, cadastradas pelo
     consultor pra liberar um horário fora do padrão semanal normal. Os dois
     tipos de chave se SOMAM (uma data avulsa nunca substitui o padrão da
-    semana, só adiciona mais intervalo naquele dia)."""
+    semana, só adiciona mais intervalo naquele dia).
+
+    start_date (opcional) desloca a janela de busca pra frente, em vez de
+    sempre começar hoje — é o que permite paginar pra qualquer dia futuro
+    (ver Agenda 3D em painel-secretaria-3d.html) sem precisar de um `limit`
+    gigante numa busca só."""
     availability = consultant.get("weekly_availability") or {}
     if not availability:
         return []
@@ -145,7 +150,7 @@ def compute_free_slots(consultant, days_ahead=14, limit=10):
         conn.close()
 
     slots = []
-    day = now.date()
+    day = start_date or now.date()
     for _ in range(days_ahead):
         key = WEEKDAY_KEYS[day.weekday()]
         ranges = list(availability.get(key, [])) + list(availability.get(day.isoformat(), []))

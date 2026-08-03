@@ -5007,8 +5007,15 @@ def cp_free_slots(consultant_id):
         return _consultant_not_found(user_id)
     consultant = get_consultant(consultant_id)
     days_ahead = min(max(request.args.get("days_ahead", 14, type=int), 1), 120)
-    limit = min(max(request.args.get("limit", 10, type=int), 1), 300)
-    slots = booking_flow.compute_free_slots(consultant, days_ahead=days_ahead, limit=limit)
+    limit = min(max(request.args.get("limit", 10, type=int), 1), 500)
+    start_date = None
+    start_date_str = request.args.get("start_date")
+    if start_date_str:
+        try:
+            start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
+        except ValueError:
+            return jsonify({"ok": False, "message": "start_date inválida, use YYYY-MM-DD"}), 400
+    slots = booking_flow.compute_free_slots(consultant, days_ahead=days_ahead, limit=limit, start_date=start_date)
     return jsonify({"slots": [s.isoformat() for s in slots]})
 
 
