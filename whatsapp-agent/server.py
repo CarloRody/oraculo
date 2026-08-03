@@ -5006,8 +5006,8 @@ def cp_free_slots(consultant_id):
     if _consultant_owner(consultant_id) != user_id:
         return _consultant_not_found(user_id)
     consultant = get_consultant(consultant_id)
-    days_ahead = min(max(request.args.get("days_ahead", 14, type=int), 1), 30)
-    limit = min(max(request.args.get("limit", 10, type=int), 1), 60)
+    days_ahead = min(max(request.args.get("days_ahead", 14, type=int), 1), 120)
+    limit = min(max(request.args.get("limit", 10, type=int), 1), 300)
     slots = booking_flow.compute_free_slots(consultant, days_ahead=days_ahead, limit=limit)
     return jsonify({"slots": [s.isoformat() for s in slots]})
 
