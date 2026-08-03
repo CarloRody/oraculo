@@ -790,9 +790,7 @@ MIGRATIONS = [
     # retorno, encaminhamento) do mesmo paciente nessa clínica — início
     # automático (1ª consulta concluída sem tratamento ativo cria um),
     # fim manual (secretária marca "concluído", ver complete_patient_treatment
-    # em server.py). Índice único parcial garante no máximo 1 tratamento
-    # ATIVO por paciente por vez, sem impedir vários concluídos ao longo do
-    # tempo. appointment_id em whatsapp_checklist_items vira informativo
+    # em server.py). appointment_id em whatsapp_checklist_items vira informativo
     # (qual consulta criou aquele item) — quem identifica o item agora é
     # (treatment_id, template_id), daí a troca de constraint única.
     #
@@ -815,8 +813,6 @@ MIGRATIONS = [
         started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         completed_at TIMESTAMPTZ
     );
-    CREATE UNIQUE INDEX IF NOT EXISTS idx_one_active_treatment_per_patient
-        ON whatsapp_patient_treatments(contact_id, account_id) WHERE status = 'active';
     CREATE INDEX IF NOT EXISTS idx_patient_treatments_contact
         ON whatsapp_patient_treatments(contact_id, started_at DESC);
 
