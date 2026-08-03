@@ -3955,6 +3955,11 @@ def secretary_panel_page():
     return send_from_directory(PUBLIC_DIR, "painel-secretaria.html")
 
 
+@app.route("/painel-secretaria-3d")
+def secretary_panel_3d_page():
+    return send_from_directory(PUBLIC_DIR, "painel-secretaria-3d.html")
+
+
 @app.route("/admin/resumos-documentos")
 def admin_document_summaries_page():
     return send_from_directory(PUBLIC_DIR, "admin-resumos.html")
