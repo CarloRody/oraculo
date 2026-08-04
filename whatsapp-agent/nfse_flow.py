@@ -33,6 +33,13 @@ INVOICE_COLUMNS = [
     "status", "focus_ref", "numero_nfse", "codigo_verificacao",
     "pdf_url", "xml_url", "error_message",
     "requested_by", "requested_at", "completed_at", "cancelled_at", "cancelled_reason",
+    "service_catalog_id", "codigo_tributacao_nacional", "codigo_servico_municipal", "codigo_nbs",
+]
+
+SERVICE_CATALOG_COLUMNS = [
+    "id", "account_id", "name", "description_template",
+    "codigo_tributacao_nacional", "codigo_servico_municipal", "codigo_nbs",
+    "active", "created_at",
 ]
 
 
@@ -49,7 +56,7 @@ def _row_to_invoice(row):
     return d
 
 
-def get_invoices(account_id, contact_id=None):
+def get_invoices(account_id, contact_id=None, status=None, q=None, date_from=None, date_to=None, limit=None):
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -59,10 +66,23 @@ def get_invoices(account_id, contact_id=None):
         if contact_id:
             where.append("contact_id = %s")
             params.append(contact_id)
-        cur.execute(
-            f"SELECT {cols} FROM whatsapp_invoices WHERE {' AND '.join(where)} ORDER BY requested_at DESC",
-            params,
-        )
+        if status:
+            where.append("status = %s")
+            params.append(status)
+        if q:
+            where.append("patient_name ILIKE %s")
+            params.append(f"%{q}%")
+        if date_from:
+            where.append("service_date >= %s")
+            params.append(date_from)
+        if date_to:
+            where.append("service_date <= %s")
+            params.append(date_to)
+        sql = f"SELECT {cols} FROM whatsapp_invoices WHERE {' AND '.join(where)} ORDER BY requested_at DESC"
+        if limit:
+            sql += " LIMIT %s"
+            params.append(limit)
+        cur.execute(sql, params)
         return [_row_to_invoice(r) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -86,22 +106,50 @@ def get_invoice(invoice_id):
 
 # Campos fiscais do prestador que têm que estar cadastrados na conta antes
 # de emitir a primeira nota (ver migração #32 pros 3 primeiros e #49 pros
-# 3 últimos — mesma tela de "dados da empresa" que já existe).
+# 2 seguintes — mesma tela de "dados da empresa" que já existe). O código
+# de serviço municipal saiu daqui (ver _resolve_service_codes) — agora pode
+# vir do catálogo por nota em vez de só do valor único da conta.
 _REQUIRED_ACCOUNT_FIELDS = (
     ("document_number", "CNPJ da clínica"),
     ("company_name", "razão social da clínica"),
     ("inscricao_municipal", "inscrição municipal"),
     ("regime_tributario", "regime tributário"),
-    ("codigo_servico_municipal", "código de serviço municipal"),
 )
 
 
+def _resolve_service_codes(account_id, service_catalog_id, account):
+    """Resolve os 3 códigos fiscais que vão pra nota: se `service_catalog_id`
+    for informado, usa os códigos daquela entrada (com fallback pro código
+    municipal da conta se a entrada não tiver o dela — mesma migração
+    gradual de quem ainda não cadastrou tudo no catálogo); sem
+    `service_catalog_id`, usa só o código municipal da conta (comportamento
+    de antes do catálogo existir). Devolve (dict com os 3 campos, None) ou
+    (None, mensagem de erro)."""
+    if service_catalog_id:
+        entry = get_service_catalog_entry(service_catalog_id)
+        if not entry or entry["account_id"] != account_id or not entry["active"]:
+            return None, "Serviço do cadastro não encontrado."
+        return {
+            "codigo_tributacao_nacional": entry.get("codigo_tributacao_nacional"),
+            "codigo_servico_municipal": entry.get("codigo_servico_municipal") or (account or {}).get("codigo_servico_municipal"),
+            "codigo_nbs": entry.get("codigo_nbs"),
+        }, None
+    return {
+        "codigo_tributacao_nacional": None,
+        "codigo_servico_municipal": (account or {}).get("codigo_servico_municipal"),
+        "codigo_nbs": None,
+    }, None
+
+
 def create_invoice(account_id, contact_id, requested_by, consultant_id,
-                    service_description, amount, service_date):
+                    service_description, amount, service_date, service_catalog_id=None):
     """Valida e grava com status 'pending' — quem realmente chama a Focus
     NFe é nfse_loop, que roda em background (mesmo desenho de
-    document_summary.create + _process_one_document). Devolve
-    (invoice_id, None) ou (None, mensagem)."""
+    document_summary.create + _process_one_document). `service_catalog_id`
+    opcional grava um snapshot dos códigos fiscais daquela entrada na
+    própria nota (ver _resolve_service_codes) — editar o catálogo depois
+    não muda notas já criadas. Devolve (invoice_id, None) ou (None,
+    mensagem)."""
     import server  # tardio — ver docstring do módulo
 
     service_description = (service_description or "").strip()
@@ -130,6 +178,13 @@ def create_invoice(account_id, contact_id, requested_by, consultant_id,
         return None, ("Complete o cadastro fiscal da clínica antes de emitir nota fiscal "
                        f"(faltando: {', '.join(missing)}).")
 
+    codes, error = _resolve_service_codes(account_id, service_catalog_id, account)
+    if error:
+        return None, error
+    if not codes["codigo_servico_municipal"]:
+        return None, ("Complete o cadastro fiscal da clínica antes de emitir nota fiscal "
+                       "(faltando: código de serviço municipal).")
+
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -137,12 +192,15 @@ def create_invoice(account_id, contact_id, requested_by, consultant_id,
             """INSERT INTO whatsapp_invoices
                (account_id, contact_id, consultant_id,
                 patient_name, patient_cpf, patient_address,
-                service_description, amount, service_date, requested_by)
-               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                service_description, amount, service_date, requested_by,
+                service_catalog_id, codigo_tributacao_nacional, codigo_servico_municipal, codigo_nbs)
+               VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                RETURNING id""",
             (account_id, contact_id, consultant_id,
              patient["name"], patient["cpf"], patient.get("address"),
-             service_description, amount, service_date, requested_by),
+             service_description, amount, service_date, requested_by,
+             service_catalog_id, codes["codigo_tributacao_nacional"],
+             codes["codigo_servico_municipal"], codes["codigo_nbs"]),
         )
         invoice_id = cur.fetchone()[0]
         conn.commit()
@@ -176,6 +234,203 @@ def cancel_invoice(invoice_id, reason=None):
         )
         conn.commit()
         return cur.rowcount > 0, None
+    finally:
+        conn.close()
+
+
+_UNSET = object()
+
+
+def update_invoice(invoice_id, service_description=None, amount=None, service_date=None, service_catalog_id=_UNSET):
+    """Edição parcial — só aplica os campos passados. Só é permitida antes
+    de qualquer autorização real (status 'pending') ou depois de uma
+    tentativa que falhou ('error') — uma nota 'processing'/'authorized' já
+    foi (ou está sendo) comunicada à prefeitura sob os dados originais, não
+    dá pra editar retroativamente. Devolve (True, None) ou (False, mensagem)."""
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        return False, "Nota não encontrada."
+    if invoice["status"] not in ("pending", "error"):
+        return False, "Só é possível editar notas ainda não transmitidas ou com erro."
+
+    fields, params = [], []
+    if service_description is not None:
+        service_description = service_description.strip()
+        if not service_description:
+            return False, "Descrição do serviço é obrigatória."
+        fields.append("service_description = %s")
+        params.append(service_description)
+    if amount is not None:
+        try:
+            amount = Decimal(str(amount))
+        except Exception:
+            return False, "Valor inválido."
+        if amount <= 0:
+            return False, "Valor deve ser maior que zero."
+        fields.append("amount = %s")
+        params.append(amount)
+    if service_date is not None:
+        if not service_date:
+            return False, "Data do serviço é obrigatória."
+        fields.append("service_date = %s")
+        params.append(service_date)
+    if service_catalog_id is not _UNSET:
+        import server  # tardio — ver docstring do módulo
+        account = server.get_account(invoice["account_id"])
+        codes, error = _resolve_service_codes(invoice["account_id"], service_catalog_id, account)
+        if error:
+            return False, error
+        fields += ["service_catalog_id = %s", "codigo_tributacao_nacional = %s",
+                   "codigo_servico_municipal = %s", "codigo_nbs = %s"]
+        params += [service_catalog_id, codes["codigo_tributacao_nacional"],
+                   codes["codigo_servico_municipal"], codes["codigo_nbs"]]
+
+    if not fields:
+        return True, None
+
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        params.append(invoice_id)
+        cur.execute(f"UPDATE whatsapp_invoices SET {', '.join(fields)} WHERE id = %s", params)
+        conn.commit()
+        return cur.rowcount > 0, None
+    finally:
+        conn.close()
+
+
+def retry_invoice(invoice_id):
+    """Reenvia uma nota que falhou — só a partir de 'error'. Só reseta pra
+    'pending'; quem realmente reenvia é o mesmo nfse_loop de sempre, no
+    próximo ciclo (_claim_next_pending só olha 'pending'). Como
+    nfse_focus.emit_invoice usa o id da nota como referência (chave de
+    idempotência), reenviar não duplica nada na Focus NFe mesmo que a
+    tentativa anterior tenha ido parcialmente adiante."""
+    invoice = get_invoice(invoice_id)
+    if not invoice:
+        return False, "Nota não encontrada."
+    if invoice["status"] != "error":
+        return False, "Só é possível retransmitir notas com erro."
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whatsapp_invoices SET status = 'pending', error_message = NULL, completed_at = NULL
+               WHERE id = %s""",
+            (invoice_id,),
+        )
+        conn.commit()
+        return cur.rowcount > 0, None
+    finally:
+        conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Catálogo de serviços fiscais
+# ---------------------------------------------------------------------------
+
+def _row_to_service_catalog(row):
+    d = dict(zip(SERVICE_CATALOG_COLUMNS, row))
+    d["created_at"] = d["created_at"].isoformat() if d["created_at"] else None
+    return d
+
+
+def list_service_catalog(account_id, only_active=True):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(SERVICE_CATALOG_COLUMNS)
+        where = "account_id = %s" + (" AND active" if only_active else "")
+        cur.execute(f"SELECT {cols} FROM whatsapp_service_catalog WHERE {where} ORDER BY name", (account_id,))
+        return [_row_to_service_catalog(r) for r in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_service_catalog_entry(entry_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cols = ", ".join(SERVICE_CATALOG_COLUMNS)
+        cur.execute(f"SELECT {cols} FROM whatsapp_service_catalog WHERE id = %s", (entry_id,))
+        row = cur.fetchone()
+        return _row_to_service_catalog(row) if row else None
+    finally:
+        conn.close()
+
+
+def create_service_catalog_entry(account_id, name, description_template,
+                                  codigo_tributacao_nacional=None, codigo_servico_municipal=None, codigo_nbs=None):
+    name = (name or "").strip()
+    description_template = (description_template or "").strip()
+    if not name:
+        return None, "Nome do serviço é obrigatório."
+    if not description_template:
+        return None, "Descrição padrão do serviço é obrigatória."
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """INSERT INTO whatsapp_service_catalog
+               (account_id, name, description_template, codigo_tributacao_nacional, codigo_servico_municipal, codigo_nbs)
+               VALUES (%s, %s, %s, %s, %s, %s) RETURNING id""",
+            (account_id, name, description_template,
+             (codigo_tributacao_nacional or "").strip() or None,
+             (codigo_servico_municipal or "").strip() or None,
+             (codigo_nbs or "").strip() or None),
+        )
+        entry_id = cur.fetchone()[0]
+        conn.commit()
+        return entry_id, None
+    finally:
+        conn.close()
+
+
+def update_service_catalog_entry(entry_id, name=None, description_template=None,
+                                  codigo_tributacao_nacional=None, codigo_servico_municipal=None, codigo_nbs=None):
+    fields, params = [], []
+    if name is not None:
+        name = name.strip()
+        if not name:
+            return False, "Nome do serviço é obrigatório."
+        fields.append("name = %s")
+        params.append(name)
+    if description_template is not None:
+        description_template = description_template.strip()
+        if not description_template:
+            return False, "Descrição padrão do serviço é obrigatória."
+        fields.append("description_template = %s")
+        params.append(description_template)
+    for field, value in (
+        ("codigo_tributacao_nacional", codigo_tributacao_nacional),
+        ("codigo_servico_municipal", codigo_servico_municipal),
+        ("codigo_nbs", codigo_nbs),
+    ):
+        if value is not None:
+            fields.append(f"{field} = %s")
+            params.append(value.strip() or None)
+    if not fields:
+        return True, None
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        params.append(entry_id)
+        cur.execute(f"UPDATE whatsapp_service_catalog SET {', '.join(fields)} WHERE id = %s", params)
+        conn.commit()
+        return cur.rowcount > 0, None
+    finally:
+        conn.close()
+
+
+def deactivate_service_catalog_entry(entry_id):
+    """Soft delete — nunca DELETE, notas já emitidas podem referenciar essa
+    linha (ver comentário da migração #52)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE whatsapp_service_catalog SET active = FALSE WHERE id = %s", (entry_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
 
@@ -250,7 +505,23 @@ def _build_dps_payload(invoice, account):
     exata (nomes de campo) a confirmar contra doc.focusnfe.com.br/
     reference/nfse-nacional e o guia de Divinópolis antes da primeira
     emissão real; a estrutura prestador/tomador/servico abaixo segue o
-    padrão que a Focus NFe documenta pros outros tipos de nota."""
+    padrão que a Focus NFe documenta pros outros tipos de nota.
+
+    Códigos fiscais do serviço priorizam o snapshot gravado na própria nota
+    (do catálogo escolhido na emissão, ver _resolve_service_codes) e caem
+    pro valor da conta só pra notas antigas, de antes do catálogo existir.
+    `codigo_tributacao_nacional`/`codigo_nbs` só entram no payload quando
+    presentes — nome exato do(s) campo(s) também a confirmar."""
+    servico = {
+        "discriminacao": invoice["service_description"],
+        "codigo_tributario_municipio": invoice.get("codigo_servico_municipal") or account.get("codigo_servico_municipal"),
+        "valor_servicos": invoice["amount"],
+        "data_competencia": invoice["service_date"],
+    }
+    if invoice.get("codigo_tributacao_nacional"):
+        servico["codigo_tributacao_nacional"] = invoice["codigo_tributacao_nacional"]
+    if invoice.get("codigo_nbs"):
+        servico["codigo_nbs"] = invoice["codigo_nbs"]
     return {
         "prestador": {
             "cnpj": account.get("document_number"),
@@ -262,12 +533,7 @@ def _build_dps_payload(invoice, account):
             "razao_social": invoice["patient_name"],
             "endereco": invoice.get("patient_address"),
         },
-        "servico": {
-            "discriminacao": invoice["service_description"],
-            "codigo_tributario_municipio": account.get("codigo_servico_municipal"),
-            "valor_servicos": invoice["amount"],
-            "data_competencia": invoice["service_date"],
-        },
+        "servico": servico,
         "regime_tributario": account.get("regime_tributario"),
     }
 

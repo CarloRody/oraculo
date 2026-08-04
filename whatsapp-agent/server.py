@@ -5812,7 +5812,14 @@ def cp_list_invoices(account_id):
     err = _require_crm_medico(user_id)
     if err: return err
     contact_id = request.args.get("contact_id", type=int)
-    return jsonify({"invoices": nfse_flow.get_invoices(account_id, contact_id=contact_id)})
+    return jsonify({"invoices": nfse_flow.get_invoices(
+        account_id, contact_id=contact_id,
+        status=request.args.get("status") or None,
+        q=request.args.get("q") or None,
+        date_from=request.args.get("date_from") or None,
+        date_to=request.args.get("date_to") or None,
+        limit=request.args.get("limit", type=int),
+    )})
 
 
 @app.route("/api/client-portal/contacts/<int:contact_id>/invoices", methods=["GET"])
@@ -5843,6 +5850,7 @@ def cp_create_invoice(contact_id):
     invoice_id, error = nfse_flow.create_invoice(
         account_id, contact_id, "secretary", consultant_id,
         data.get("service_description"), data.get("amount"), data.get("service_date"),
+        service_catalog_id=data.get("service_catalog_id"),
     )
     if error:
         return jsonify({"ok": False, "message": error}), 400
@@ -5861,6 +5869,113 @@ def cp_cancel_invoice(invoice_id):
     ok, error = nfse_flow.cancel_invoice(invoice_id, reason=data.get("reason"))
     if not ok:
         return jsonify({"ok": False, "message": error or "Não foi possível cancelar."}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/invoices/<int:invoice_id>", methods=["PATCH"])
+def cp_update_invoice(invoice_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _invoice_owner(invoice_id) != user_id:
+        return _not_found("Nota fiscal não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    kwargs = {}
+    if "service_description" in data: kwargs["service_description"] = data.get("service_description")
+    if "amount" in data: kwargs["amount"] = data.get("amount")
+    if "service_date" in data: kwargs["service_date"] = data.get("service_date")
+    if "service_catalog_id" in data: kwargs["service_catalog_id"] = data.get("service_catalog_id")
+    ok, error = nfse_flow.update_invoice(invoice_id, **kwargs)
+    if not ok:
+        return jsonify({"ok": False, "message": error or "Não foi possível editar."}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/invoices/<int:invoice_id>/retry", methods=["POST"])
+def cp_retry_invoice(invoice_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _invoice_owner(invoice_id) != user_id:
+        return _not_found("Nota fiscal não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    ok, error = nfse_flow.retry_invoice(invoice_id)
+    if not ok:
+        return jsonify({"ok": False, "message": error or "Não foi possível retransmitir."}), 400
+    return jsonify({"ok": True})
+
+
+def _service_catalog_owner(entry_id):
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT account_id FROM whatsapp_service_catalog WHERE id = %s", (entry_id,))
+        row = cur.fetchone()
+        return _account_owner(row[0]) if row else None
+    finally:
+        conn.close()
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/service-catalog", methods=["GET"])
+def cp_list_service_catalog(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    only_active = request.args.get("all") != "1"
+    return jsonify({"services": nfse_flow.list_service_catalog(account_id, only_active=only_active)})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/service-catalog", methods=["POST"])
+def cp_create_service_catalog(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    entry_id, error = nfse_flow.create_service_catalog_entry(
+        account_id, data.get("name"), data.get("description_template"),
+        codigo_tributacao_nacional=data.get("codigo_tributacao_nacional"),
+        codigo_servico_municipal=data.get("codigo_servico_municipal"),
+        codigo_nbs=data.get("codigo_nbs"),
+    )
+    if error:
+        return jsonify({"ok": False, "message": error}), 400
+    return jsonify({"ok": True, "id": entry_id}), 201
+
+
+@app.route("/api/client-portal/service-catalog/<int:entry_id>", methods=["PATCH"])
+def cp_update_service_catalog(entry_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _service_catalog_owner(entry_id) != user_id:
+        return _not_found("Serviço não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    data = request.json or {}
+    kwargs = {}
+    for field in ("name", "description_template", "codigo_tributacao_nacional", "codigo_servico_municipal", "codigo_nbs"):
+        if field in data: kwargs[field] = data.get(field)
+    ok, error = nfse_flow.update_service_catalog_entry(entry_id, **kwargs)
+    if not ok:
+        return jsonify({"ok": False, "message": error or "Não foi possível salvar."}), 400
+    return jsonify({"ok": True})
+
+
+@app.route("/api/client-portal/service-catalog/<int:entry_id>", methods=["DELETE"])
+def cp_delete_service_catalog(entry_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _service_catalog_owner(entry_id) != user_id:
+        return _not_found("Serviço não encontrado")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    nfse_flow.deactivate_service_catalog_entry(entry_id)
     return jsonify({"ok": True})
 
 

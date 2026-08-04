@@ -1129,6 +1129,35 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS booking_confirmed_notify_patient BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS booking_confirmed_notify_consultant BOOLEAN NOT NULL DEFAULT TRUE;
     """,
+
+    # 52 — catálogo de serviços fiscais por conta (nome + descrição padrão +
+    # códigos oficiais: Código de Tributação Nacional, código de serviço
+    # municipal, NBS). Nunca DELETE — soft delete via `active`, porque notas
+    # já emitidas podem referenciar a linha (ON DELETE SET NULL preserva a
+    # nota se o cadastro for removido depois). whatsapp_invoices ganha as
+    # colunas espelho (snapshot no momento da emissão, mesmo espírito de
+    # patient_name/patient_cpf na migração #50) — editar o cadastro depois
+    # não pode mudar retroativamente uma nota já criada.
+    """
+    CREATE TABLE IF NOT EXISTS whatsapp_service_catalog (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES whatsapp_accounts(id) ON DELETE CASCADE,
+        name VARCHAR(150) NOT NULL,
+        description_template TEXT NOT NULL,
+        codigo_tributacao_nacional VARCHAR(20),
+        codigo_servico_municipal VARCHAR(20),
+        codigo_nbs VARCHAR(20),
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_service_catalog_account ON whatsapp_service_catalog(account_id) WHERE active;
+
+    ALTER TABLE whatsapp_invoices
+        ADD COLUMN IF NOT EXISTS service_catalog_id INTEGER REFERENCES whatsapp_service_catalog(id) ON DELETE SET NULL,
+        ADD COLUMN IF NOT EXISTS codigo_tributacao_nacional VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS codigo_servico_municipal VARCHAR(20),
+        ADD COLUMN IF NOT EXISTS codigo_nbs VARCHAR(20);
+    """,
 ]
 
 
