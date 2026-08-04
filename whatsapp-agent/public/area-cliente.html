@@ -412,7 +412,11 @@
 
         <div class="card" style="max-width:1000px;">
             <h2>Mensagem de agendamento confirmado</h2>
-            <p class="subtitle">Enviada automaticamente por WhatsApp ao paciente quando um agendamento já nasce confirmado (criado direto pela secretária ou pelo médico), antes do checklist começar. Placeholders disponíveis: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>. Deixe em branco pra manter a mensagem padrão do sistema.</p>
+            <p class="subtitle">Enviada automaticamente por WhatsApp quando um agendamento já nasce confirmado (criado direto pela secretária ou pelo médico), antes do checklist começar. Escolha quem recebe abaixo — o texto configurado é usado na mensagem do paciente; o médico recebe um aviso padrão do sistema. Placeholders disponíveis: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>. Deixe em branco pra manter a mensagem padrão do sistema.</p>
+            <div class="form-group" style="display:flex; gap:1rem; flex-wrap:wrap;">
+                <label><input type="checkbox" id="bookingConfirmedNotifyPatient" checked> Avisar paciente</label>
+                <label><input type="checkbox" id="bookingConfirmedNotifyConsultant" checked> Avisar médico</label>
+            </div>
             <div class="form-group">
                 <textarea class="form-input" rows="3" id="bookingConfirmedMessageInput" placeholder="Você tem um agendamento confirmado com {{medico}} em {{data}} às {{hora}}!"></textarea>
             </div>
@@ -1599,17 +1603,26 @@ async function saveSecretaryContact() {
 function loadBookingConfirmedMessageField() {
     const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
     document.getElementById('bookingConfirmedMessageInput').value = (acc && acc.booking_confirmed_message) || '';
+    document.getElementById('bookingConfirmedNotifyPatient').checked = !acc || acc.booking_confirmed_notify_patient !== false;
+    document.getElementById('bookingConfirmedNotifyConsultant').checked = !acc || acc.booking_confirmed_notify_consultant !== false;
 }
 
 async function saveBookingConfirmedMessage() {
     const message = document.getElementById('bookingConfirmedMessageInput').value.trim();
+    const notify_patient = document.getElementById('bookingConfirmedNotifyPatient').checked;
+    const notify_consultant = document.getElementById('bookingConfirmedNotifyConsultant').checked;
     const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/booking-confirmed-message`, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ message }),
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ message, notify_patient, notify_consultant }),
     });
     const data = await res.json();
     if (!res.ok) return alert(data.message || 'Erro ao salvar mensagem.');
     const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
-    if (acc) acc.booking_confirmed_message = data.booking_confirmed_message;
+    if (acc) {
+        acc.booking_confirmed_message = data.booking_confirmed_message;
+        acc.booking_confirmed_notify_patient = data.booking_confirmed_notify_patient;
+        acc.booking_confirmed_notify_consultant = data.booking_confirmed_notify_consultant;
+    }
     alert('Mensagem salva!');
 }
 

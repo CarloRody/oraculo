@@ -250,6 +250,7 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
             term = server.get_nomenclature(acct.get("user_id") if acct else None)["consultant"]["singular"].lower()
             client_msg = (f"Recebi seu pedido de agendamento com {consultant['name']} em {when}!{subject_line}\n"
                            f"Assim que o {term} confirmar, eu te aviso por aqui.")
+            should_notify_patient = True
         else:
             acct = server.get_account(consultant["account_id"])
             custom_template = (acct or {}).get("booking_confirmed_message")
@@ -265,22 +266,28 @@ def book_appointment(consultant, client_contact_id, client_wa_id, client_push_na
                 client_msg = server.render_message_template(custom_template, ctx)
             else:
                 client_msg = f"Você tem um agendamento confirmado com {consultant['name']} em {when}!{subject_line}"
-        try:
-            evolution.send_text(consultant["wa_session_name"], client_phone, client_msg)
-            server.report_whatsapp_sent_usage(consultant["account_id"])
-        except EvolutionError:
-            pass
+            should_notify_patient = bool((acct or {}).get("booking_confirmed_notify_patient", True))
+        if should_notify_patient:
+            try:
+                evolution.send_text(consultant["wa_session_name"], client_phone, client_msg)
+                server.report_whatsapp_sent_usage(consultant["account_id"])
+            except EvolutionError:
+                pass
     if notify_consultant:
         if requires_confirmation:
             consultant_msg = (f"Novo agendamento pra confirmar: {client_push_name or client_phone} em {when}.{subject_line}\n"
                                f"Confirme no seu painel: {server.portal_link(consultant['portal_token'])}")
+            should_notify_consultant = True
         else:
             consultant_msg = f"Novo agendamento: {client_push_name or client_phone} em {when}.{subject_line}"
-        try:
-            evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]), consultant_msg)
-            server.report_whatsapp_sent_usage(consultant["account_id"])
-        except EvolutionError:
-            pass
+            acct = server.get_account(consultant["account_id"])
+            should_notify_consultant = bool((acct or {}).get("booking_confirmed_notify_consultant", True))
+        if should_notify_consultant:
+            try:
+                evolution.send_text(consultant["wa_session_name"], _phone(consultant["wa_id"]), consultant_msg)
+                server.report_whatsapp_sent_usage(consultant["account_id"])
+            except EvolutionError:
+                pass
     return new_appointment_id
 
 

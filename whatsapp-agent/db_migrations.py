@@ -1118,6 +1118,17 @@ MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_invoices_contact ON whatsapp_invoices(contact_id, requested_at DESC);
     CREATE INDEX IF NOT EXISTS idx_invoices_pending ON whatsapp_invoices(status) WHERE status IN ('pending', 'processing');
     """,
+
+    # 51 — destinatários da mensagem de "agendamento confirmado" (migração
+    # #42) passam a ser configuráveis por conta: paciente e/ou médico.
+    # Default TRUE nos dois preserva o comportamento atual (que já envia
+    # pros dois hoje, exceto quando é o próprio médico criando — isso
+    # continua suprimido pela lógica existente de notify_consultant em
+    # book_appointment(), a coluna só soma uma checagem extra por cima).
+    """
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS booking_confirmed_notify_patient BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS booking_confirmed_notify_consultant BOOLEAN NOT NULL DEFAULT TRUE;
+    """,
 ]
 
 

@@ -133,6 +133,7 @@ ACCOUNT_COLUMNS = [
     "document_type", "document_number", "company_name", "company_address",
     "responsible_name", "responsible_cpf", "responsible_address",
     "booking_confirmed_message",
+    "booking_confirmed_notify_patient", "booking_confirmed_notify_consultant",
     "inscricao_municipal", "regime_tributario", "codigo_servico_municipal",
 ]
 
@@ -599,15 +600,20 @@ def set_account_secretary_contact(account_id, phone):
         conn.close()
 
 
-def set_account_booking_confirmed_message(account_id, message):
+def set_account_booking_confirmed_message(account_id, message, notify_patient=True, notify_consultant=True):
     """Texto customizado enviado por book_appointment() quando o
     agendamento já nasce confirmado (sem etapa de espera). message vazio
-    limpa a customização e volta a usar o texto padrão do sistema."""
+    limpa a customização e volta a usar o texto padrão do sistema.
+    notify_patient/notify_consultant controlam quem recebe aviso nesse
+    fluxo (ver uso em book_appointment)."""
     conn = _conn()
     try:
         cur = conn.cursor()
-        cur.execute("UPDATE whatsapp_accounts SET booking_confirmed_message = %s WHERE id = %s",
-                     (message or None, account_id))
+        cur.execute(
+            "UPDATE whatsapp_accounts SET booking_confirmed_message = %s, "
+            "booking_confirmed_notify_patient = %s, booking_confirmed_notify_consultant = %s WHERE id = %s",
+            (message or None, notify_patient, notify_consultant, account_id),
+        )
         conn.commit()
     finally:
         conn.close()
@@ -5219,9 +5225,17 @@ def cp_set_booking_confirmed_message(account_id):
         return _not_found("Conta não encontrada")
     err = _require_crm_medico(user_id)
     if err: return err
-    message = ((request.json or {}).get("message") or "").strip()
-    set_account_booking_confirmed_message(account_id, message)
-    return jsonify({"ok": True, "booking_confirmed_message": message or None})
+    body = request.json or {}
+    message = (body.get("message") or "").strip()
+    notify_patient = bool(body.get("notify_patient", True))
+    notify_consultant = bool(body.get("notify_consultant", True))
+    set_account_booking_confirmed_message(account_id, message, notify_patient, notify_consultant)
+    return jsonify({
+        "ok": True,
+        "booking_confirmed_message": message or None,
+        "booking_confirmed_notify_patient": notify_patient,
+        "booking_confirmed_notify_consultant": notify_consultant,
+    })
 
 
 # ---------------------------------------------------------------------------
