@@ -3973,12 +3973,16 @@ def secretary_panel_3d_page():
 # r128 (compatível com o three.min.js embutido).
 @app.route("/gltfloader.js")
 def gltf_loader_js():
-    return send_from_directory(PUBLIC_DIR, "gltfloader.js", mimetype="application/javascript")
+    return send_from_directory(
+        PUBLIC_DIR, "gltfloader.js", mimetype="application/javascript", max_age=2592000
+    )
 
 
 @app.route("/avatar.glb")
 def avatar_model():
-    return send_from_directory(PUBLIC_DIR, "avatar.glb", mimetype="model/gltf-binary")
+    return send_from_directory(
+        PUBLIC_DIR, "avatar.glb", mimetype="model/gltf-binary", max_age=2592000
+    )
 
 
 @app.route("/admin/resumos-documentos")

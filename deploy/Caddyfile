@@ -28,6 +28,11 @@
 https://carlorody.jflddns.com.br, https://192.168.25.94, https://177.212.159.231 {
     tls internal
 
+    # Compressão de transporte pras 4 apps (HTML/JS/assets binários como o
+    # avatar.glb do painel 3D) — corta o payload em rede externa sem mexer
+    # em nada nos apps por trás do proxy.
+    encode zstd gzip
+
     handle_path /whatsapp/* {
         reverse_proxy 127.0.0.1:5005
     }
