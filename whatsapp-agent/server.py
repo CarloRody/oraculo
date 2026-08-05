@@ -3966,6 +3966,21 @@ def secretary_panel_3d_page():
     return send_from_directory(PUBLIC_DIR, "painel-secretaria-3d.html")
 
 
+# Assets do Modo 3D (a assistente virtual). O Flask roda com
+# static_folder=None (sem estático genérico), então cada asset tem rota
+# própria — mesmo motivo do three.min.js estar inline. O avatar.glb é um
+# modelo GLTF com blendshapes ARKit; gltfloader.js é o GLTFLoader UMD do
+# r128 (compatível com o three.min.js embutido).
+@app.route("/gltfloader.js")
+def gltf_loader_js():
+    return send_from_directory(PUBLIC_DIR, "gltfloader.js", mimetype="application/javascript")
+
+
+@app.route("/avatar.glb")
+def avatar_model():
+    return send_from_directory(PUBLIC_DIR, "avatar.glb", mimetype="model/gltf-binary")
+
+
 @app.route("/admin/resumos-documentos")
 def admin_document_summaries_page():
     return send_from_directory(PUBLIC_DIR, "admin-resumos.html")
