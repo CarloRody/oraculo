@@ -28,10 +28,23 @@
 https://carlorody.jflddns.com.br, https://192.168.25.94, https://177.212.159.231 {
     tls internal
 
-    # Compressão de transporte pras 4 apps (HTML/JS/assets binários como o
-    # avatar.glb do painel 3D) — corta o payload em rede externa sem mexer
-    # em nada nos apps por trás do proxy.
-    encode zstd gzip
+    # Compressão de transporte pras 4 apps. Sem matcher, o "encode" só
+    # comprime a lista padrão de tipos texto-like do Caddy (text/*,
+    # application/javascript, application/json...) — testado e confirmado:
+    # HTML e JS comprimem, mas o avatar.glb (model/gltf-binary) do painel 3D
+    # ficava de fora por padrão. Matcher explícito cobre os tipos padrão +
+    # o modelo 3D, sem regressão (era a primeira vez que "encode" entrava
+    # neste Caddyfile, então não há comportamento anterior pra quebrar).
+    encode {
+        gzip
+        zstd
+        match {
+            header Content-Type text/*
+            header Content-Type application/javascript*
+            header Content-Type application/json*
+            header Content-Type model/gltf-binary*
+        }
+    }
 
     handle_path /whatsapp/* {
         reverse_proxy 127.0.0.1:5005
