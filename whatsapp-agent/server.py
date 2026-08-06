@@ -6219,7 +6219,7 @@ def get_account_patients(account_id):
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT ct.id, ct.wa_id, COALESCE(ct.name, ct.push_name)
+            """SELECT ct.id, ct.wa_id, COALESCE(ct.name, ct.push_name), ct.created_at
                FROM whatsapp_contacts ct
                WHERE ct.account_id = %s AND EXISTS (
                    SELECT 1 FROM whatsapp_appointments a
@@ -6229,7 +6229,13 @@ def get_account_patients(account_id):
                ORDER BY COALESCE(ct.name, ct.push_name) NULLS LAST""",
             (account_id, account_id),
         )
-        return [{"id": r[0], "phone": r[1].split("@")[0], "name": r[2]} for r in cur.fetchall()]
+        return [
+            {
+                "id": r[0], "phone": r[1].split("@")[0], "name": r[2],
+                "created_at": r[3].isoformat() if r[3] else None,
+            }
+            for r in cur.fetchall()
+        ]
     finally:
         conn.close()
 
