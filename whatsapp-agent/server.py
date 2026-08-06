@@ -915,6 +915,25 @@ def save_message(chat_id, account_id, direction, body, sender_contact_id=None,
         conn.close()
 
 
+def _wa_message_already_saved(account_id, wa_message_id):
+    """wa_message_id não tem UNIQUE em whatsapp_messages (só índice normal,
+    ver db_migrations) — usado pelo webhook pra diferenciar um fromMe=true
+    que é eco de mensagem que o próprio bot já gravou no envio (ver
+    save_message chamado em evolution.send_text(...)) de uma mensagem nova
+    mandada de outro aparelho vinculado à mesma sessão, que nunca foi
+    gravada em lugar nenhum."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT 1 FROM whatsapp_messages WHERE account_id = %s AND wa_message_id = %s LIMIT 1",
+            (account_id, wa_message_id),
+        )
+        return cur.fetchone() is not None
+    finally:
+        conn.close()
+
+
 def _set_message_file(message_id, file_id):
     conn = _conn()
     try:
@@ -7258,18 +7277,40 @@ def webhook_evolution():
             or (message.get("templateButtonReplyMessage") or {}).get("selectedId")
             or (message.get("buttonsResponseMessage") or {}).get("selectedButtonId")
         )
-        if key.get("fromMe") and not selected_id:
-            # eco de texto solto que a gente mesmo mandou (já gravado no envio) —
-            # descarta. Resposta de lista/botão passa mesmo com fromMe=true: o bot
-            # nunca gera esse tipo de mensagem sozinho, só existe quando um humano
-            # toca uma opção — inclusive em chat consigo mesmo (conta = consultor),
-            # onde toda mensagem vem fromMe=true por natureza do self-chat do WhatsApp.
-            return jsonify({"ok": True})
+        # Resposta de lista/botão passa direto mesmo com fromMe=true: o bot
+        # nunca gera esse tipo de mensagem sozinho, só existe quando um humano
+        # toca uma opção — inclusive em chat consigo mesmo (conta = consultor),
+        # onde toda mensagem vem fromMe=true por natureza do self-chat do WhatsApp.
         wa_id = key.get("remoteJid")
         list_title = (message.get("listResponseMessage") or {}).get("title")
         body = list_title or message.get("conversation") or (message.get("extendedTextMessage") or {}).get("text")
         wa_message_id = key.get("id")
         push_name = data.get("pushName")
+        if key.get("fromMe") and not selected_id:
+            # fromMe=true só diz "veio do número conectado" — não diferencia
+            # o bot mandando (via evolution.send_text, que já grava a
+            # mensagem em save_message no momento do envio, ver :4229) de um
+            # humano digitando de outro aparelho vinculado à mesma sessão
+            # (nunca gravado em lugar nenhum). Checa de verdade em vez de
+            # assumir: wa_message_id já salvo = eco de verdade, descarta.
+            # Não salvo = mensagem nova de outro aparelho — grava (aparece
+            # no histórico) mas NÃO deixa passar pro pipeline de resposta
+            # automática abaixo (LGPD/confirmação de consultor/booking_flow/
+            # IA — não faz sentido o bot "responder" a algo que a própria
+            # clínica mandou).
+            if not wa_id or (wa_message_id and _wa_message_already_saved(account["id"], wa_message_id)):
+                return jsonify({"ok": True})
+            media = _extract_media_info(message)
+            message_type = media["doc_type"] if media else "text"
+            if _is_group_jid(wa_id):
+                group_id = get_or_create_group(account["id"], wa_id)
+                chat_id = get_or_create_group_chat(account["id"], group_id)
+            else:
+                contact_id = get_or_create_contact(account["id"], wa_id, push_name)
+                chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
+            save_message(chat_id, account["id"], "out", body,
+                         wa_message_id=wa_message_id, message_type=message_type)
+            return jsonify({"ok": True})
         if wa_id and _is_group_jid(wa_id):
             # Mensagem de grupo — vira conversa reconhecida como grupo
             # (whatsapp_groups/chat_type='group'), fica salva no histórico e
