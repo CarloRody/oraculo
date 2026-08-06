@@ -134,6 +134,8 @@ ACCOUNT_COLUMNS = [
     "responsible_name", "responsible_cpf", "responsible_address",
     "booking_confirmed_message",
     "booking_confirmed_notify_patient", "booking_confirmed_notify_consultant",
+    "reminder_message",
+    "reminder_notify_patient", "reminder_notify_consultant",
     "inscricao_municipal", "regime_tributario", "codigo_servico_municipal",
 ]
 
@@ -612,6 +614,22 @@ def set_account_booking_confirmed_message(account_id, message, notify_patient=Tr
         cur.execute(
             "UPDATE whatsapp_accounts SET booking_confirmed_message = %s, "
             "booking_confirmed_notify_patient = %s, booking_confirmed_notify_consultant = %s WHERE id = %s",
+            (message or None, notify_patient, notify_consultant, account_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_account_reminder_message(account_id, message, notify_patient=True, notify_consultant=True):
+    """Mesmo esquema de set_account_booking_confirmed_message, pro lembrete
+    automático mandado por _reminder_loop perto do horário da consulta."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_accounts SET reminder_message = %s, "
+            "reminder_notify_patient = %s, reminder_notify_consultant = %s WHERE id = %s",
             (message or None, notify_patient, notify_consultant, account_id),
         )
         conn.commit()
@@ -3746,8 +3764,9 @@ def _due_reminders():
     try:
         cur = conn.cursor()
         cur.execute(
-            """SELECT a.id, a.scheduled_at, con.name, con.reminder_hours_before, acc.wa_session_name,
-                      client_ct.wa_id, client_ct.push_name, cons_ct.wa_id, con.account_id
+            """SELECT a.id, a.scheduled_at, a.subject, con.name, con.reminder_hours_before, acc.wa_session_name,
+                      client_ct.wa_id, client_ct.push_name, cons_ct.wa_id, con.account_id, acc.label,
+                      acc.reminder_message, acc.reminder_notify_patient, acc.reminder_notify_consultant
                FROM whatsapp_appointments a
                JOIN whatsapp_consultants con ON con.id = a.consultant_id
                JOIN whatsapp_accounts acc ON acc.id = con.account_id
@@ -3757,8 +3776,9 @@ def _due_reminders():
                  AND a.scheduled_at > NOW()
                  AND a.scheduled_at <= NOW() + make_interval(hours => con.reminder_hours_before)"""
         )
-        cols = ["id", "scheduled_at", "consultant_name", "reminder_hours_before", "wa_session_name",
-                "client_wa_id", "client_push_name", "consultant_wa_id", "account_id"]
+        cols = ["id", "scheduled_at", "subject", "consultant_name", "reminder_hours_before", "wa_session_name",
+                "client_wa_id", "client_push_name", "consultant_wa_id", "account_id", "account_label",
+                "reminder_message", "reminder_notify_patient", "reminder_notify_consultant"]
         return [dict(zip(cols, r)) for r in cur.fetchall()]
     finally:
         conn.close()
@@ -3885,13 +3905,27 @@ def _reminder_loop():
                 when = appt["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%d/%m às %H:%M")
                 client_phone = _phone_from_wa_id(appt["client_wa_id"])
                 consultant_phone = _phone_from_wa_id(appt["consultant_wa_id"])
+                custom_template = appt.get("reminder_message")
+                if custom_template:
+                    ctx = {
+                        "paciente": appt["client_push_name"] or client_phone,
+                        "medico": appt["consultant_name"],
+                        "data": appt["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%d/%m/%Y"),
+                        "hora": appt["scheduled_at"].astimezone(booking_flow.LOCAL_TZ).strftime("%H:%M"),
+                        "assunto": appt.get("subject") or "",
+                        "clinica": appt.get("account_label") or "",
+                    }
+                    client_msg = render_message_template(custom_template, ctx)
+                else:
+                    client_msg = f"Lembrete: você tem um agendamento com {appt['consultant_name']} em {when}."
                 try:
-                    evolution.send_text(appt["wa_session_name"], client_phone,
-                                         f"Lembrete: você tem um agendamento com {appt['consultant_name']} em {when}.")
-                    report_whatsapp_sent_usage(appt["account_id"])
-                    evolution.send_text(appt["wa_session_name"], consultant_phone,
-                                         f"Lembrete: você tem um agendamento com {appt['client_push_name'] or client_phone} em {when}.")
-                    report_whatsapp_sent_usage(appt["account_id"])
+                    if appt.get("reminder_notify_patient", True):
+                        evolution.send_text(appt["wa_session_name"], client_phone, client_msg)
+                        report_whatsapp_sent_usage(appt["account_id"])
+                    if appt.get("reminder_notify_consultant", True):
+                        evolution.send_text(appt["wa_session_name"], consultant_phone,
+                                             f"Lembrete: você tem um agendamento com {appt['client_push_name'] or client_phone} em {when}.")
+                        report_whatsapp_sent_usage(appt["account_id"])
                 except EvolutionError as e:
                     log_event(None, "reminder_send_failed", level="error",
                               detail={"appointment_id": appt["id"], "error": str(e)})
@@ -5254,6 +5288,27 @@ def cp_set_booking_confirmed_message(account_id):
         "booking_confirmed_message": message or None,
         "booking_confirmed_notify_patient": notify_patient,
         "booking_confirmed_notify_consultant": notify_consultant,
+    })
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/reminder-message", methods=["PATCH"])
+def cp_set_reminder_message(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    err = _require_crm_medico(user_id)
+    if err: return err
+    body = request.json or {}
+    message = (body.get("message") or "").strip()
+    notify_patient = bool(body.get("notify_patient", True))
+    notify_consultant = bool(body.get("notify_consultant", True))
+    set_account_reminder_message(account_id, message, notify_patient, notify_consultant)
+    return jsonify({
+        "ok": True,
+        "reminder_message": message or None,
+        "reminder_notify_patient": notify_patient,
+        "reminder_notify_consultant": notify_consultant,
     })
 
 

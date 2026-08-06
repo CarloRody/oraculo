@@ -1158,6 +1158,18 @@ MIGRATIONS = [
         ADD COLUMN IF NOT EXISTS codigo_servico_municipal VARCHAR(20),
         ADD COLUMN IF NOT EXISTS codigo_nbs VARCHAR(20);
     """,
+
+    # 53 — mesmo esquema da mensagem de "agendamento confirmado" (migrações
+    # #42/#51), agora pro lembrete automático mandado por _reminder_loop
+    # (server.py) perto do horário da consulta: texto personalizável por
+    # conta (NULL/vazio mantém o texto padrão do sistema) e destinatários
+    # (paciente e/ou médico) configuráveis. Default TRUE nos dois preserva
+    # o comportamento atual (_reminder_loop hoje sempre manda pros dois).
+    """
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reminder_message TEXT;
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reminder_notify_patient BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reminder_notify_consultant BOOLEAN NOT NULL DEFAULT TRUE;
+    """,
 ]
 
 
