@@ -5074,7 +5074,7 @@ def cp_free_slots(consultant_id):
             start_date = datetime.datetime.strptime(start_date_str, "%Y-%m-%d").date()
         except ValueError:
             return jsonify({"ok": False, "message": "start_date inválida, use YYYY-MM-DD"}), 400
-    slots = booking_flow.compute_free_slots(consultant, days_ahead=days_ahead, limit=limit, start_date=start_date)
+    slots = booking_flow.compute_free_slots(consultant, days_ahead=days_ahead, limit=limit, start_date=start_date, complete_days=True)
     return jsonify({"slots": [s.isoformat() for s in slots]})
 
 
@@ -6462,7 +6462,7 @@ def api_portal_free_slots(token):
     consultant = get_consultant_by_portal_token(token)
     if not consultant:
         return jsonify({"ok": False, "message": "Link inválido ou expirado"}), 404
-    slots = booking_flow.compute_free_slots(consultant)
+    slots = booking_flow.compute_free_slots(consultant, complete_days=True)
     return jsonify({"slots": [s.isoformat() for s in slots]})
 
 

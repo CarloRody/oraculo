@@ -111,7 +111,7 @@ def parse_yes_no(text):
     return None
 
 
-def compute_free_slots(consultant, days_ahead=14, limit=10, start_date=None):
+def compute_free_slots(consultant, days_ahead=14, limit=10, start_date=None, complete_days=False):
     """Próximos horários livres do consultor, cruzando weekly_availability
     (JSONB, ex: {"mon": [["09:00","12:00"]]}) com os agendamentos já
     confirmados. Retorna datetimes com timezone (America/Sao_Paulo).
@@ -125,7 +125,15 @@ def compute_free_slots(consultant, days_ahead=14, limit=10, start_date=None):
     start_date (opcional) desloca a janela de busca pra frente, em vez de
     sempre começar hoje — é o que permite paginar pra qualquer dia futuro
     (ver Agenda 3D em painel-secretaria-3d.html) sem precisar de um `limit`
-    gigante numa busca só."""
+    gigante numa busca só.
+
+    complete_days=False (padrão) corta assim que `limit` é atingido, mesmo
+    no meio de um dia — é o que o fluxo conversacional do WhatsApp quer
+    (lista curta o bastante pra digitar o número). complete_days=True só
+    checa o `limit` ENTRE dias, nunca corta um dia pela metade — usado
+    pelas rotas HTTP de telas web (Agenda 3D, dropdown do painel da
+    secretária, portal do consultor), onde um dia fragmentado no fim de
+    uma janela paginada é visivelmente um bug, não um teto útil."""
     availability = consultant.get("weekly_availability") or {}
     if not availability:
         return []
@@ -163,9 +171,11 @@ def compute_free_slots(consultant, days_ahead=14, limit=10, start_date=None):
                 overlaps = any(slot_start < b_end and slot_start + duration > b_start for b_start, b_end in busy)
                 if slot_start > now and not overlaps:
                     slots.append(slot_start)
-                    if len(slots) >= limit:
+                    if not complete_days and len(slots) >= limit:
                         return slots
                 slot_start += duration
+        if complete_days and len(slots) >= limit:
+            return slots
         day += datetime.timedelta(days=1)
     return slots
 
