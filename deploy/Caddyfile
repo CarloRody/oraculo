@@ -53,3 +53,19 @@ https://carlorody.jflddns.com.br, https://192.168.25.94, https://177.212.159.231
         reverse_proxy 127.0.0.1:5001
     }
 }
+
+# HTTP puro (sem TLS) só pra API do serviço principal (porta 5001) — ex:
+# /api/whatsapp/send, /api/chat. Existia antes do bloco https acima entrar
+# em cena; declarar um site como https:// liga o HTTPS automático do Caddy,
+# que passa a responder a porta 80 com redirect 308 pra https sozinho — é
+# esse redirect que barrava clientes de API que não seguem redirect ou não
+# aceitam o certificado autoassinado do bloco https. Bloco em http://
+# explícito desliga esse redirect só aqui, sem mexer no bloco https (que
+# continua do jeito que está, pros outros 3 serviços). Não replica as
+# outras rotas (/whatsapp/*, /monitor/*, /backup/*) de propósito — só a
+# API em 5001 precisa de HTTP puro.
+http://carlorody.jflddns.com.br, http://192.168.25.94, http://177.212.159.231 {
+    handle {
+        reverse_proxy 127.0.0.1:5001
+    }
+}
