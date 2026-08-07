@@ -1662,10 +1662,13 @@ def api_whatsapp_suggest_reply():
                 "credit_status": {"balance": round(current_balance, 4), "depleted": True}
             }), 402
 
-    # Teto de saída bem menor que o do plano (6000): a sugestão é uma
-    # mensagem de WhatsApp de 2-4 linhas. Além de não gastar token à toa,
-    # limita o estrago se um modelo pequeno entrar em loop de repetição.
-    llm_cfg = {**llm_cfg, "max_tokens": min(llm_cfg.get("max_tokens") or 400, 400)}
+    # Teto de saída menor que o do plano (6000) só pra limitar o estrago se
+    # um modelo pequeno entrar em loop de repetição. NÃO pode ser apertado
+    # demais: o modelo em produção é de raciocínio e gasta centenas de
+    # tokens "pensando" antes de escrever — medido em 400, o orçamento
+    # inteiro ia embora no raciocínio e a resposta voltava VAZIA. 1500 deixa
+    # folga pro raciocínio mais a mensagem de 2-4 linhas.
+    llm_cfg = {**llm_cfg, "max_tokens": min(llm_cfg.get("max_tokens") or 1500, 1500)}
 
     user_prompt = f"{context}\n\nMensagem do paciente: {message}" if context else f"Mensagem do paciente: {message}"
     try:
@@ -1675,6 +1678,8 @@ def api_whatsapp_suggest_reply():
         print(f"ERRO suggest-reply: {e}")
         return jsonify({"error": f"Não consegui gerar a sugestão agora: {e}"}), 502
 
+    # Cobra ANTES de checar se veio vazio: os tokens foram gastos de verdade
+    # no gateway, independente de o texto ter saído aproveitável.
     credit_status = None
     consumption_value = compute_consumption_value(llm_cfg, tokens_input, tokens_output)
     if consumption_value is not None:
@@ -1684,6 +1689,12 @@ def api_whatsapp_suggest_reply():
             tokens_input=tokens_input, tokens_output=tokens_output)
         if new_balance is not None:
             credit_status = {"balance": round(new_balance, 4), "depleted": new_balance <= 0}
+
+    # Modelo de raciocínio que estoura o teto pensando devolve conteúdo
+    # vazio — sem isso a secretária receberia uma caixa em branco sem
+    # entender por quê.
+    if not (suggestion or "").strip():
+        return jsonify({"error": "A IA não conseguiu formular a resposta desta vez. Tente de novo."}), 502
 
     result = {"suggestion": (suggestion or "").strip(),
               "tokens_input": tokens_input, "tokens_output": tokens_output}
