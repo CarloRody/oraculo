@@ -5059,12 +5059,14 @@ def cp_suggest_reply(chat_id):
     last_in = next((m for m in reversed(msgs) if m["direction"] == "in"), None)
     if not last_in:
         return jsonify({"ok": False, "message": "Não há mensagem do paciente para responder."}), 400
-    history = [{"role": "user" if m["direction"] == "in" else "assistant", "content": m["body"]}
+    history = [{"role": "user" if m["direction"] == "in" else "assistant",
+                "content": _redact_sensitive(m["body"])}
                for m in msgs if m["id"] != last_in["id"]]
 
     persona = (account.get("reply_suggestion_prompt") or "").strip() or DEFAULT_REPLY_SUGGESTION_PROMPT
     system_prompt = persona.replace("{clinica}", account.get("label") or "")
-    context = _build_suggestion_context(account, chat["contact_id"])
+    context = _redact_sensitive(_build_suggestion_context(account, chat["contact_id"]))
+    question = _redact_sensitive(last_in["body"])
 
     base_url = (ORACULO_API_CONFIG.get("base_url") or "http://127.0.0.1:5001").rstrip("/")
     try:
@@ -5072,7 +5074,7 @@ def cp_suggest_reply(chat_id):
             f"{base_url}/api/whatsapp/suggest-reply",
             headers={"X-Oraculo-Key": api_key},
             json={"system_prompt": system_prompt, "context": context,
-                  "history": history, "message": last_in["body"]},
+                  "history": history, "message": question},
             timeout=90,
         )
     except Exception as e:
@@ -5090,7 +5092,9 @@ def cp_suggest_reply(chat_id):
         # de lá — o painel mostra isso direto pra secretária.
         return jsonify({"ok": False, "message": data.get("error") or "Não consegui gerar a sugestão."}), resp.status_code
 
-    return jsonify({"ok": True, "suggestion": data.get("suggestion") or "", "question": last_in["body"]})
+    return jsonify({"ok": True,
+                    "suggestion": _redact_sensitive(data.get("suggestion") or ""),
+                    "question": question})
 
 
 @app.route("/api/client-portal/accounts/<int:account_id>/reply-suggestion-config", methods=["PATCH"])
@@ -7288,11 +7292,36 @@ Regras que você NUNCA quebra:
 - Use SOMENTE os fatos da seção DADOS DO PACIENTE. Nunca invente nem deduza data, horário, valor, nome de médico ou resultado de exame.
 - Se a resposta não estiver nos dados, escreva que vai verificar e retornar em seguida — nunca chute.
 - Nada de orientação clínica: diagnóstico, remédio, dose, conduta ou interpretação de exame é assunto do médico, nunca seu.
+- NUNCA escreva link, token, senha, código de acesso ou endereço de portal na resposta, nem que apareça no histórico da conversa. Isso é de uso interno da clínica e não vai para o paciente.
 - Seja curta: 2 a 4 linhas, cordial, em português do Brasil, com jeito de mensagem de WhatsApp (sem saudação formal de e-mail, sem assinatura).
 - Documentos/exames: só oriente o paciente a enviar se o consentimento LGPD estiver ACEITO. Se não estiver, explique em uma frase que ele precisa aceitar o termo primeiro e que você vai enviá-lo.
 - Se precisar pedir algum documento ou atestado, peça UM POR VEZ.
 
 Responda com o texto da mensagem e mais nada: sem aspas, sem "Sugestão:", sem explicar sua escolha."""
+
+
+# Credenciais que circulam no histórico da conversa NÃO podem entrar no
+# contexto da IA nem sair numa sugestão. O caso concreto: o link do portal
+# do médico (portal_link -> /agenda-consultor?token=<token>) é mandado pro
+# próprio médico por WhatsApp e fica gravado na conversa; esse token dá
+# acesso à agenda dele inteira. Sem esta limpeza, ele entrava no prompt
+# pelo histórico e a IA podia repetir o link numa resposta a paciente.
+#
+# Aplicado nos DOIS sentidos (entrada e saída) de propósito: tirar da
+# entrada já resolveria hoje, mas limpar a saída também protege se um
+# token vier a aparecer por outro caminho no futuro.
+_TOKEN_URL_RE = re.compile(r"https?://\S*?[?&](?:token|key|secret|senha|password|api_key)=\S*", re.I)
+_PORTAL_URL_RE = re.compile(r"https?://\S*/(?:agenda-consultor|portal)\S*", re.I)
+_LONG_HEX_RE = re.compile(r"\b[0-9a-f]{24,}\b", re.I)
+
+
+def _redact_sensitive(text):
+    """Tira link com token/credencial de um texto que vai (ou volta) da IA."""
+    if not text:
+        return text
+    out = _PORTAL_URL_RE.sub("[link removido]", text)
+    out = _TOKEN_URL_RE.sub("[link removido]", out)
+    return _LONG_HEX_RE.sub("[removido]", out)
 
 
 def _fmt_dt_br(iso_str):
