@@ -7663,7 +7663,19 @@ def webhook_evolution():
             # mesmo tempo (ver consultores_automation_mode). Isso evita o
             # incidente de 2026-07-24, em que duas contas em Consultores
             # ficaram respondendo uma à outra num ciclo sem fim.
-            automation_mode = consultores_automation_mode(account.get("user_id"))
+            #
+            # O None quando o plano NÃO é Consultores é o que desliga os dois
+            # ramos abaixo: consultores_automation_mode() sempre devolve um
+            # modo (default 'agendamento') mesmo pra conta em CRM médico, e
+            # como a cadeia só olhava esse valor, o booking_flow respondia
+            # dentro de clínica médica — paciente mandava "Oi" e recebia o
+            # menu de agendamento de consultores no lugar da secretária. É
+            # exatamente a ressalva que o docstring de
+            # consultores_automation_mode já fazia ("ignorado nos outros
+            # modos"), só que ela nunca tinha sido aplicada aqui.
+            automation_mode = (consultores_automation_mode(account.get("user_id"))
+                               if plan_booking_mode(account.get("user_id")) == "consultores"
+                               else None)
 
             ai_handled = False
             if pending_consultant_id and answer is not None:
