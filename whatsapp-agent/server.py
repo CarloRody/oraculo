@@ -136,6 +136,7 @@ ACCOUNT_COLUMNS = [
     "booking_confirmed_notify_patient", "booking_confirmed_notify_consultant",
     "reminder_message",
     "reminder_notify_patient", "reminder_notify_consultant",
+    "reply_suggestion_enabled", "reply_suggestion_prompt",
     "inscricao_municipal", "regime_tributario", "codigo_servico_municipal",
 ]
 
@@ -631,6 +632,23 @@ def set_account_reminder_message(account_id, message, notify_patient=True, notif
             "UPDATE whatsapp_accounts SET reminder_message = %s, "
             "reminder_notify_patient = %s, reminder_notify_consultant = %s WHERE id = %s",
             (message or None, notify_patient, notify_consultant, account_id),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def set_account_reply_suggestion_config(account_id, enabled=True, prompt=""):
+    """Liga/desliga o botão "sugerir resposta" do painel 3D e guarda a persona
+    da secretária. prompt vazio = volta pra persona padrão do sistema
+    (DEFAULT_REPLY_SUGGESTION_PROMPT)."""
+    conn = _conn()
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "UPDATE whatsapp_accounts SET reply_suggestion_enabled = %s, "
+            "reply_suggestion_prompt = %s WHERE id = %s",
+            (enabled, prompt or None, account_id),
         )
         conn.commit()
     finally:
@@ -5005,6 +5023,90 @@ def cp_mark_chat_read(chat_id):
     return api_mark_chat_read(chat_id)
 
 
+@app.route("/api/client-portal/chats/<int:chat_id>/suggest-reply", methods=["POST"])
+def cp_suggest_reply(chat_id):
+    """Rascunho de resposta pra secretária revisar (botão do painel 3D).
+    NÃO envia nada — quem envia é cp_send_message, depois que ela aceita.
+
+    Sem o gate _require_crm_medico de propósito: as outras rotas de conversa
+    também não têm, e a conta real da clínica não está em modo CRM médico —
+    exigir isso deixaria a sugestão inútil justamente onde ela é usada."""
+    user_id, err = _require_client()
+    if err: return err
+    if _chat_owner(chat_id) != user_id:
+        return _not_found("Conversa não encontrada")
+
+    chat = get_chat(chat_id)
+    if not chat or not chat.get("contact_id"):
+        # Grupo: os fluxos 1:1 (agendamento, IA, LGPD) já são todos
+        # desabilitados em grupo pelo mesmo motivo — a resposta seria
+        # endereçada a uma pessoa só dentro de uma conversa de várias.
+        return jsonify({"ok": False, "message": "Sugestão só funciona em conversa individual."}), 400
+
+    account = get_account(chat["account_id"])
+    if not account or not account.get("reply_suggestion_enabled", True):
+        return jsonify({"ok": False, "message": "Sugestão de resposta está desligada para esta conta."}), 400
+
+    api_key = _client_api_key(account["user_id"]) if account.get("user_id") else None
+    if not api_key:
+        return jsonify({"ok": False, "message": "Conta sem cliente vinculado — fale com o administrador."}), 400
+
+    # Mesma forma do histórico usada pelo auto-reply (_handle_ai_auto_reply):
+    # só texto, in→user / out→assistant, em ordem cronológica. A última
+    # recebida sai do histórico e vira a pergunta a ser respondida.
+    msgs = [m for m in list_messages(chat_id, limit=11)
+            if m.get("message_type") == "text" and m.get("body")]
+    last_in = next((m for m in reversed(msgs) if m["direction"] == "in"), None)
+    if not last_in:
+        return jsonify({"ok": False, "message": "Não há mensagem do paciente para responder."}), 400
+    history = [{"role": "user" if m["direction"] == "in" else "assistant", "content": m["body"]}
+               for m in msgs if m["id"] != last_in["id"]]
+
+    persona = (account.get("reply_suggestion_prompt") or "").strip() or DEFAULT_REPLY_SUGGESTION_PROMPT
+    system_prompt = persona.replace("{clinica}", account.get("label") or "")
+    context = _build_suggestion_context(account, chat["contact_id"])
+
+    base_url = (ORACULO_API_CONFIG.get("base_url") or "http://127.0.0.1:5001").rstrip("/")
+    try:
+        resp = requests.post(
+            f"{base_url}/api/whatsapp/suggest-reply",
+            headers={"X-Oraculo-Key": api_key},
+            json={"system_prompt": system_prompt, "context": context,
+                  "history": history, "message": last_in["body"]},
+            timeout=90,
+        )
+    except Exception as e:
+        log_event(account["id"], "reply_suggestion_failed", level="error", detail={"error": str(e)})
+        return jsonify({"ok": False, "message": "Não consegui falar com a IA agora. Tente de novo."}), 502
+
+    # .json() fora do try acima levantaria se o 5001 devolvesse HTML (página
+    # de erro do Flask, por exemplo) em vez de JSON.
+    try:
+        data = resp.json() or {}
+    except Exception:
+        data = {}
+    if resp.status_code != 200:
+        # Repassa o status (402 de saldo, 403 de conta/modelo) com a mensagem
+        # de lá — o painel mostra isso direto pra secretária.
+        return jsonify({"ok": False, "message": data.get("error") or "Não consegui gerar a sugestão."}), resp.status_code
+
+    return jsonify({"ok": True, "suggestion": data.get("suggestion") or "", "question": last_in["body"]})
+
+
+@app.route("/api/client-portal/accounts/<int:account_id>/reply-suggestion-config", methods=["PATCH"])
+def cp_set_reply_suggestion_config(account_id):
+    user_id, err = _require_client()
+    if err: return err
+    if _account_owner(account_id) != user_id:
+        return _not_found("Conta não encontrada")
+    body = request.json or {}
+    enabled = bool(body.get("enabled", True))
+    prompt = (body.get("prompt") or "").strip()
+    set_account_reply_suggestion_config(account_id, enabled, prompt)
+    return jsonify({"ok": True, "reply_suggestion_enabled": enabled,
+                    "reply_suggestion_prompt": prompt or None})
+
+
 # ---- Agenda: controle total, escopado às próprias contas ----
 
 @app.route("/api/client-portal/accounts/<int:account_id>/consultants", methods=["GET"])
@@ -7170,6 +7272,132 @@ def _client_api_key(user_id):
         return row[0] if row else None
     finally:
         conn.close()
+
+
+# ---------------------------------------------------------------------------
+# Sugestão de resposta pra secretária (painel 3D) — sob demanda, num botão.
+# Diferente do auto-reply logo abaixo: NADA é enviado por aqui, só devolve um
+# rascunho pra secretária revisar. Todo o acesso ao banco é de LEITURA.
+# ---------------------------------------------------------------------------
+
+DEFAULT_REPLY_SUGGESTION_PROMPT = """Você é a secretária da clínica {clinica}, respondendo pacientes pelo WhatsApp.
+
+Escreva a resposta que a secretária deve mandar agora pro paciente.
+
+Regras que você NUNCA quebra:
+- Use SOMENTE os fatos da seção DADOS DO PACIENTE. Nunca invente nem deduza data, horário, valor, nome de médico ou resultado de exame.
+- Se a resposta não estiver nos dados, escreva que vai verificar e retornar em seguida — nunca chute.
+- Nada de orientação clínica: diagnóstico, remédio, dose, conduta ou interpretação de exame é assunto do médico, nunca seu.
+- Seja curta: 2 a 4 linhas, cordial, em português do Brasil, com jeito de mensagem de WhatsApp (sem saudação formal de e-mail, sem assinatura).
+- Documentos/exames: só oriente o paciente a enviar se o consentimento LGPD estiver ACEITO. Se não estiver, explique em uma frase que ele precisa aceitar o termo primeiro e que você vai enviá-lo.
+- Se precisar pedir algum documento ou atestado, peça UM POR VEZ.
+
+Responda com o texto da mensagem e mais nada: sem aspas, sem "Sugestão:", sem explicar sua escolha."""
+
+
+def _fmt_dt_br(iso_str):
+    """'2026-08-10T14:30' -> '10/08/2026 às 14:30'. Devolve o original em
+    qualquer formato inesperado — isso alimenta prompt, não pode levantar."""
+    try:
+        d, t = iso_str.split("T")
+        y, m, day = d.split("-")
+        return f"{day}/{m}/{y} às {t[:5]}"
+    except Exception:
+        return str(iso_str or "")
+
+
+def _build_suggestion_context(account, contact_id):
+    """Bloco de texto (PT-BR) com o que a clínica sabe sobre esse paciente,
+    pra alimentar a sugestão de resposta. Só compõe funções de leitura que já
+    existem — nenhuma consulta nova, nenhuma escrita. Seção sem dado é
+    omitida, pra não gastar token dizendo 'nenhum' pra tudo.
+
+    O status de consentimento LGPD entra de propósito: é ele que decide se a
+    sugestão pode orientar o envio de documento ou tem que pedir o aceite
+    antes (ver DEFAULT_REPLY_SUGGESTION_PROMPT)."""
+    account_id = account["id"]
+    parts = []
+
+    record = get_patient_record(contact_id) or {}
+    nome = record.get("name") or record.get("push_name") or "(sem nome cadastrado)"
+    parts.append(f"Paciente: {nome}")
+    parts.append(f"Clínica: {account.get('label') or ''}")
+    # Dia da semana pela lista em PT (booking_flow.WEEKDAY_NAMES_PT), não por
+    # strftime('%A') — esse sairia em inglês se o locale do processo não for
+    # pt_BR, armadilha que o projeto já documentou em _send_slot_list.
+    agora = datetime.datetime.now(booking_flow.LOCAL_TZ)
+    parts.append(f"Hoje é {booking_flow.WEEKDAY_NAMES_PT[agora.weekday()]}, "
+                 f"{agora.strftime('%d/%m/%Y')}, {agora.strftime('%H:%M')}")
+
+    consent = get_lgpd_consent_status(contact_id)
+    consent_label = {
+        "accepted": "ACEITO — pode orientar o envio de documentos/exames por aqui",
+        "pending": "AGUARDANDO resposta do paciente — não peça documento de novo",
+        "declined": "RECUSADO — não peça documentos",
+    }.get(consent, "NÃO PEDIDO AINDA — precisa aceitar o termo antes de enviar documentos")
+    parts.append(f"Consentimento LGPD: {consent_label}")
+
+    try:
+        pending, upcoming, history = get_patient_appointments(contact_id)
+    except Exception:
+        pending, upcoming, history = [], [], []
+
+    if upcoming:
+        linhas = [f"- {_fmt_dt_br(a['scheduled_at'])} com {a['consultant_name']}"
+                  f"{' — ' + a['subject'] if a.get('subject') else ''}" for a in upcoming[:5]]
+        parts.append("Consultas CONFIRMADAS a acontecer:\n" + "\n".join(linhas))
+    if pending:
+        linhas = [f"- {_fmt_dt_br(a['scheduled_at'])} com {a['consultant_name']} (aguardando o médico confirmar)"
+                  for a in pending[:5]]
+        parts.append("Consultas AGUARDANDO CONFIRMAÇÃO:\n" + "\n".join(linhas))
+    if history:
+        linhas = [f"- {_fmt_dt_br(a['scheduled_at'])} com {a['consultant_name']} ({a['status']})"
+                  for a in history[:3]]
+        parts.append("Últimas consultas já realizadas:\n" + "\n".join(linhas))
+
+    try:
+        docs = get_patient_documents_for_contact(contact_id)
+    except Exception:
+        docs = []
+    if docs:
+        linhas = []
+        for d in docs[:5]:
+            quando = (d.get("captured_at") or "")[:10]
+            titulo = d.get("title") or d.get("caption") or d.get("doc_type") or "documento"
+            resumo = (d.get("ai_summary") or "").strip().replace("\n", " ")
+            if resumo:
+                resumo = f" — {resumo[:180]}"
+            linhas.append(f"- {quando} {titulo}{resumo}")
+        parts.append("Documentos/exames que o paciente já enviou:\n" + "\n".join(linhas))
+
+    try:
+        recibos = get_receipts(account_id, contact_id=contact_id)
+    except Exception:
+        recibos = []
+    if recibos:
+        linhas = [f"- {(r.get('service_date') or '')[:10]} R$ {r.get('amount')} ({r.get('status')})"
+                  for r in recibos[:3]]
+        parts.append("Recibos emitidos:\n" + "\n".join(linhas))
+
+    try:
+        notas = nfse_flow.get_invoices(account_id, contact_id=contact_id, limit=3)
+    except Exception:
+        notas = []
+    if notas:
+        linhas = [f"- {(n.get('service_date') or '')[:10]} R$ {n.get('amount')} nota {n.get('numero_nfse') or '(em processamento)'} ({n.get('status')})"
+                  for n in notas[:3]]
+        parts.append("Notas fiscais:\n" + "\n".join(linhas))
+
+    try:
+        atestados = get_certificates(account_id, contact_id=contact_id)
+    except Exception:
+        atestados = []
+    if atestados:
+        linhas = [f"- emitido em {(a.get('issued_at') or '')[:10]}, afastamento {(a.get('leave_start_date') or '')[:10]} a {(a.get('leave_end_date') or '')[:10]} ({a.get('status')})"
+                  for a in atestados[:3]]
+        parts.append("Atestados já emitidos:\n" + "\n".join(linhas))
+
+    return "DADOS DO PACIENTE (use só o que estiver aqui):\n\n" + "\n\n".join(parts)
 
 
 def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):

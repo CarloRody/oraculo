@@ -437,6 +437,18 @@
         </div>
 
         <div class="card" style="max-width:1000px;">
+            <h2>Sugestão de resposta (IA)</h2>
+            <p class="subtitle">No <a href="/whatsapp/painel-secretaria-3d" style="color:#60a5fa;">Painel 3D</a>, cada conversa não lida ganha um botão <strong>✨ Sugerir</strong>: a IA lê as últimas mensagens e os dados do paciente (agendamentos, documentos, recibos e notas — só leitura) e escreve um rascunho de resposta. A secretária envia como veio ou ajusta antes. Nada é enviado sozinho. Cada sugestão consome tokens, descontados do saldo. O texto abaixo define <em>quem é a secretária</em> e as regras que ela segue — deixe em branco pra usar a persona padrão do sistema, que já vem com as travas de segurança (não inventar horário, não dar orientação clínica, respostas curtas). Use <code>{{clinica}}</code> pro nome da clínica.</p>
+            <div class="form-group">
+                <label><input type="checkbox" id="replySuggestionEnabled" checked> Mostrar o botão de sugestão no painel 3D</label>
+            </div>
+            <div class="form-group">
+                <textarea class="form-input" rows="6" id="replySuggestionPromptInput" placeholder="Deixe em branco para usar a persona padrão do sistema."></textarea>
+            </div>
+            <button class="btn btn-sm" onclick="saveReplySuggestionConfig()">Salvar</button>
+        </div>
+
+        <div class="card" style="max-width:1000px;">
             <h2>Configurar checklist da clínica</h2>
             <p class="subtitle">Etapas aplicadas a toda consulta marcada como concluída. Placeholders disponíveis na mensagem automática: <code>{{paciente}}</code>, <code>{{medico}}</code>, <code>{{data}}</code>, <code>{{hora}}</code>, <code>{{assunto}}</code>, <code>{{clinica}}</code>. A secretária marca as etapas como concluídas pelo <a href="/whatsapp/painel-secretaria" style="color:#60a5fa;">Painel da Secretária</a>.</p>
             <div id="templateEditor"></div>
@@ -1587,6 +1599,7 @@ async function initChecklistTab() {
     loadSecretaryContactField();
     loadBookingConfirmedMessageField();
     loadReminderMessageField();
+    loadReplySuggestionField();
     await loadChecklistTemplate();
 }
 
@@ -1595,6 +1608,7 @@ async function onChecklistAccountChange() {
     loadSecretaryContactField();
     loadBookingConfirmedMessageField();
     loadReminderMessageField();
+    loadReplySuggestionField();
     await loadChecklistTemplate();
 }
 
@@ -1639,6 +1653,29 @@ async function saveBookingConfirmedMessage() {
         acc.booking_confirmed_notify_consultant = data.booking_confirmed_notify_consultant;
     }
     alert('Mensagem salva!');
+}
+
+function loadReplySuggestionField() {
+    const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
+    document.getElementById('replySuggestionPromptInput').value = (acc && acc.reply_suggestion_prompt) || '';
+    document.getElementById('replySuggestionEnabled').checked = !acc || acc.reply_suggestion_enabled !== false;
+}
+
+async function saveReplySuggestionConfig() {
+    const prompt = document.getElementById('replySuggestionPromptInput').value.trim();
+    const enabled = document.getElementById('replySuggestionEnabled').checked;
+    const res = await authFetch(API + `/api/client-portal/accounts/${currentChecklistAccountId}/reply-suggestion-config`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled, prompt }),
+    });
+    const data = await res.json();
+    if (!res.ok) return alert(data.message || 'Erro ao salvar.');
+    const acc = checklistAccounts.find(a => a.id === currentChecklistAccountId);
+    if (acc) {
+        acc.reply_suggestion_enabled = data.reply_suggestion_enabled;
+        acc.reply_suggestion_prompt = data.reply_suggestion_prompt;
+    }
+    alert('Configuração salva!');
 }
 
 function loadReminderMessageField() {

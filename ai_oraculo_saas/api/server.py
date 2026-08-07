@@ -1620,6 +1620,78 @@ def api_whatsapp_document_ai_usage():
     return jsonify({"ok": True, "charged": charged})
 
 
+@app.route('/api/whatsapp/suggest-reply', methods=['POST'])
+def api_whatsapp_suggest_reply():
+    """Chamado servidor-a-servidor pelo whatsapp-agent quando a secretária
+    aperta "sugerir resposta" numa conversa do painel 3D. Devolve UMA
+    sugestão de texto pra ela revisar — nada é enviado por aqui.
+
+    Deliberadamente separado de /api/chat: aquele é caminho crítico em
+    produção e faz RAG na base de conhecimento do cliente, que não tem nada
+    a ver com responder um paciente. Aqui o contexto vem pronto do
+    whatsapp-agent (agendamentos/documentos/recibos do paciente), então é
+    só system prompt + histórico da conversa + pergunta.
+
+    Também não cobra cota por área (log_area_usage/get_quota_status) de
+    propósito: conta de WhatsApp pode não ter área vinculada (é o caso da
+    conta real da clínica), e exigir área faria a sugestão não funcionar
+    justamente nela. O débito do saldo continua igual ao do chat."""
+    user_id = resolve_user_from_request()
+    if not user_id:
+        return jsonify({"error": "Chave de acesso inválida ou ausente"}), 401
+    if get_user_status(user_id) == 'inactive':
+        return jsonify({"error": "Sua conta está desativada. Entre em contato com o administrador."}), 403
+
+    data = request.get_json() or {}
+    system_prompt = (data.get('system_prompt') or '').strip()
+    context = (data.get('context') or '').strip()
+    message = (data.get('message') or '').strip()
+    history = data.get('history') or []
+    if not system_prompt or not message:
+        return jsonify({"error": "Campos 'system_prompt' e 'message' são obrigatórios"}), 400
+
+    llm_cfg = resolve_llm_config_for_user(user_id)
+    if llm_cfg["model_row_id"] is None:
+        return jsonify({"error": "Sua conta ainda não tem um modelo de IA configurado. Fale com o administrador."}), 403
+
+    if llm_cfg["price_input_per_million"] is not None:
+        current_balance = get_user_balance(user_id)
+        if current_balance is not None and current_balance <= 0:
+            return jsonify({
+                "error": "Seus créditos acabaram.",
+                "credit_status": {"balance": round(current_balance, 4), "depleted": True}
+            }), 402
+
+    # Teto de saída bem menor que o do plano (6000): a sugestão é uma
+    # mensagem de WhatsApp de 2-4 linhas. Além de não gastar token à toa,
+    # limita o estrago se um modelo pequeno entrar em loop de repetição.
+    llm_cfg = {**llm_cfg, "max_tokens": min(llm_cfg.get("max_tokens") or 400, 400)}
+
+    user_prompt = f"{context}\n\nMensagem do paciente: {message}" if context else f"Mensagem do paciente: {message}"
+    try:
+        suggestion, tokens_input, tokens_output = call_llm_agent(
+            llm_cfg, system_prompt, user_prompt, history=history)
+    except Exception as e:
+        print(f"ERRO suggest-reply: {e}")
+        return jsonify({"error": f"Não consegui gerar a sugestão agora: {e}"}), 502
+
+    credit_status = None
+    consumption_value = compute_consumption_value(llm_cfg, tokens_input, tokens_output)
+    if consumption_value is not None:
+        new_balance = apply_credit_transaction(
+            user_id, -consumption_value, 'consumption',
+            "Sugestão de resposta (IA)",
+            tokens_input=tokens_input, tokens_output=tokens_output)
+        if new_balance is not None:
+            credit_status = {"balance": round(new_balance, 4), "depleted": new_balance <= 0}
+
+    result = {"suggestion": (suggestion or "").strip(),
+              "tokens_input": tokens_input, "tokens_output": tokens_output}
+    if credit_status:
+        result["credit_status"] = credit_status
+    return jsonify(result)
+
+
 @app.route('/api/agent-research', methods=['POST'])
 def agent_research():
     """Pesquisa com 3 agentes: o primeiro responde só com a documentação

@@ -1170,6 +1170,18 @@ MIGRATIONS = [
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reminder_notify_patient BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reminder_notify_consultant BOOLEAN NOT NULL DEFAULT TRUE;
     """,
+
+    # 54 — botão "sugerir resposta" nas conversas do painel da secretária 3D:
+    # a secretária pede, sob demanda, uma sugestão de resposta gerada pela IA
+    # local com base no histórico da conversa + dados reais do paciente
+    # (agendamentos, documentos, recibos/notas — tudo leitura). Não guarda a
+    # sugestão: é chamada síncrona, o texto vive só na tela até ela enviar ou
+    # descartar. reply_suggestion_prompt vazio = usa a persona padrão do
+    # sistema (DEFAULT_REPLY_SUGGESTION_PROMPT em server.py).
+    """
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reply_suggestion_enabled BOOLEAN NOT NULL DEFAULT TRUE;
+    ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reply_suggestion_prompt TEXT;
+    """,
 ]
 
 
