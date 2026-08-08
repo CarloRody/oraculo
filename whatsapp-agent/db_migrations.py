@@ -1177,7 +1177,9 @@ MIGRATIONS = [
     # (agendamentos, documentos, recibos/notas — tudo leitura). Não guarda a
     # sugestão: é chamada síncrona, o texto vive só na tela até ela enviar ou
     # descartar. reply_suggestion_prompt vazio = usa a persona padrão do
-    # sistema (DEFAULT_REPLY_SUGGESTION_PROMPT em server.py).
+    # sistema (DEFAULT_REPLY_SUGGESTION_PERSONA em server.py). Só a persona:
+    # as regras de segurança (REPLY_SUGGESTION_RULES) são coladas sempre e
+    # não dependem desta coluna.
     """
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reply_suggestion_enabled BOOLEAN NOT NULL DEFAULT TRUE;
     ALTER TABLE whatsapp_accounts ADD COLUMN IF NOT EXISTS reply_suggestion_prompt TEXT;

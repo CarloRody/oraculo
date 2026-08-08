@@ -641,7 +641,8 @@ def set_account_reminder_message(account_id, message, notify_patient=True, notif
 def set_account_reply_suggestion_config(account_id, enabled=True, prompt=""):
     """Liga/desliga o botão "sugerir resposta" do painel 3D e guarda a persona
     da secretária. prompt vazio = volta pra persona padrão do sistema
-    (DEFAULT_REPLY_SUGGESTION_PROMPT)."""
+    (DEFAULT_REPLY_SUGGESTION_PERSONA). As regras de segurança
+    (REPLY_SUGGESTION_RULES) valem sempre e não passam por aqui."""
     conn = _conn()
     try:
         cur = conn.cursor()
@@ -5145,8 +5146,12 @@ def cp_suggest_reply(chat_id):
                 "content": _redact_sensitive(m["body"])}
                for m in msgs if m["id"] != last_in["id"]]
 
-    persona = (account.get("reply_suggestion_prompt") or "").strip() or DEFAULT_REPLY_SUGGESTION_PROMPT
-    system_prompt = persona.replace("{clinica}", account.get("label") or "")
+    # A persona é do cliente; as regras são do sistema e vão sempre depois
+    # dela (ver REPLY_SUGGESTION_RULES) — persona customizada não desliga
+    # trava de segurança.
+    persona = (account.get("reply_suggestion_prompt") or "").strip() or DEFAULT_REPLY_SUGGESTION_PERSONA
+    system_prompt = (persona + "\n\n" + REPLY_SUGGESTION_RULES).replace(
+        "{clinica}", account.get("label") or "")
     context = _redact_sensitive(_build_suggestion_context(account, chat["contact_id"]))
     question = _redact_sensitive(last_in["body"])
 
@@ -7366,12 +7371,19 @@ def _client_api_key(user_id):
 # rascunho pra secretária revisar. Todo o acesso ao banco é de LEITURA.
 # ---------------------------------------------------------------------------
 
-DEFAULT_REPLY_SUGGESTION_PROMPT = """Você é a secretária da clínica {clinica}, respondendo pacientes pelo WhatsApp.
+# A persona (quem é a secretária) é o que o cliente pode trocar na Área do
+# Cliente. As REGRAS abaixo são coladas sempre, depois da persona, e não têm
+# como ser desligadas por configuração — são elas que seguram vazamento de
+# credencial, invenção de dado e orientação clínica. Antes o campo do cliente
+# substituía o prompt INTEIRO, então uma persona customizada levava junto
+# todas as travas embora sem ninguém perceber.
+DEFAULT_REPLY_SUGGESTION_PERSONA = """Você é a secretária da clínica {clinica}, respondendo pacientes pelo WhatsApp.
 
-Escreva a resposta que a secretária deve mandar agora pro paciente.
+Escreva a resposta que a secretária deve mandar agora pro paciente."""
 
-Regras que você NUNCA quebra:
-- Use SOMENTE os fatos da seção DADOS DO PACIENTE. Nunca invente nem deduza data, horário, valor, nome de médico ou resultado de exame.
+REPLY_SUGGESTION_RULES = """Regras que você NUNCA quebra:
+- Use SOMENTE os fatos das seções DADOS DA CLÍNICA e DADOS DO PACIENTE. Nunca invente nem deduza endereço, telefone, data, horário, valor, nome de médico ou resultado de exame.
+- Endereço, telefone e nome da clínica: copie LITERALMENTE o que está em DADOS DA CLÍNICA, sem completar, corrigir nem reescrever. Se o campo disser "não cadastrado", responda que vai confirmar e retornar — nunca escreva um endereço que não esteja ali.
 - Se a resposta não estiver nos dados, escreva que vai verificar e retornar em seguida — nunca chute.
 - Nada de orientação clínica: diagnóstico, remédio, dose, conduta ou interpretação de exame é assunto do médico, nunca seu.
 - NUNCA escreva link, token, senha, código de acesso ou endereço de portal na resposta, nem que apareça no histórico da conversa. Isso é de uso interno da clínica e não vai para o paciente.
@@ -7417,6 +7429,48 @@ def _fmt_dt_br(iso_str):
         return str(iso_str or "")
 
 
+def _fmt_phone_br(raw):
+    """'553798670085' -> '(37) 9867-0085'. Sem o DDI, que só confunde quem
+    já está falando com a clínica pelo WhatsApp. Formato inesperado volta
+    como veio — isso alimenta prompt, não pode levantar."""
+    digitos = re.sub(r"\D", "", raw or "")
+    if digitos.startswith("55") and len(digitos) > 10:
+        digitos = digitos[2:]
+    if len(digitos) == 11:
+        return f"({digitos[:2]}) {digitos[2:7]}-{digitos[7:]}"
+    if len(digitos) == 10:
+        return f"({digitos[:2]}) {digitos[2:6]}-{digitos[6:]}"
+    return (raw or "").strip()
+
+
+def _clinic_facts(account):
+    """Bloco DADOS DA CLÍNICA — o que a secretária pode passar pro paciente
+    sobre a própria clínica.
+
+    Campo vazio entra como "não cadastrado" em vez de ser omitido, ao
+    contrário das seções do paciente. Quando o endereço simplesmente não
+    aparecia no contexto, o modelo preenchia a lacuna sozinho: duas vezes a
+    mesma pergunta, dois endereços diferentes, os dois inventados. Dizer
+    explicitamente que o dado não existe é o que faz ele responder "vou
+    confirmar" em vez de improvisar.
+
+    O nome vem de `label` (o nome da clínica), não de `company_name` — esse
+    é a razão social do cadastro fiscal, que pode ser outra coisa e não é o
+    nome pelo qual o paciente conhece o lugar."""
+    def campo(rotulo, valor):
+        valor = (valor or "").strip()
+        if valor:
+            return f"{rotulo}: {valor}"
+        return f"{rotulo}: não cadastrado — diga que vai confirmar, NUNCA invente"
+    linhas = [
+        campo("Nome da clínica", account.get("label")),
+        campo("Endereço", account.get("company_address")),
+        campo("WhatsApp da clínica", _fmt_phone_br(account.get("phone_number"))),
+    ]
+    return ("DADOS DA CLÍNICA (pode passar pro paciente; copie literalmente):\n"
+            + "\n".join(linhas))
+
+
 def _build_suggestion_context(account, contact_id):
     """Bloco de texto (PT-BR) com o que a clínica sabe sobre esse paciente,
     pra alimentar a sugestão de resposta. Só compõe funções de leitura que já
@@ -7425,14 +7479,13 @@ def _build_suggestion_context(account, contact_id):
 
     O status de consentimento LGPD entra de propósito: é ele que decide se a
     sugestão pode orientar o envio de documento ou tem que pedir o aceite
-    antes (ver DEFAULT_REPLY_SUGGESTION_PROMPT)."""
+    antes (ver REPLY_SUGGESTION_RULES)."""
     account_id = account["id"]
     parts = []
 
     record = get_patient_record(contact_id) or {}
     nome = record.get("name") or record.get("push_name") or "(sem nome cadastrado)"
     parts.append(f"Paciente: {nome}")
-    parts.append(f"Clínica: {account.get('label') or ''}")
     # Dia da semana pela lista em PT (booking_flow.WEEKDAY_NAMES_PT), não por
     # strftime('%A') — esse sairia em inglês se o locale do processo não for
     # pt_BR, armadilha que o projeto já documentou em _send_slot_list.
@@ -7508,7 +7561,8 @@ def _build_suggestion_context(account, contact_id):
                   for a in atestados[:3]]
         parts.append("Atestados já emitidos:\n" + "\n".join(linhas))
 
-    return "DADOS DO PACIENTE (use só o que estiver aqui):\n\n" + "\n\n".join(parts)
+    return (_clinic_facts(account) + "\n\n"
+            + "DADOS DO PACIENTE (use só o que estiver aqui):\n\n" + "\n\n".join(parts))
 
 
 def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):

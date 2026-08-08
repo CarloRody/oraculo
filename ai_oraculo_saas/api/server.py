@@ -1668,7 +1668,17 @@ def api_whatsapp_suggest_reply():
     # tokens "pensando" antes de escrever — medido em 400, o orçamento
     # inteiro ia embora no raciocínio e a resposta voltava VAZIA. 1500 deixa
     # folga pro raciocínio mais a mensagem de 2-4 linhas.
-    llm_cfg = {**llm_cfg, "max_tokens": min(llm_cfg.get("max_tokens") or 1500, 1500)}
+    #
+    # Temperatura baixa pelo mesmo espírito: isto não é escrita criativa, é
+    # ler um fato do cadastro e repetir. Com o 0.7 padrão do modelo, a mesma
+    # pergunta ("qual o endereço da clínica?") voltava com respostas
+    # diferentes a cada tentativa. Teto, não valor fixo — um modelo
+    # configurado com temperatura ainda menor continua com a dele. Não uso 0
+    # de propósito: modelo de raciocínio costuma degradar (repetição) no zero
+    # absoluto.
+    llm_cfg = {**llm_cfg,
+               "max_tokens": min(llm_cfg.get("max_tokens") or 1500, 1500),
+               "temperature": min(llm_cfg.get("temperature") or 0.2, 0.2)}
 
     user_prompt = f"{context}\n\nMensagem do paciente: {message}" if context else f"Mensagem do paciente: {message}"
     try:
