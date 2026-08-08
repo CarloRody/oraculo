@@ -2681,6 +2681,68 @@ def consultores_automation_mode(user_id):
         conn.close()
 
 
+# Matriz de automação por plano — fonte única de verdade de QUAL motor
+# automático pode responder sozinho no WhatsApp em cada modo de plano.
+#
+# Existe porque antes cada ramo do webhook decidia por conta própria se o
+# plano permitia, e o ramo que esquecia de decidir simplesmente rodava. Foi
+# assim que o menu do modo Consultores ("Olá! Como posso ajudar? 1. Ajuda
+# 2. Agendar 3. Recomeçar") acabou respondendo dentro de conta de clínica
+# médica, onde quem responde é a secretária. Aqui a regra se inverte:
+# o que não está listado como True está negado.
+#
+# Um modo de plano novo que não apareça neste dicionário não ganha nenhuma
+# automação até ser descrito aqui (ver plan_automations) — de propósito:
+# é melhor um recurso novo nascer mudo do que nascer respondendo pelo
+# motor do plano errado.
+PLAN_AUTOMATIONS = {
+    # Sem agenda no plano: só o assistente de IA (base do Oráculo), que
+    # ainda depende de área vinculada e do interruptor da conversa.
+    "none": {
+        "consultant_invite": False,
+        "lgpd_consent": False,
+        "portal_link": False,
+        "booking_flow": False,
+        "flow_engine": False,
+        "ai_auto_reply": True,
+    },
+    # Consultores: os dois motores de agendamento entram aqui (qual dos
+    # dois é decidido por consultores_automation_mode — nunca os dois).
+    "consultores": {
+        "consultant_invite": True,
+        "lgpd_consent": False,
+        "portal_link": True,
+        "booking_flow": True,
+        "flow_engine": True,
+        "ai_auto_reply": True,
+    },
+    # CRM médico: paciente NÃO se agenda sozinho — quem agenda é a
+    # secretária, pelo painel, e quem responde é ela (com a sugestão de
+    # resposta da IA como apoio). Por isso booking_flow/flow_engine ficam
+    # desligados aqui. O termo de LGPD é exclusivo deste modo, e o convite
+    # de médico e o link "minha agenda" continuam porque são resposta a uma
+    # ação explícita do próprio médico, não atendimento automático.
+    "crm_medico": {
+        "consultant_invite": True,
+        "lgpd_consent": True,
+        "portal_link": True,
+        "booking_flow": False,
+        "flow_engine": False,
+        "ai_auto_reply": True,
+    },
+}
+
+# Modo desconhecido/plano recém-criado: nenhuma automação (ver acima).
+_NO_AUTOMATIONS = {k: False for k in PLAN_AUTOMATIONS["none"]}
+
+
+def plan_automations(booking_mode):
+    """Automações permitidas pro modo de plano dado — sempre um dicionário
+    completo, então `allowed["x"]` nunca estoura e um modo desconhecido nega
+    tudo em vez de liberar por omissão."""
+    return PLAN_AUTOMATIONS.get(booking_mode, _NO_AUTOMATIONS)
+
+
 CONSULTANT_COLUMNS = [
     "id", "account_id", "contact_id", "name", "context", "slot_duration_minutes",
     "weekly_availability", "reminder_hours_before", "status", "confirmed_at", "created_at",
@@ -7444,6 +7506,10 @@ def _handle_ai_auto_reply(account, chat_id, wa_id, incoming_text):
     chat = get_chat(chat_id)
     if not chat or not chat.get("ai_auto_reply_enabled") or not account.get("area_id"):
         return
+    # Mesma trava de plano do webhook, repetida aqui pra valer venha a
+    # chamada de onde vier (ver PLAN_AUTOMATIONS).
+    if not plan_automations(plan_booking_mode(account.get("user_id")))["ai_auto_reply"]:
+        return
 
     api_key = _client_api_key(account["user_id"]) if account.get("user_id") else None
     if not api_key:
@@ -7643,6 +7709,17 @@ def webhook_evolution():
             contact_id = get_or_create_contact(account["id"], wa_id, push_name)
             chat_id = get_or_create_chat(account["id"], contact_id, default_auto_reply=account.get("ai_auto_reply_enabled", True))
 
+            # Caminho do plano — decidido UMA vez, aqui, e consultado por todo
+            # ramo automático abaixo. Antes cada ramo checava (ou esquecia de
+            # checar) o plano por conta própria, e o que esquecia simplesmente
+            # respondia: foi assim que o menu de agendamento do modo
+            # Consultores foi parar dentro de conta de clínica médica. A
+            # matriz PLAN_AUTOMATIONS é a fonte única de verdade — nenhum
+            # motor automático roda sem estar listado como True pro modo
+            # deste plano.
+            booking_mode = plan_booking_mode(account.get("user_id"))
+            allowed = plan_automations(booking_mode)
+
             # Captura de exame/documento — canal lateral que não reordena nem
             # altera a cadeia de prioridade abaixo (confirmação de consultor →
             # "minha agenda" → booking_flow → IA); só roda pra contas em modo
@@ -7651,7 +7728,7 @@ def webhook_evolution():
             message_type = media["doc_type"] if media else "text"
             message_id = save_message(chat_id, account["id"], "in", body, sender_contact_id=contact_id,
                                       wa_message_id=wa_message_id, message_type=message_type)
-            if media and plan_booking_mode(account.get("user_id")) == "crm_medico":
+            if media and allowed["lgpd_consent"]:
                 # LGPD: só captura de contato que já respondeu SIM ao termo de
                 # consentimento. 'none' dispara o termo (documento é descartado,
                 # o paciente reenvia depois de aceitar); 'pending'/'declined'
@@ -7668,7 +7745,8 @@ def webhook_evolution():
             # digitar sim/não (fallback pro caso do botão nativo não renderizar
             # no aparelho do destinatário, ver plano). answer=None (nem botão
             # nem sim/não reconhecido) cai no fluxo normal mais abaixo.
-            pending_consultant_id = get_consultant_by_pending_contact(account["id"], wa_id)
+            pending_consultant_id = (get_consultant_by_pending_contact(account["id"], wa_id)
+                                     if allowed["consultant_invite"] else None)
             answer = None
             if selected_id == f"consultant_confirm_{pending_consultant_id}":
                 answer = True
@@ -7680,34 +7758,42 @@ def webhook_evolution():
             # LGPD: mesmo mecanismo de sim/não tolerante (parse_yes_no) já
             # usado pra confirmação de consultor — só é avaliado quando há um
             # pedido de consentimento em aberto pra esse contato.
-            pending_consent_id = get_pending_lgpd_consent_id(contact_id)
+            pending_consent_id = get_pending_lgpd_consent_id(contact_id) if allowed["lgpd_consent"] else None
             consent_answer = booking_flow.parse_yes_no(body) if pending_consent_id and not selected_id else None
 
-            wants_portal_link = bool(body) and "minha agenda" in body.strip().lower()
+            wants_portal_link = allowed["portal_link"] and bool(body) and "minha agenda" in body.strip().lower()
             active_consultant = get_active_consultant_by_wa_id(account["id"], wa_id) if wants_portal_link else None
 
-            # Os dois motores de resposta automática do modo Consultores
-            # (agendamento fixo x construtor de fluxo configurável) são
-            # mutuamente exclusivos — nunca escutam a mesma conversa ao
-            # mesmo tempo (ver consultores_automation_mode). Isso evita o
-            # incidente de 2026-07-24, em que duas contas em Consultores
-            # ficaram respondendo uma à outra num ciclo sem fim.
+            # Qual dos dois motores de conversa automática pode escutar esta
+            # mensagem. São mutuamente exclusivos — nunca os dois na mesma
+            # conta (ver consultores_automation_mode), o que evita o incidente
+            # de 2026-07-24, em que duas contas ficaram respondendo uma à
+            # outra num ciclo sem fim.
             #
-            # O None quando o plano NÃO é Consultores é o que desliga os dois
-            # ramos abaixo: consultores_automation_mode() sempre devolve um
-            # modo (default 'agendamento') mesmo pra conta em CRM médico, e
-            # como a cadeia só olhava esse valor, o booking_flow respondia
-            # dentro de clínica médica — paciente mandava "Oi" e recebia o
-            # menu de agendamento de consultores no lugar da secretária. É
-            # exatamente a ressalva que o docstring de
-            # consultores_automation_mode já fazia ("ignorado nos outros
-            # modos"), só que ela nunca tinha sido aplicada aqui.
+            # Duas travas, e as duas precisam passar:
+            #  1. a matriz do plano (allowed) — consultores_automation_mode()
+            #     sempre devolve um modo (default 'agendamento') mesmo pra
+            #     conta em CRM médico, então perguntar só pra ele fazia o
+            #     agendamento de consultores responder dentro da clínica;
+            #  2. o interruptor "Resposta automática nesta conversa" do
+            #     painel. O flow_engine já o respeitava e a IA também, mas o
+            #     booking_flow passava por cima: conversa com a chave
+            #     DESLIGADA continuava recebendo "Olá! Como posso ajudar? /
+            #     1. Ajuda 2. Agendar 3. Recomeçar". A checagem também mora
+            #     dentro de booking_flow.handle_incoming, pra valer venha a
+            #     chamada de onde vier.
+            chat_auto_reply = bool((get_chat(chat_id) or {}).get("ai_auto_reply_enabled"))
             automation_mode = (consultores_automation_mode(account.get("user_id"))
-                               if plan_booking_mode(account.get("user_id")) == "consultores"
-                               else None)
+                               if chat_auto_reply else None)
+            if automation_mode == "fluxo" and not allowed["flow_engine"]:
+                automation_mode = None
+            elif automation_mode == "agendamento" and not allowed["booking_flow"]:
+                automation_mode = None
 
             ai_handled = False
+            route = "nenhum"  # qual ramo respondeu — registrado no log abaixo
             if pending_consultant_id and answer is not None:
+                route = "consultant_invite"
                 new_status = "active" if answer else "declined"
                 set_consultant_status(pending_consultant_id, new_status)
                 if new_status == "active":
@@ -7721,6 +7807,7 @@ def webhook_evolution():
                 except EvolutionError:
                     pass
             elif pending_consent_id and consent_answer is not None:
+                route = "lgpd_consent"
                 resolve_lgpd_consent(pending_consent_id, contact_id, consent_answer, body, wa_message_id, payload)
                 reply = ("Consentimento registrado, obrigado! Agora você já pode nos mandar (ou reenviar) "
                          "seus documentos/exames por aqui."
@@ -7732,6 +7819,7 @@ def webhook_evolution():
                 except EvolutionError:
                     pass
             elif active_consultant:
+                route = "portal_link"
                 try:
                     evolution.send_text(account["wa_session_name"], _phone_from_wa_id(wa_id),
                                          f"Sua agenda: {portal_link(active_consultant['portal_token'])}")
@@ -7741,16 +7829,26 @@ def webhook_evolution():
             elif automation_mode == "fluxo" and flow_engine.handle_incoming(
                 account, chat_id, contact_id, wa_id, body, selected_id, push_name
             ):
-                pass  # construtor de fluxo configurável assumiu (conta configurada nesse modo)
+                route = "flow_engine"  # construtor de fluxo configurável assumiu
             elif automation_mode == "agendamento" and booking_flow.handle_incoming(
                 account, chat_id, contact_id, wa_id, body, selected_id, push_name
             ):
-                pass  # motor de agendamento fixo assumiu (conta configurada nesse modo)
-            elif account.get("area_id"):
+                route = "booking_flow"  # motor de agendamento fixo assumiu
+            elif allowed["ai_auto_reply"] and account.get("area_id"):
+                route = "ai_auto_reply"
                 ai_handled = True
                 threading.Thread(
                     target=_handle_ai_auto_reply, args=(account, chat_id, wa_id, body), daemon=True
                 ).start()
+
+            # Registro do caminho escolhido — barato (uma linha por mensagem
+            # recebida) e é o que faltava pra diagnosticar "quem respondeu
+            # isso?" sem reconstruir a conversa mensagem a mensagem no banco.
+            # Guarda o plano junto, porque a pergunta que interessa nesses
+            # casos é sempre "esse ramo podia rodar neste plano?".
+            log_event(account["id"], "webhook_route",
+                      detail={"route": route, "booking_mode": booking_mode,
+                              "chat_id": chat_id, "chat_auto_reply": chat_auto_reply})
 
             # Cobrança/contagem da mensagem recebida — em todo ramo exceto o
             # de IA (essa já é cobrada por token, um lançamento só pro turno

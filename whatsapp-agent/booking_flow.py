@@ -502,15 +502,31 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
     state = server.get_chat_booking_state(chat_id)
     phone = _phone(wa_id)
 
-    if server.plan_booking_mode(account.get("user_id")) != "consultores":
+    if not server.plan_automations(server.plan_booking_mode(account.get("user_id")))["booking_flow"]:
         # 'crm_medico' desliga o self-service do paciente de propósito — nesse
         # modo só a secretária cria agendamentos pelo painel dela. 'none'
-        # continua sem agenda nenhuma, igual antes. Checagem incondicional
-        # (não só quando state is None): sem isso, uma conversa de agendamento
-        # já em andamento ANTES do plano trocar pra crm_medico continuava
-        # respondendo como se nada tivesse mudado, porque o passo abaixo só
-        # reavaliava o modo pra conversa nova — encontrado com uma conversa
-        # presa em "choosing_consultant" que sobrou de um teste anterior.
+        # continua sem agenda nenhuma, igual antes. Quem decide é a matriz
+        # PLAN_AUTOMATIONS do server (fonte única de verdade), não uma
+        # comparação de modo solta aqui — era assim que os dois lugares saíam
+        # do lugar um do outro. Checagem incondicional (não só quando state is
+        # None): sem isso, uma conversa de agendamento já em andamento ANTES
+        # do plano trocar pra crm_medico continuava respondendo como se nada
+        # tivesse mudado, porque o passo abaixo só reavaliava o modo pra
+        # conversa nova — encontrado com uma conversa presa em
+        # "choosing_consultant" que sobrou de um teste anterior.
+        if state is not None:
+            server.set_chat_booking_state(chat_id, None)
+        return False
+
+    # "Resposta automática nesta conversa" desligada no painel — mesma trava
+    # que flow_engine.handle_incoming já tinha desde o loop de 2026-07-24, e
+    # que faltava aqui: a conversa aparecia desligada pra quem olhava o
+    # painel e mesmo assim recebia "Olá! Como posso ajudar? / 1. Ajuda
+    # 2. Agendar 3. Recomeçar" a cada mensagem. Limpa o estado junto, senão
+    # religar o interruptor retomaria um agendamento de dias atrás no passo
+    # em que ele parou.
+    chat = server.get_chat(chat_id)
+    if chat and not chat.get("ai_auto_reply_enabled", True):
         if state is not None:
             server.set_chat_booking_state(chat_id, None)
         return False

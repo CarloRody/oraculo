@@ -102,7 +102,10 @@ def handle_incoming(account, chat_id, contact_id, wa_id, text, selected_id, push
     candidato: booking_flow ou o fallback de IA)."""
     import server  # tardio — ver docstring do módulo
 
-    if server.plan_booking_mode(account.get("user_id")) != "consultores":
+    # Quem decide é a matriz PLAN_AUTOMATIONS do server (fonte única de
+    # verdade de qual motor automático cada plano permite), não uma
+    # comparação de modo solta aqui.
+    if not server.plan_automations(server.plan_booking_mode(account.get("user_id")))["flow_engine"]:
         if server.get_chat_flow_state(chat_id) is not None:
             server.set_chat_flow_state(chat_id, None)
         return False
