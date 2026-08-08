@@ -3692,7 +3692,7 @@ def get_checklist_items_for_account(account_id, status=None):
                        tr.id, tr.status, tr.name,
                        ct.id, ct.push_name, ct.wa_id,
                        agg.appointment_count, agg.last_scheduled_at,
-                       sched.scheduled_at
+                       sched.scheduled_at, t.sort_order
                 FROM whatsapp_checklist_items i
                 JOIN whatsapp_checklist_templates t ON t.id = i.template_id
                 JOIN whatsapp_patient_treatments tr ON tr.id = i.treatment_id
@@ -3706,10 +3706,15 @@ def get_checklist_items_for_account(account_id, status=None):
                 ORDER BY ct.push_name, tr.id, t.sort_order""",
             params,
         )
+        # sort_order vai junto porque as telas de "a agendar" mostram só a
+        # PRÓXIMA etapa de cada tratamento (as etapas acontecem em sequência)
+        # — sem esse campo elas dependeriam silenciosamente do ORDER BY
+        # abaixo, e qualquer mudança de ordenação aqui escolheria a etapa
+        # errada lá na frente, sem erro nenhum aparecer.
         cols = ["id", "status", "done_at", "label", "notify_patient", "notify_consultant", "notify_secretary",
                 "treatment_id", "treatment_status", "treatment_name",
                 "client_contact_id", "client_name", "client_wa_id",
-                "appointment_count", "last_scheduled_at", "item_scheduled_at"]
+                "appointment_count", "last_scheduled_at", "item_scheduled_at", "sort_order"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         for r in rows:
             for k in ("last_scheduled_at", "item_scheduled_at"):
