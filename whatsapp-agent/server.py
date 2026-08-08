@@ -4329,9 +4329,17 @@ def api_list_messages(chat_id):
 
 @app.route("/api/whatsapp/chats/<int:chat_id>/messages", methods=["POST"])
 def api_send_message(chat_id):
+    """`mark_read` (opcional) zera o não-lidas da conversa DEPOIS que o envio
+    dá certo — quem respondeu, leu. É opt-in, e não o comportamento padrão de
+    todo envio, porque o disparo por API (/api/whatsapp/send de integração,
+    campanha) também passa por aqui: uma mensagem automática apagando o
+    não-lidas esconderia uma pergunta do paciente que ninguém respondeu
+    ainda. Quem pede é o painel 3D, onde a secretária responde direto da
+    lista sem nunca abrir a conversa (o painel 2D já marca lido ao abrir)."""
     data = request.json or {}
     text = (data.get("text") or "").strip()
     files = data.get("files") or []
+    mark_read = bool(data.get("mark_read"))
     if not text and not files:
         return jsonify({"ok": False, "message": "Texto ou arquivo é obrigatório"}), 400
 
@@ -4352,7 +4360,9 @@ def api_send_message(chat_id):
             report_whatsapp_sent_usage(chat["account_id"])
         if send_err:
             return jsonify({"ok": False, "message": send_err, "sent_count": len(sent)}), 502
-        return jsonify({"ok": True, "sent_count": len(sent)})
+        if mark_read:
+            mark_chat_read(chat_id)
+        return jsonify({"ok": True, "sent_count": len(sent), "marked_read": mark_read})
 
     try:
         result = evolution.send_text(chat["wa_session_name"], phone, text)
@@ -4362,7 +4372,12 @@ def api_send_message(chat_id):
     wa_message_id = ((result or {}).get("key") or {}).get("id")
     message_id = save_message(chat_id, chat["account_id"], "out", text, wa_message_id=wa_message_id)
     report_whatsapp_sent_usage(chat["account_id"])
-    return jsonify({"ok": True, "id": message_id, "sent_count": 1})
+    # Só aqui, depois do envio confirmado pela Evolution e da mensagem
+    # gravada: se marcasse antes, uma falha de envio deixaria a conversa
+    # "lida" sem o paciente ter recebido nada.
+    if mark_read:
+        mark_chat_read(chat_id)
+    return jsonify({"ok": True, "id": message_id, "sent_count": 1, "marked_read": mark_read})
 
 
 @app.route("/api/whatsapp/accounts/<int:account_id>/chats/start", methods=["POST"])
